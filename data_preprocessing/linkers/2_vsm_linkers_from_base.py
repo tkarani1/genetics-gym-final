@@ -50,6 +50,7 @@ ht_b = ht_4.select(
     canonical = hl.is_defined(ht_4.vep.transcript_consequences.canonical)
     )
 ht_b = ht_b.key_by('locus', 'allele', 'ensg', 'enst')
+ht_b = ht_b.distinct()
 ht_b.write("gs://genetics-gym/linkers/linker_missense_transcript.ht", overwrite=True)
 
 
