@@ -1,8 +1,8 @@
 import hail as hl
 hl.init(worker_memory="highmem", driver_memory='highmem') 
-from resources import REVEL_PATH
+from resources.resources import REVEL_PATH
 from resources.paths import WRITE_VSM_TABLES_PATH
-from resources.functions import locus_alleles_to_chr_pos_ref_alt
+
 
 # Revel
 revel_table = hl.import_table(REVEL_PATH, delimiter=',')
@@ -18,5 +18,4 @@ revel_table = revel_table.annotate(
 revel_table = revel_table.explode('enst')
 revel_table_fixed = revel_table.select('locus', 'alleles', 'enst', 'revel' )
 revel_table_fixed.write(f'{WRITE_VSM_TABLES_PATH}/revel_enst.ht')
-revel_table_fixed = locus_alleles_to_chr_pos_ref_alt(revel_table_fixed)
-revel_table_fixed.export(f'{WRITE_VSM_TABLES_PATH}/revel_enst.tsv.bgz')
+

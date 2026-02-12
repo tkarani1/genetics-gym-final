@@ -24,48 +24,32 @@ def convert_aa_three_to_one(ht):
 
     return ht
 
-# ht = hl.read_table('gs://missense-scoring/mutation/everything_raw.ht')
-# print(0)
-# ht_2 = ht.explode(ht.vep.transcript_consequences)
+ht = hl.read_table('gs://missense-scoring/mutation/everything_raw.ht')
+print(0)
+ht_2 = ht.explode(ht.vep.transcript_consequences)
 
 # print(1)
 
-# # Missense
-# ht_3 = ht_2.filter(ht_2.vep.transcript_consequences.most_severe_consequence == "missense_variant")
-# ht_4 = ht_3.filter(ht_3.vep.transcript_consequences.transcript_id.startswith('ENST') )
+# Missense
+ht_3 = ht_2.filter(ht_2.vep.transcript_consequences.most_severe_consequence == "missense_variant")
+ht_4 = ht_3.filter(ht_3.vep.transcript_consequences.transcript_id.startswith('ENST') )
 
-# ## Missense only SNP
+## Missense only SNP
 # ht_a = ht_4.select()
 # ht_a = ht_a.distinct()
 # ht_a.write("gs://genetics-gym/linkers/linker_missense_only_snp.ht", overwrite=True)
-ht_a = hl.read_table("gs://genetics-gym/linkers/linker_missense_only_snp.ht")
+# ht_a = hl.read_table("gs://genetics-gym/linkers/linker_missense_only_snp.ht")
 
-# Separate locus and alleles fields BEFORE removing keys
-ht_a = ht_a.annotate(
-    chr = ht_a.locus.contig,
-    pos = ht_a.locus.position,
-    ref = ht_a.alleles[0],
-    alt = ht_a.alleles[1]
-)
-ht_a = ht_a.key_by()
-ht_a = ht_a.select('chr', 'pos', 'ref', 'alt')
-
-
-# Export as TSV
-ht_a.export("gs://genetics-gym/linkers/linker_missense_only_snp.tsv.bgz")
-
-
-# ## Missense SNP + ENSG + ENST
-# ht_b = ht_4.select(
-#     gene_symbol = ht_4.vep.transcript_consequences.gene_symbol,
-#     enst = ht_4.vep.transcript_consequences.transcript_id,
-#     ensp = ht_4.vep.transcript_consequences.protein_id,
-#     ensg = ht_4.vep.transcript_consequences.gene_id, 
-#     mane_select = hl.is_defined(ht_4.vep.transcript_consequences.mane_select),
-#     canonical = hl.is_defined(ht_4.vep.transcript_consequences.canonical)
-#     )
-# ht_b = ht_b.key_by('locus', 'allele', 'ensg', 'enst')
-# ht_b = ht_b.distinct()
-# ht_b.write("gs://genetics-gym/linkers/linker_missense_transcript.ht", overwrite=True)
-
+## Missense SNP + ENSG + ENST
+ht_b = ht_4.select(
+    gene_symbol = ht_4.vep.transcript_consequences.gene_symbol,
+    enst = ht_4.vep.transcript_consequences.transcript_id,
+    ensp = ht_4.vep.transcript_consequences.protein_id,
+    ensg = ht_4.vep.transcript_consequences.gene_id, 
+    mane_select = hl.is_defined(ht_4.vep.transcript_consequences.mane_select),
+    canonical = hl.is_defined(ht_4.vep.transcript_consequences.canonical)
+    )
+ht_b = ht_b.key_by('locus', 'alleles', 'enst')
+ht_b = ht_b.distinct()
+ht_b.write("gs://genetics-gym/linkers/linker_missense_transcript.ht", overwrite=True) 
 
