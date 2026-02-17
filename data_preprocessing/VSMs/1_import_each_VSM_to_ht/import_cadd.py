@@ -1,9 +1,9 @@
 import hail as hl
 hl.init(worker_memory="highmem", driver_memory='highmem') 
-from resources import CADD_PATH
-from resources.paths import WRITE_VSM_TABLES_PATH
+from resources.paths import MISSENSE_SCORE_RESOURCE_PATHS, FORMATTED_VSM_HT_PATHS
 
-ht = hl.import_table(CADD_PATH, 
+METHOD = 'CADD'
+ht = hl.import_table(MISSENSE_SCORE_RESOURCE_PATHS[METHOD], 
             filter = '##', delimiter = '\t', force_bgz =True)
 ht = ht.select(
     chrom = ht['#Chrom'], 
@@ -20,4 +20,4 @@ ht = ht.select(
 )
 ht = ht.key_by('locus', 'alleles')
 ht = ht.filter(hl.is_defined(ht.cadd_score))
-ht.write(f'{WRITE_VSM_TABLES_PATH}/cadd.ht')
+ht.write(FORMATTED_VSM_HT_PATHS[METHOD])    

@@ -8,3 +8,4 @@ def locus_alleles_to_chr_pos_ref_alt(ht):
     ht = ht.key_by()
     ht.drop('locus', 'alleles')
     return ht
+

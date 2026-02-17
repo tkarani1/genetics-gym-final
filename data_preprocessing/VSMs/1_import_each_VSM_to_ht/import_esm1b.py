@@ -1,11 +1,12 @@
 import hail as hl
 hl.init(worker_memory="highmem", driver_memory='highmem') 
-from resources import ESM1B_PATH
-from resources.paths import WRITE_VSM_TABLES_PATH
-from resources.functions import locus_alleles_to_chr_pos_ref_alt
+from resources.paths import MISSENSE_SCORE_RESOURCE_PATHS, FORMATTED_VSM_HT_PATHS
+
+METHOD = 'ESM1B'
+
 # # ESM1b
 esm1b_ht = hl.import_table(
-        ESM1B_PATH,
+        MISSENSE_SCORE_RESOURCE_PATHS[METHOD],
         types = {
             'aa_pos':hl.tint,
             'aa_ref':hl.tstr,
@@ -17,8 +18,6 @@ esm1b_ht = hl.import_table(
         missing='',
     )
 esm1b_ht = esm1b_ht.rename({'uniprot': 'uniprot_isoform'})
-esm1b_ht.write(f'{WRITE_VSM_TABLES_PATH}/esm1b_scores.ht')
-esm1b_ht = locus_alleles_to_chr_pos_ref_alt(esm1b_ht)
-esm1b_ht.export(f'{WRITE_VSM_TABLES_PATH}/esm1b_scores.tsv.bgz')
+esm1b_ht.write(FORMATTED_VSM_HT_PATHS[METHOD])    
 
 

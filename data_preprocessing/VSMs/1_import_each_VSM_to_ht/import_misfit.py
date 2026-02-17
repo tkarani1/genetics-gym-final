@@ -1,10 +1,13 @@
 import hail as hl
 hl.init(worker_memory="highmem", driver_memory='highmem') 
-from resources import MISFIT_PATH, MISFIT_MAPPING_PATH
-from resources.paths import WRITE_VSM_TABLES_PATH
+from resources.paths import MISSENSE_SCORE_RESOURCE_PATHS, WRITE_VSM_TABLES_PATH, FORMATTED_VSM_HT_PATHS
+
+METHOD = 'MISFIT'
+MISFIT_MAPPING_PATH = MISSENSE_SCORE_RESOURCE_PATHS['MISFIT_MAPPING']
+
 # # MisFit
 misfit_ht = hl.import_table(
-       MISFIT_PATH,
+       MISSENSE_SCORE_RESOURCE_PATHS[METHOD],
         source_file_field='filename',
         types = {
             'Uniprot_position':hl.tint,
@@ -29,4 +32,4 @@ misfit_ht = misfit_ht.annotate(
     ensp = mf_mapping[misfit_ht.uniprot_id].ProteinID, 
     gene_symbol = mf_mapping[misfit_ht.uniprot_id].Symbol
 )
-misfit_ht.write(f'{WRITE_VSM_TABLES_PATH}/misfit_scores.ht')
+misfit_ht.write(FORMATTED_VSM_HT_PATHS[METHOD])    

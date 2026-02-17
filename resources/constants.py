@@ -1,3 +1,5 @@
+## TODO: update naming conventions 
+
 ESM1B_SCORE_FIELD = "esm1b"
 """The ESM1B score field."""
 MISFIT_D_SCORE_FIELD = "MisFit_D"

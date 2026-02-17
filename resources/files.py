@@ -28,6 +28,7 @@ AM_CANONICAL_PATH = "gs://dm_alphamissense/AlphaMissense_hg38.tsv.gz"
 AF2_UNIPROT_ISOFORM_MAPPING_PATH = (
     "gs://genetics-gym-not-public/Emily/af2db_uniprot_final.ht"
 )
+ENST_TO_UNIPROT_FOLDER = "gs://genetics-gym/linkers/ensembl_tid_to_uniprot_11_2025/"
 
 ########################################################################################
 # Missense score resource paths
@@ -35,8 +36,14 @@ AF2_UNIPROT_ISOFORM_MAPPING_PATH = (
 
 EVERYTHING_RAW_HT_PATH = "gs://missense-scoring/mutation/everything_raw.ht"
 
-BASE_HT_PATH = "gs://gnomad-julia/genetics_gym/linkers/vsm_base_em_gene.ht"
-KEYED_HT_PATH = "gs://gnomad-tmp-4day/genetics_gym/linkers/vsm_base_em_gene_keyed.ht"
-PARTITIONS_HE_PATH = (
-    "gs://gnomad-julia/genetics_gym/linkers/vsm_base_em_gene_partitions.he"
-)
+# BASE_HT_PATH = "gs://gnomad-julia/genetics_gym/linkers/vsm_base_em_gene.ht"
+# KEYED_HT_PATH = "gs://gnomad-tmp-4day/genetics_gym/linkers/vsm_base_em_gene_keyed.ht"
+# PARTITIONS_HE_PATH = (
+#     "gs://gnomad-julia/genetics_gym/linkers/vsm_base_em_gene_partitions.he"
+# )
+
+LINKER_PATHS = {
+    "MISSENSE_ONLY_SNP": "gs://genetics-gym/linkers/linker_missense_only_snp.ht",
+    "MISSENSE_ENST_TRANSCRIPT": "gs://genetics-gym/linkers/linker_missense_enst_transcript.ht",
+    "MISSENSE_ENST_TRANSCRIPT_AA": "gs://genetics-gym/linkers/linker_missense_enst_transcript_aa.ht",
+}
