@@ -30,10 +30,7 @@ def convert_aa_three_to_one(ht):
     return ht
 
 ht = hl.read_table('gs://missense-scoring/mutation/everything_raw.ht')
-print(0)
 ht_2 = ht.explode(ht.vep.transcript_consequences)
-
-# # print(1)
 
 # # Missense
 ht_3 = ht_2.filter(ht_2.vep.transcript_consequences.most_severe_consequence == "missense_variant")
