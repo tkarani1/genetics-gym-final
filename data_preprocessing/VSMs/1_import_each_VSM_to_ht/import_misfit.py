@@ -3,33 +3,19 @@ hl.init(worker_memory="highmem", driver_memory='highmem')
 from resources.paths import MISSENSE_SCORE_RESOURCE_PATHS, WRITE_VSM_TABLES_PATH, FORMATTED_VSM_HT_PATHS
 
 METHOD = 'MISFIT'
-MISFIT_MAPPING_PATH = MISSENSE_SCORE_RESOURCE_PATHS['MISFIT_MAPPING']
 
 # # MisFit
-misfit_ht = hl.import_table(
-       MISSENSE_SCORE_RESOURCE_PATHS[METHOD],
-        source_file_field='filename',
-        types = {
-            'Uniprot_position':hl.tint,
-            'AA_alt':hl.tstr,
-            'MisFit_D':hl.tfloat,
-            'MisFit_S':hl.tfloat,
-        },
-        force=True,
-        missing='',
-    )
+misfit_ht = hl.import_table(MISSENSE_SCORE_RESOURCE_PATHS[METHOD], 
+                types = {'Chrom': hl.tstr, 'Pos': hl.tint, 'Ref': hl.tstr, 'Alt': hl.tstr, 
+                'MisFit_D': hl.tfloat, 'MisFit_S': hl.tfloat},
+                missing='', force=True)
 misfit_ht = misfit_ht.annotate(
-    uniprot_id = misfit_ht.filename.split('/')[-1].split('\.')[0],
+    locus = hl.locus('chr'+misfit_ht.Chrom, misfit_ht.Pos, reference_genome='GRCh38'),
 )
-misfit_ht = misfit_ht.rename({'Uniprot_position': 'aa_pos', 'AA_alt': 'aa_alt'})
-misfit_ht = misfit_ht.drop('filename')
+misfit_ht.describe()
+# misfit_ht = misfit_ht.rename({'Chrom': 'chrom', 'Pos': 'pos', 'Ref': 'ref', 'Alt': 'alt', 
+#                     'Symbol': 'gene_symbol', 'GeneID': 'ensg', 'TranscriptID': 'enst',
+#                     'UniprotID': 'uniprot_id', 'Ensembl_protein_position': 'ens_pos',
+#                     'Uniprot_position': 'uniprot_pos', 'AA_Ref': 'aa_ref', 'AA_alt': 'aa_alt'})
 
-mf_mapping = hl.import_table(MISFIT_MAPPING_PATH)
-mf_mapping = mf_mapping.key_by('UniprotID')
-misfit_ht = misfit_ht.annotate(
-    enst = mf_mapping[misfit_ht.uniprot_id].TranscriptID, 
-    ensg = mf_mapping[misfit_ht.uniprot_id].GeneID, 
-    ensp = mf_mapping[misfit_ht.uniprot_id].ProteinID, 
-    gene_symbol = mf_mapping[misfit_ht.uniprot_id].Symbol
-)
-misfit_ht.write(FORMATTED_VSM_HT_PATHS[METHOD])    
+# misfit_ht.write(FORMATTED_VSM_HT_PATHS[METHOD], overwrite=True)

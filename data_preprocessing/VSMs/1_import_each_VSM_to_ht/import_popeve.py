@@ -31,5 +31,5 @@ ht2 = ht.select(
     ESM_1v = ht['ESM-1v'], 
     NP = ht.filename.split('/')[-1][:-4]
     )
-ht2.write(f'{WRITE_VSM_TABLES_PATH}/popeve.ht')
+ht2.write(FORMATTED_VSM_HT_PATHS['POPEVE'])
 

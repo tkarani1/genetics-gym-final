@@ -2,7 +2,7 @@ import hail as hl
 hl.init(worker_memory="highmem", driver_memory='highmem')   
 from resources.paths import MISSENSE_SCORE_RESOURCE_PATHS, WRITE_VSM_TABLES_PATH, FORMATTED_VSM_HT_PATHS
 
-METHOD = 'PAI3D'
+METHOD = 'PRIMATEAI3D'
 
 ## PAI3D
 ht = hl.import_csv(MISSENSE_SCORE_RESOURCE_PATHS[METHOD], min_partitions=100)

@@ -1,20 +1,22 @@
 import hail as hl
 import json
-import os
+import os   ## TODO: update this to use the new paths
 hl.init(worker_memory="highmem", driver_memory='highmem') 
-from resources.paths import FORMATTED_VSM_HT_PATHS, WRITE_VSM_LINKER_TABLES_PATH, LINKER_PATHS
+from resources.paths import  FORMATTED_VSM_HT_PATHS, WRITE_VSM_LINKER_TABLES_BASE, LINKER_PATHS, VSM_TABLE_NAMES, LINKER_PATHS, VSM_COUNTS_BASE
+from resources.functions import write_raw_and_collected_counts
 
 linker = LINKER_PATHS['MISSENSE_ENST_TRANSCRIPT_AA']
 
 # Read and count raw data
-am1 = hl.read_table(FORMATTED_VSM_HT_PATHS['AM_ISOFORMS_PATH'])
+am1 = hl.read_table(FORMATTED_VSM_HT_PATHS['AM_ISOFORMS'])
 am1_raw_count = am1.count()
 am1 = am1.key_by('enst', 'aa_pos', 'aa_ref', 'aa_alt')
-am1 = am1.select(am1.AM)
+am1 = am1.select(am1.AM_iso)
 
-am2 = hl.read_table(FORMATTED_VSM_HT_PATHS['AM_CANONICAL_PATH'])
+am2 = hl.read_table(FORMATTED_VSM_HT_PATHS['AM_CANONICAL'])
 am2_raw_count = am2.count()
 am2 = am2.key_by('locus', 'alleles', 'enst')
+am2 = am2.select(am2.AM_canon) 
 
 
 linker_ht = hl.read_table(linker)
@@ -26,9 +28,9 @@ ht = ht.join(am2, how='right')
 ht = ht.checkpoint(f'{WRITE_VSM_LINKER_TABLES_PATH}/temp/vsm_am_temp.ht', overwrite=True)
 
 ht = ht.annotate(
-    AM = hl.coalesce(ht.AM_score, ht.AM) # joining the canonical one first
+    AM = hl.coalesce(ht.AM_canon, ht.AM_iso) # joining the canonical one first
 )
-ht.write(f'{WRITE_VSM_LINKER_TABLES_PATH}/linker_AM.ht')
+ht.write(VSM_LINKER_TABLES['AM'])
 
 am2_collected = am2.collect_by_key()
 am2_collected_count = am2_collected.count()

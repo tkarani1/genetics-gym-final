@@ -6,7 +6,8 @@ METHOD = 'MPC'
 # # MPC
 # # original: 
 ht = hl.read_table(MISSENSE_SCORE_RESOURCE_PATHS[METHOD])
-ht = ht.key_by('locus','alleles')
+ht = ht.rename({'transcript': 'enst'})
+ht = ht.key_by('locus','alleles', 'enst')
 ht.write(FORMATTED_VSM_HT_PATHS[METHOD])    
 
 

@@ -11,7 +11,7 @@ ht = ht.annotate(
     polyphen_score = ht.vep.transcript_consequences.polyphen_score, 
     enst = ht.vep.transcript_consequences.transcript_id, 
     ensg = ht.vep.transcript_consequences.gene_id, 
-    gene_symbol = ht.ranscript_consequences.gene_symbol)
+    gene_symbol = ht.vep.transcript_consequences.gene_symbol)
 ht = ht.select(ht.enst, ht.polyphen_score, ht.ensg, ht.gene_symbol)
 ht = ht.filter(hl.is_defined(ht.polyphen_score))
 ht.write(FORMATTED_VSM_HT_PATHS[METHOD])    
