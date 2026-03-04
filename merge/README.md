@@ -50,6 +50,21 @@ more boolean label columns:
 The label column name varies per table and corresponds to the evaluation
 method that assigned the label (e.g. `is_pos_clinvar`).
 
+### Filter tables
+
+Each filter table is a curated list of variants containing only the four
+genomic key columns:
+
+| chrom | pos | ref | alt |
+|-------|-----|-----|-----|
+| chr22 | 2001 | G  | A   |
+
+For each filter table a boolean column `filter_{stem}` is appended to the
+output, where `{stem}` is the filename without its extension (e.g.
+`ordered_variants_filter.parquet` produces column
+`filter_ordered_variants_filter`).  The column is `true` for rows whose
+variant key appears in the filter table and `false` otherwise.
+
 ### Supported formats
 
 | Format     | Extension(s)          | Notes |
@@ -82,6 +97,7 @@ python create_vsm_table.py [OPTIONS]
 |----------|---------|-------------|
 | `--join_type` | `inner` | `inner` or `outer` join across all tables |
 | `--percentile_order` | `post` | `pre` or `post` -- when to compute percentile ranks (see below) |
+| `--filter_tables` | *(none)* | Comma-separated URIs of filter tables -- each adds a boolean column (see below) |
 
 ## How merging works
 
@@ -123,6 +139,25 @@ calculated **before** or **after** the join:
 | Post-merge | `post` | All tables are joined first, then percentiles are computed on the merged result. Percentile values reflect only the rows that survived the join. |
 | Outer join | either | Because no rows are dropped, pre and post produce identical results. The tool always computes post-merge in this case. |
 
+## Filter columns
+
+When `--filter_tables` is provided, the tool left-joins each filter table
+onto the merged result (after percentile computation).  Because this is a
+left join, no rows are added or removed -- only new boolean columns are
+appended.
+
+Filter tables can also be applied standalone via `apply_filters.py`:
+
+```
+python apply_filters.py [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `--reference` | URI of the reference parquet/tsv file to annotate |
+| `--filter_tables` | Comma-separated URIs of filter tables |
+| `--output` | Destination URI for the annotated Parquet file |
+
 ## Examples
 
 **Inner join, percentiles after merge (default):**
@@ -155,6 +190,25 @@ python create_vsm_table.py \
   --join_type outer
 ```
 
+**With filter tables:**
+
+```bash
+python create_vsm_table.py \
+  --prediction_tables "gs://my-bucket/esm.parquet,gs://my-bucket/am.parquet" \
+  --evaluation_tables "gs://my-bucket/clinvar.parquet" \
+  --filter_tables "gs://my-bucket/ordered_variants_filter.parquet,gs://my-bucket/chr22_filter.parquet" \
+  --output "./merged_with_filters.parquet"
+```
+
+**Standalone filter annotation (no merge):**
+
+```bash
+python apply_filters.py \
+  --reference "./merged.parquet" \
+  --filter_tables "./ordered_variants_filter.parquet,./chr22_filter.parquet" \
+  --output "./merged_filtered.parquet"
+```
+
 **Mixed formats (TSV + Parquet):**
 
 TSV inputs are automatically converted to cached Parquet files before
@@ -172,6 +226,7 @@ python create_vsm_table.py \
 ```
 merge/
 ├── create_vsm_table.py   # CLI entry point and pipeline orchestration
+├── apply_filters.py       # Boolean filter column annotation (also standalone CLI)
 ├── merge.py               # Multi-table join on genomic keys
 ├── percentile.py          # Null-safe percentile rank calculation
 ├── table_io.py            # Format detection, reading, writing (local + GCS)

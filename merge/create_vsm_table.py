@@ -17,6 +17,7 @@ import polars as pl
 from table_io import ensure_parquet, write_parquet
 from merge import merge_tables, JOIN_KEYS
 from percentile import add_percentile_columns
+from apply_filters import apply_filters
 
 
 def _parse_uri_list(raw: str) -> list[str]:
@@ -34,6 +35,8 @@ def run_pipeline(
     output_uri: str,
     join_type: str = "inner",
     percentile_order: str = "post",
+    filter_uris: list[str] | None = None,
+    keep_raw_scores: bool = False,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -98,6 +101,19 @@ def run_pipeline(
         print("  Calculating percentiles AFTER merge ...", file=sys.stderr)
         merged = add_percentile_columns(merged, all_score_cols)
 
+    # --- Drop raw score columns (if requested) -------------------------------
+    if not keep_raw_scores and all_score_cols:
+        print("  Dropping raw score columns ...", file=sys.stderr)
+        merged = merged.drop(all_score_cols)
+
+    # --- Apply filter columns (if requested) --------------------------------
+    if filter_uris:
+        print(
+            f"  Applying {len(filter_uris)} filter table(s) ...",
+            file=sys.stderr,
+        )
+        merged = apply_filters(merged, filter_uris, cache_dir)
+
     # --- Write output -----------------------------------------------------
     print(f"  Writing output to {output_uri} ...", file=sys.stderr)
     write_parquet(merged, output_uri)
@@ -142,6 +158,25 @@ def main() -> None:
             "For outer joins the order is irrelevant; post is always used."
         ),
     )
+    parser.add_argument(
+        "--keep_raw_scores",
+        action="store_true",
+        default=False,
+        help=(
+            "Keep the original score columns alongside their percentile "
+            "counterparts. By default, raw score columns are dropped and "
+            "only the percentile columns are retained."
+        ),
+    )
+    parser.add_argument(
+        "--filter_tables",
+        default=None,
+        help=(
+            "Comma-separated URIs of filter tables. Each adds a boolean "
+            "column indicating whether the variant key is present in that "
+            "filter table."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -151,6 +186,8 @@ def main() -> None:
         output_uri=args.output,
         join_type=args.join_type,
         percentile_order=args.percentile_order,
+        filter_uris=_parse_uri_list(args.filter_tables) if args.filter_tables else None,
+        keep_raw_scores=args.keep_raw_scores,
     )
 
 
