@@ -53,7 +53,7 @@ ht_4 = ht_3.filter(ht_3.vep.transcript_consequences.transcript_id.startswith('EN
 #     )
 # ht_b = ht_b.key_by('locus', 'alleles', 'enst')
 # ht_b = ht_b.distinct()
-# ht_b.write("gs://genetics-gym/linkers/linker_missense_enst_transcript.ht", overwrite=True) 
+# ht_b.write("gs://genetics-gym/linkers/linker_missense_enst_transcript.ht", overwrite=True)
 
 ## Missense SNP + ENSG + ENST + AA position
 pattern = r".*:p.(\D+)(\d+)(\D+)"
@@ -82,7 +82,7 @@ ht_5 = ht_4.annotate(aa_ref = array_match[0], aa_pos = hl.int(array_match[1]), a
 # enst_to_uniprot_ht = hl.read_table(ENST_TO_UNIPROT_HT)
 # enst_to_uniprot_ht = enst_to_uniprot_ht.rename({'ensembl_transcript_id': 'enst'})
 # # enst_to_uniprot_ht = enst_to_uniprot_ht.key_by('enst') # should already be keyed by enst
-# ht_d = ht_d.join(enst_to_uniprot_ht, how='left')
+# ht_d = ht_d.join(enst_to_uniprot_ht, how='left')  #TODO: CHANGE TO OUTER???
 # ht_d.write("gs://genetics-gym/linkers/linker_missense_enst_transcript_aa_uniprot.ht", overwrite=True)
 # linker_enst_set = ht_d.aggregate(hl.agg.collect_as_set(ht_d.enst))
 # mapping_enst_set = enst_to_uniprot_ht.aggregate(hl.agg.collect_as_set(enst_to_uniprot_ht.enst))
@@ -93,30 +93,31 @@ ht_5 = ht_4.annotate(aa_ref = array_match[0], aa_pos = hl.int(array_match[1]), a
 # print(ht_d_f.count())
 
 ## Missense SNP + ENSG + ENST + AA position  + Refseq transcript
-ht_4_v2 = ht_3.filter(ht_3.vep.transcript_consequences.transcript_id.startswith('NM') )
-pattern = r".*:p.(\D+)(\d+)(\D+)"
-array_match = ht_4_v2.vep.transcript_consequences.hgvsp.first_match_in(pattern)
-ht_5_v2 = ht_4_v2.annotate(aa_ref = array_match[0], aa_pos = hl.int(array_match[1]), aa_alt = array_match[2])
+# ht_4_v2 = ht_3.filter(ht_3.vep.transcript_consequences.transcript_id.startswith('NM') )
+# pattern = r".*:p.(\D+)(\d+)(\D+)"
+# array_match = ht_4_v2.vep.transcript_consequences.hgvsp.first_match_in(pattern)
+# ht_5_v2 = ht_4_v2.annotate(aa_ref = array_match[0], aa_pos = hl.int(array_match[1]), aa_alt = array_match[2])
 
-ht_e = ht_5_v2.select(
-    aa_pos = ht_5_v2.aa_pos,
-    aa_ref = ht_5_v2.aa_ref,
-    aa_alt = ht_5_v2.aa_alt,
-    gene_symbol = ht_5_v2.vep.transcript_consequences.gene_symbol,
-    NM = ht_5_v2.vep.transcript_consequences.transcript_id,
-    NP = ht_5_v2.vep.transcript_consequences.protein_id,
-    ncbi = ht_5_v2.vep.transcript_consequences.gene_id, 
-    mane_select = hl.is_defined(ht_5_v2.vep.transcript_consequences.mane_select),
-    canonical = hl.is_defined(ht_5_v2.vep.transcript_consequences.canonical),
-    mane_ENST = ht_5_v2.vep.transcript_consequences.mane_select,
-)
-ht_e = convert_aa_three_to_one(ht_e)    
-ht_e = ht_e.key_by('locus', 'alleles', 'NM')
-ht_e = ht_e.distinct()
-ht_e.write("gs://genetics-gym/linkers/linker_missense_refseq_transcript_aa.ht", overwrite=True)
-ht_ef = ht_e.filter(~hl.is_defined(ht_e.gene_symbol))
-print(ht_ef.count())
+# ht_e = ht_5_v2.select(
+#     aa_pos = ht_5_v2.aa_pos,
+#     aa_ref = ht_5_v2.aa_ref,
+#     aa_alt = ht_5_v2.aa_alt,
+#     gene_symbol = ht_5_v2.vep.transcript_consequences.gene_symbol,
+#     NM = ht_5_v2.vep.transcript_consequences.transcript_id,
+#     NP = ht_5_v2.vep.transcript_consequences.protein_id,
+#     ncbi = ht_5_v2.vep.transcript_consequences.gene_id, 
+#     mane_select = hl.is_defined(ht_5_v2.vep.transcript_consequences.mane_select),
+#     canonical = hl.is_defined(ht_5_v2.vep.transcript_consequences.canonical),
+#     mane_ENST = ht_5_v2.vep.transcript_consequences.mane_select,
+# )
+# ht_e = convert_aa_three_to_one(ht_e)    
+# ht_e = ht_e.key_by('locus', 'alleles', 'NM')
+# ht_e = ht_e.distinct()
+# ht_e.write("gs://genetics-gym/linkers/linker_missense_refseq_transcript_aa.ht", overwrite=True)
+# ht_ef = ht_e.filter(~hl.is_defined(ht_e.gene_symbol))
+# print(ht_ef.count())
 
-ht_ens = hl.read_table("gs://genetics-gym/linkers/linker_missense_enst_transcript_aa.ht")
-ht_ens_f = ht_ens.filter(~hl.is_defined(ht_ens.gene_symbol))
-print(ht_ens_f.count())
+# ht_ens = hl.read_table("gs://genetics-gym/linkers/linker_missense_enst_transcript_aa.ht")
+# ht_ens_f = ht_ens.filter(~hl.is_defined(ht_ens.gene_symbol))
+# print(ht_ens_f.count())
+

@@ -1,6 +1,6 @@
 import hail as hl
 hl.init(worker_memory="highmem", driver_memory='highmem') 
-from resources.paths import MISSENSE_SCORE_RESOURCE_PATHS, CPT_UNIPROT_ENTRY_TO_ID_MAPPING_PATH, FORMATTED_VSM_HT_PATHS
+from resources.paths import MISSENSE_SCORE_RESOURCE_PATHS, FORMATTED_VSM_HT_PATHS
 
 METHOD = 'CPT'
 
@@ -13,8 +13,7 @@ cpt_ht = cpt_ht.annotate(
     cpt_score = hl.float(cpt_ht.CPT1_score), 
     uniprot_entry = cpt_ht.filename.split('/')[-1].split('\.')[0]
 )
-cpt_ht = cpt_ht.key_by('uniprot_entry')
-mapping_ht = hl.import_table(CPT_UNIPROT_ENTRY_TO_ID_MAPPING_PATH, 
+mapping_ht = hl.import_table(MISSENSE_SCORE_RESOURCE_PATHS['CPT_UNIPROT_ENTRY_TO_ID_MAPPING_PATH'], 
                             delimiter='\t')
 mapping_ht = mapping_ht.key_by('entry_name')
 cpt_ht = cpt_ht.join(mapping_ht, how='left')
