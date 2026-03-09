@@ -10,6 +10,9 @@ misfit_ht = hl.import_table("gs://missense-scoring/misfit_2025/MisFit_V1.5_SNV.t
         delimiter='\t', force=True, missing = '',
         types={'Chrom': hl.tstr, 'Pos': hl.tint32, 'Ref': hl.tstr, 'Alt': hl.tstr, 'MisFit_D':hl.tfloat64, 'MisFit_S':hl.tfloat64, 'Transcript': hl.tstr})
 
+allowed_chr = [str(i) for i in range(1, 23)] + ['X', 'Y']
+misfit_ht = misfit_ht.filter(hl.literal(allowed_chr).contains(misfit_ht.Chrom))
+
 misfit_ht = misfit_ht.annotate(
     locus = hl.locus("chr" + misfit_ht.Chrom, misfit_ht.Pos, reference_genome='GRCh38'), 
     alleles = [misfit_ht.Ref, misfit_ht.Alt])

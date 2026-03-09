@@ -44,7 +44,7 @@ LINKER_PATHS = {
     "MISSENSE_ENST_TRANSCRIPT": "gs://genetics-gym/linkers/linker_missense_enst_transcript.ht",
     "MISSENSE_ENST_TRANSCRIPT_AA": "gs://genetics-gym/linkers/linker_missense_enst_transcript_aa.ht",
     "MISSENSE_ENST_TRANSCRIPT_AA_UNIPROT": "gs://genetics-gym/linkers/linker_missense_enst_transcript_aa_uniprot.ht",
-    "MISSENSE_REFSEQ_TRNSCRIPT_AA": "gs://genetics-gym/linkers/linker_missense_refseq_transcript_aa.ht",
+    "MISSENSE_REFSEQ_TRANSCRIPT_AA": "gs://genetics-gym/linkers/linker_missense_refseq_transcript_aa.ht",
 }
 
 ########################################################################################
@@ -89,24 +89,24 @@ VSM_TABLE_NAMES = {
     "RASP": "rasp",
     "REVEL": "revel"
 }
-VSM_COUNTS_BASE = "gs://genetics-gym/vsm-tables/counts/"
+VSM_COUNTS_BASE = "gs://genetics-gym/vsm-tables/counts"
 
 # VSM_COUNTS_FILE = f'{WRITE_VSM_LINKER_TABLES_PATH}/VSM_counts.json'
 
-WRITE_SNP_COALESCED_VSM_TABLES_PATH = "gs://genetics-gym/vsm-tables/coalesced/coalesced_snp_"
-
-COALESCED_VSM_TABLES = {
-    "AM": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}AM.ht",
-    "CADD": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}cadd.ht",
-    "CPT": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}cpt.ht",
-    "ESM1B": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}esm1b.ht",
-    "GPN_MSA": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}gpn_msa.ht",
-    "MISFIT": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}misfit.ht",
-    "MPC": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}mpc.ht",
-    "PRIMATEAI3D": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}PAI3D.ht",
-    "POPEVE": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}popeve.ht",
-    "POLYPHEN": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}polyphen.ht",
-    "PROTEINMPNN": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}protein_mpnn.ht",
-    "RASP": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}rasp.ht",
-    "REVEL": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}revel.ht",
-}
+WRITE_SNP_COALESCED_VSM_BASE = "gs://genetics-gym/vsm-tables/coalesced/coalesced_snp_"
+TEMP_PATH = "gs://trisha-tmp/"
+# COALESCED_VSM_TABLES = {
+#     "AM": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}AM.ht",
+#     "CADD": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}cadd.ht",
+#     "CPT": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}cpt.ht",
+#     "ESM1B": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}esm1b.ht",
+#     "GPN_MSA": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}gpn_msa.ht",
+#     "MISFIT": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}misfit.ht",
+#     "MPC": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}mpc.ht",
+#     "PRIMATEAI3D": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}PAI3D.ht",
+#     "POPEVE": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}popeve.ht",
+#     "POLYPHEN": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}polyphen.ht",
+#     "PROTEINMPNN": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}protein_mpnn.ht",
+#     "RASP": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}rasp.ht",
+#     "REVEL": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}revel.ht",
+# }

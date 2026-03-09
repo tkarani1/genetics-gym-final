@@ -12,8 +12,12 @@ def locus_alleles_to_chr_pos_ref_alt(ht):
     ht.drop('locus', 'alleles')
     return ht
 
-def write_raw_and_collected_counts(ht, counts_file_path, method_name, keyed_by):
+def write_raw_and_collected_counts(ht, counts_file_path, method_name, keyed_by, filter_cols):
+    if filter_cols:
+        for c in filter_cols:
+            ht = ht.filter(hl.is_defined(ht[c]))
     raw_count = ht.count()
+    print(ht.describe())
     ht_collected = ht.collect_by_key()
     collected_count = ht_collected.count()
 
