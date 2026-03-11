@@ -1,0 +1,2718 @@
+
+
+
+
+2
+----------------------------------------
+Global fields:
+    'grange': array<int32> 
+    'vep_help': str 
+    'vep_config': str 
+    'version': str 
+----------------------------------------
+Row fields:
+    'idx': int32 
+    'locus': locus<GRCh38> 
+    'alleles': array<str> 
+    'a_index': int32 
+    'was_split': bool 
+    'old_locus': locus<GRCh38> 
+    'old_alleles': array<str> 
+    'context': str 
+    'coverage_mean': float64 
+    'coverage_10': float32 
+    'coverage_20': float32 
+    'methyl_mean': str 
+    'vep': struct {
+        allele_string: str, 
+        colocated_variants: array<struct {
+            allele_string: str, 
+            clin_sig: array<str>, 
+            clin_sig_allele: str, 
+            end: int32, 
+            id: str, 
+            phenotype_or_disease: int32, 
+            pubmed: array<int32>, 
+            somatic: int32, 
+            start: int32, 
+            strand: int32
+        }>, 
+        context: str, 
+        end: int32, 
+        id: str, 
+        input: str, 
+        intergenic_consequences: array<struct {
+            allele_num: int32, 
+            consequence_terms: array<str>, 
+            impact: str, 
+            minimised: int32, 
+            variant_allele: str
+        }>, 
+        most_severe_consequence: str, 
+        motif_feature_consequences: array<struct {
+            allele_num: int32, 
+            consequence_terms: array<str>, 
+            high_inf_pos: str, 
+            impact: str, 
+            minimised: int32, 
+            motif_feature_id: str, 
+            motif_name: str, 
+            motif_pos: int32, 
+            motif_score_change: float64, 
+            transcription_factors: array<str>, 
+            strand: int32, 
+            variant_allele: str
+        }>, 
+        regulatory_feature_consequences: array<struct {
+            allele_num: int32, 
+            biotype: str, 
+            consequence_terms: array<str>, 
+            impact: str, 
+            minimised: int32, 
+            regulatory_feature_id: str, 
+            variant_allele: str
+        }>, 
+        seq_region_name: str, 
+        start: int32, 
+        strand: int32, 
+        transcript_consequences: struct {
+            allele_num: int32, 
+            amino_acids: str, 
+            appris: str, 
+            biotype: str, 
+            canonical: int32, 
+            ccds: str, 
+            cdna_start: int32, 
+            cdna_end: int32, 
+            cds_end: int32, 
+            cds_start: int32, 
+            codons: str, 
+            consequence_terms: array<str>, 
+            distance: int32, 
+            domains: array<struct {
+                db: str, 
+                name: str
+            }>, 
+            exon: str, 
+            flags: str, 
+            gene_id: str, 
+            gene_pheno: int32, 
+            gene_symbol: str, 
+            gene_symbol_source: str, 
+            hgnc_id: str, 
+            hgvsc: str, 
+            hgvsp: str, 
+            hgvs_offset: int32, 
+            impact: str, 
+            intron: str, 
+            lof: str, 
+            lof_flags: str, 
+            lof_filter: str, 
+            lof_info: str, 
+            mane_select: str, 
+            mane_plus_clinical: str, 
+            minimised: int32, 
+            mirna: array<str>, 
+            polyphen_prediction: str, 
+            polyphen_score: float64, 
+            protein_end: int32, 
+            protein_start: int32, 
+            protein_id: str, 
+            sift_prediction: str, 
+            sift_score: float64, 
+            source: str, 
+            strand: int32, 
+            swissprot: str, 
+            transcript_id: str, 
+            trembl: str, 
+            tsl: int32, 
+            uniparc: str, 
+            uniprot_isoform: array<str>, 
+            variant_allele: str, 
+            most_severe_consequence: str
+        }, 
+        variant_class: str, 
+        worst_consequence_term: str, 
+        worst_csq_by_gene: array<struct {
+            allele_num: int32, 
+            amino_acids: str, 
+            appris: str, 
+            biotype: str, 
+            canonical: int32, 
+            ccds: str, 
+            cdna_start: int32, 
+            cdna_end: int32, 
+            cds_end: int32, 
+            cds_start: int32, 
+            codons: str, 
+            consequence_terms: array<str>, 
+            distance: int32, 
+            domains: array<struct {
+                db: str, 
+                name: str
+            }>, 
+            exon: str, 
+            flags: str, 
+            gene_id: str, 
+            gene_pheno: int32, 
+            gene_symbol: str, 
+            gene_symbol_source: str, 
+            hgnc_id: str, 
+            hgvsc: str, 
+            hgvsp: str, 
+            hgvs_offset: int32, 
+            impact: str, 
+            intron: str, 
+            lof: str, 
+            lof_flags: str, 
+            lof_filter: str, 
+            lof_info: str, 
+            mane_select: str, 
+            mane_plus_clinical: str, 
+            minimised: int32, 
+            mirna: array<str>, 
+            polyphen_prediction: str, 
+            polyphen_score: float64, 
+            protein_end: int32, 
+            protein_start: int32, 
+            protein_id: str, 
+            sift_prediction: str, 
+            sift_score: float64, 
+            source: str, 
+            strand: int32, 
+            swissprot: str, 
+            transcript_id: str, 
+            trembl: str, 
+            tsl: int32, 
+            uniparc: str, 
+            uniprot_isoform: array<str>, 
+            variant_allele: str, 
+            most_severe_consequence: str, 
+            csq_score: float64
+        }>, 
+        worst_csq_for_variant: struct {
+            allele_num: int32, 
+            amino_acids: str, 
+            appris: str, 
+            biotype: str, 
+            canonical: int32, 
+            ccds: str, 
+            cdna_start: int32, 
+            cdna_end: int32, 
+            cds_end: int32, 
+            cds_start: int32, 
+            codons: str, 
+            consequence_terms: array<str>, 
+            distance: int32, 
+            domains: array<struct {
+                db: str, 
+                name: str
+            }>, 
+            exon: str, 
+            flags: str, 
+            gene_id: str, 
+            gene_pheno: int32, 
+            gene_symbol: str, 
+            gene_symbol_source: str, 
+            hgnc_id: str, 
+            hgvsc: str, 
+            hgvsp: str, 
+            hgvs_offset: int32, 
+            impact: str, 
+            intron: str, 
+            lof: str, 
+            lof_flags: str, 
+            lof_filter: str, 
+            lof_info: str, 
+            mane_select: str, 
+            mane_plus_clinical: str, 
+            minimised: int32, 
+            mirna: array<str>, 
+            polyphen_prediction: str, 
+            polyphen_score: float64, 
+            protein_end: int32, 
+            protein_start: int32, 
+            protein_id: str, 
+            sift_prediction: str, 
+            sift_score: float64, 
+            source: str, 
+            strand: int32, 
+            swissprot: str, 
+            transcript_id: str, 
+            trembl: str, 
+            tsl: int32, 
+            uniparc: str, 
+            uniprot_isoform: array<str>, 
+            variant_allele: str, 
+            most_severe_consequence: str, 
+            csq_score: float64
+        }, 
+        worst_csq_by_gene_canonical: array<struct {
+            allele_num: int32, 
+            amino_acids: str, 
+            appris: str, 
+            biotype: str, 
+            canonical: int32, 
+            ccds: str, 
+            cdna_start: int32, 
+            cdna_end: int32, 
+            cds_end: int32, 
+            cds_start: int32, 
+            codons: str, 
+            consequence_terms: array<str>, 
+            distance: int32, 
+            domains: array<struct {
+                db: str, 
+                name: str
+            }>, 
+            exon: str, 
+            flags: str, 
+            gene_id: str, 
+            gene_pheno: int32, 
+            gene_symbol: str, 
+            gene_symbol_source: str, 
+            hgnc_id: str, 
+            hgvsc: str, 
+            hgvsp: str, 
+            hgvs_offset: int32, 
+            impact: str, 
+            intron: str, 
+            lof: str, 
+            lof_flags: str, 
+            lof_filter: str, 
+            lof_info: str, 
+            mane_select: str, 
+            mane_plus_clinical: str, 
+            minimised: int32, 
+            mirna: array<str>, 
+            polyphen_prediction: str, 
+            polyphen_score: float64, 
+            protein_end: int32, 
+            protein_start: int32, 
+            protein_id: str, 
+            sift_prediction: str, 
+            sift_score: float64, 
+            source: str, 
+            strand: int32, 
+            swissprot: str, 
+            transcript_id: str, 
+            trembl: str, 
+            tsl: int32, 
+            uniparc: str, 
+            uniprot_isoform: array<str>, 
+            variant_allele: str, 
+            most_severe_consequence: str, 
+            csq_score: float64
+        }>, 
+        worst_csq_for_variant_canonical: struct {
+            allele_num: int32, 
+            amino_acids: str, 
+            appris: str, 
+            biotype: str, 
+            canonical: int32, 
+            ccds: str, 
+            cdna_start: int32, 
+            cdna_end: int32, 
+            cds_end: int32, 
+            cds_start: int32, 
+            codons: str, 
+            consequence_terms: array<str>, 
+            distance: int32, 
+            domains: array<struct {
+                db: str, 
+                name: str
+            }>, 
+            exon: str, 
+            flags: str, 
+            gene_id: str, 
+            gene_pheno: int32, 
+            gene_symbol: str, 
+            gene_symbol_source: str, 
+            hgnc_id: str, 
+            hgvsc: str, 
+            hgvsp: str, 
+            hgvs_offset: int32, 
+            impact: str, 
+            intron: str, 
+            lof: str, 
+            lof_flags: str, 
+            lof_filter: str, 
+            lof_info: str, 
+            mane_select: str, 
+            mane_plus_clinical: str, 
+            minimised: int32, 
+            mirna: array<str>, 
+            polyphen_prediction: str, 
+            polyphen_score: float64, 
+            protein_end: int32, 
+            protein_start: int32, 
+            protein_id: str, 
+            sift_prediction: str, 
+            sift_score: float64, 
+            source: str, 
+            strand: int32, 
+            swissprot: str, 
+            transcript_id: str, 
+            trembl: str, 
+            tsl: int32, 
+            uniparc: str, 
+            uniprot_isoform: array<str>, 
+            variant_allele: str, 
+            most_severe_consequence: str, 
+            csq_score: float64
+        }
+    } 
+    'vep_proc_id': struct {
+        part_idx: int32, 
+        block_idx: int32
+    } 
+    'coverage': int32 
+    'meth_levels': int32 
+    'ref': str 
+    'alt': str 
+    'transition': bool 
+    'cpg': bool 
+    'mutation_type': str 
+    'mutation_type_model': str 
+    'methylation_level': int32 
+    'was_flipped': bool 
+    'mu_snp': float64 
+    'aa_ref': str 
+    'aa_pos': int32 
+    'aa_alt': str 
+    'uniprot_isoform': str 
+----------------------------------------
+Key: ['locus', 'alleles']
+----------------------------------------
+
+
++-------+---------------+------------+---------+-----------+---------------+
+|   idx | locus         | alleles    | a_index | was_split | old_locus     |
++-------+---------------+------------+---------+-----------+---------------+
+| int32 | locus<GRCh38> | array<str> |   int32 |      bool | locus<GRCh38> |
++-------+---------------+------------+---------+-----------+---------------+
+|  6556 | chr1:65568    | ["A","C"]  |       1 |      True | chr1:65568    |
+|  6556 | chr1:65568    | ["A","G"]  |       2 |      True | chr1:65568    |
+|  6556 | chr1:65569    | ["A","C"]  |       1 |      True | chr1:65569    |
+|  6556 | chr1:65569    | ["A","G"]  |       2 |      True | chr1:65569    |
+|  6556 | chr1:65569    | ["A","T"]  |       3 |      True | chr1:65569    |
+|  6556 | chr1:65570    | ["G","C"]  |       2 |      True | chr1:65570    |
+|  6556 | chr1:65570    | ["G","T"]  |       3 |      True | chr1:65570    |
+|  6557 | chr1:65571    | ["A","C"]  |       1 |      True | chr1:65571    |
+|  6557 | chr1:65571    | ["A","G"]  |       2 |      True | chr1:65571    |
+|  6557 | chr1:65572    | ["A","C"]  |       1 |      True | chr1:65572    |
++-------+---------------+------------+---------+-----------+---------------+
+
++-------------------+---------+---------------+-------------+-------------+
+| old_alleles       | context | coverage_mean | coverage_10 | coverage_20 |
++-------------------+---------+---------------+-------------+-------------+
+| array<str>        | str     |       float64 |     float32 |     float32 |
++-------------------+---------+---------------+-------------+-------------+
+| ["A","C","G","T"] | "GAA"   |      3.70e+00 |    1.32e-02 |    1.34e-03 |
+| ["A","C","G","T"] | "GAA"   |      3.70e+00 |    1.32e-02 |    1.34e-03 |
+| ["A","C","G","T"] | "AAG"   |      3.72e+00 |    1.35e-02 |    1.38e-03 |
+| ["A","C","G","T"] | "AAG"   |      3.72e+00 |    1.35e-02 |    1.38e-03 |
+| ["A","C","G","T"] | "AAG"   |      3.72e+00 |    1.35e-02 |    1.38e-03 |
+| ["G","A","C","T"] | "TCT"   |      3.73e+00 |    1.38e-02 |    1.45e-03 |
+| ["G","A","C","T"] | "TCT"   |      3.73e+00 |    1.38e-02 |    1.45e-03 |
+| ["A","C","G","T"] | "GAA"   |      3.75e+00 |    1.43e-02 |    1.52e-03 |
+| ["A","C","G","T"] | "GAA"   |      3.75e+00 |    1.43e-02 |    1.52e-03 |
+| ["A","C","G","T"] | "AAG"   |      3.76e+00 |    1.46e-02 |    1.53e-03 |
++-------------------+---------+---------------+-------------+-------------+
+
++-------------+-------------------+
+| methyl_mean | vep.allele_string |
++-------------+-------------------+
+| str         | str               |
++-------------+-------------------+
+| NA          | "A/C"             |
+| NA          | "A/G"             |
+| NA          | "A/C"             |
+| NA          | "A/G"             |
+| NA          | "A/T"             |
+| NA          | "G/C"             |
+| NA          | "G/T"             |
+| NA          | "A/C"             |
+| NA          | "A/G"             |
+| NA          | "A/C"             |
++-------------+-------------------+
+
++------------------------------------------------------------------------------+
+| vep.colocated_variants                                                       |
++------------------------------------------------------------------------------+
+| array<struct{allele_string: str, clin_sig: array<str>, clin_sig_allele: s... |
++------------------------------------------------------------------------------+
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
++------------------------------------------------------------------------------+
+
++-------------+---------+--------+---------------------------+
+| vep.context | vep.end | vep.id | vep.input                 |
++-------------+---------+--------+---------------------------+
+| str         |   int32 | str    | str                       |
++-------------+---------+--------+---------------------------+
+| NA          |   65568 | "."    | "chr1	65568	.	A	C	.	.	GT" |
+| NA          |   65568 | "."    | "chr1	65568	.	A	G	.	.	GT" |
+| NA          |   65569 | "."    | "chr1	65569	.	A	C	.	.	GT" |
+| NA          |   65569 | "."    | "chr1	65569	.	A	G	.	.	GT" |
+| NA          |   65569 | "."    | "chr1	65569	.	A	T	.	.	GT" |
+| NA          |   65570 | "."    | "chr1	65570	.	G	C	.	.	GT" |
+| NA          |   65570 | "."    | "chr1	65570	.	G	T	.	.	GT" |
+| NA          |   65571 | "."    | "chr1	65571	.	A	C	.	.	GT" |
+| NA          |   65571 | "."    | "chr1	65571	.	A	G	.	.	GT" |
+| NA          |   65572 | "."    | "chr1	65572	.	A	C	.	.	GT" |
++-------------+---------+--------+---------------------------+
+
++------------------------------------------------------------------------------+
+| vep.intergenic_consequences                                                  |
++------------------------------------------------------------------------------+
+| array<struct{allele_num: int32, consequence_terms: array<str>, impact: st... |
++------------------------------------------------------------------------------+
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
++------------------------------------------------------------------------------+
+
++-----------------------------+
+| vep.most_severe_consequence |
++-----------------------------+
+| str                         |
++-----------------------------+
+| "missense_variant"          |
+| "missense_variant"          |
+| "missense_variant"          |
+| "missense_variant"          |
+| "missense_variant"          |
+| "missense_variant"          |
+| "missense_variant"          |
+| "missense_variant"          |
+| "missense_variant"          |
+| "missense_variant"          |
++-----------------------------+
+
++------------------------------------------------------------------------------+
+| vep.motif_feature_consequences                                               |
++------------------------------------------------------------------------------+
+| array<struct{allele_num: int32, consequence_terms: array<str>, high_inf_p... |
++------------------------------------------------------------------------------+
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
++------------------------------------------------------------------------------+
+
++------------------------------------------------------------------------------+
+| vep.regulatory_feature_consequences                                          |
++------------------------------------------------------------------------------+
+| array<struct{allele_num: int32, biotype: str, consequence_terms: array<st... |
++------------------------------------------------------------------------------+
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
+| NA                                                                           |
++------------------------------------------------------------------------------+
+
++---------------------+-----------+------------+
+| vep.seq_region_name | vep.start | vep.strand |
++---------------------+-----------+------------+
+| str                 |     int32 |      int32 |
++---------------------+-----------+------------+
+| "chr1"              |     65568 |          1 |
+| "chr1"              |     65568 |          1 |
+| "chr1"              |     65569 |          1 |
+| "chr1"              |     65569 |          1 |
+| "chr1"              |     65569 |          1 |
+| "chr1"              |     65570 |          1 |
+| "chr1"              |     65570 |          1 |
+| "chr1"              |     65571 |          1 |
+| "chr1"              |     65571 |          1 |
+| "chr1"              |     65572 |          1 |
++---------------------+-----------+------------+
+
++----------------------------------------+
+| vep.transcript_consequences.allele_num |
++----------------------------------------+
+|                                  int32 |
++----------------------------------------+
+|                                      1 |
+|                                      1 |
+|                                      1 |
+|                                      1 |
+|                                      1 |
+|                                      1 |
+|                                      1 |
+|                                      1 |
+|                                      1 |
+|                                      1 |
++----------------------------------------+
+
++-----------------------------------------+------------------------------------+
+| vep.transcript_consequences.amino_acids | vep.transcript_consequences.appris |
++-----------------------------------------+------------------------------------+
+| str                                     | str                                |
++-----------------------------------------+------------------------------------+
+| "K/Q"                                   | "P1"                               |
+| "K/E"                                   | "P1"                               |
+| "K/T"                                   | "P1"                               |
+| "K/R"                                   | "P1"                               |
+| "K/M"                                   | "P1"                               |
+| "K/N"                                   | "P1"                               |
+| "K/N"                                   | "P1"                               |
+| "K/Q"                                   | "P1"                               |
+| "K/E"                                   | "P1"                               |
+| "K/T"                                   | "P1"                               |
++-----------------------------------------+------------------------------------+
+
++-------------------------------------+---------------------------------------+
+| vep.transcript_consequences.biotype | vep.transcript_consequences.canonical |
++-------------------------------------+---------------------------------------+
+| str                                 |                                 int32 |
++-------------------------------------+---------------------------------------+
+| "protein_coding"                    |                                     1 |
+| "protein_coding"                    |                                     1 |
+| "protein_coding"                    |                                     1 |
+| "protein_coding"                    |                                     1 |
+| "protein_coding"                    |                                     1 |
+| "protein_coding"                    |                                     1 |
+| "protein_coding"                    |                                     1 |
+| "protein_coding"                    |                                     1 |
+| "protein_coding"                    |                                     1 |
+| "protein_coding"                    |                                     1 |
++-------------------------------------+---------------------------------------+
+
++----------------------------------+----------------------------------------+
+| vep.transcript_consequences.ccds | vep.transcript_consequences.cdna_start |
++----------------------------------+----------------------------------------+
+| str                              |                                  int32 |
++----------------------------------+----------------------------------------+
+| NA                               |                                     64 |
+| NA                               |                                     64 |
+| NA                               |                                     65 |
+| NA                               |                                     65 |
+| NA                               |                                     65 |
+| NA                               |                                     66 |
+| NA                               |                                     66 |
+| NA                               |                                     67 |
+| NA                               |                                     67 |
+| NA                               |                                     68 |
++----------------------------------+----------------------------------------+
+
++--------------------------------------+-------------------------------------+
+| vep.transcript_consequences.cdna_end | vep.transcript_consequences.cds_end |
++--------------------------------------+-------------------------------------+
+|                                int32 |                               int32 |
++--------------------------------------+-------------------------------------+
+|                                   64 |                                   4 |
+|                                   64 |                                   4 |
+|                                   65 |                                   5 |
+|                                   65 |                                   5 |
+|                                   65 |                                   5 |
+|                                   66 |                                   6 |
+|                                   66 |                                   6 |
+|                                   67 |                                   7 |
+|                                   67 |                                   7 |
+|                                   68 |                                   8 |
++--------------------------------------+-------------------------------------+
+
++---------------------------------------+------------------------------------+
+| vep.transcript_consequences.cds_start | vep.transcript_consequences.codons |
++---------------------------------------+------------------------------------+
+|                                 int32 | str                                |
++---------------------------------------+------------------------------------+
+|                                     4 | "Aag/Cag"                          |
+|                                     4 | "Aag/Gag"                          |
+|                                     5 | "aAg/aCg"                          |
+|                                     5 | "aAg/aGg"                          |
+|                                     5 | "aAg/aTg"                          |
+|                                     6 | "aaG/aaC"                          |
+|                                     6 | "aaG/aaT"                          |
+|                                     7 | "Aag/Cag"                          |
+|                                     7 | "Aag/Gag"                          |
+|                                     8 | "aAg/aCg"                          |
++---------------------------------------+------------------------------------+
+
++-----------------------------------------------+
+| vep.transcript_consequences.consequence_terms |
++-----------------------------------------------+
+| array<str>                                    |
++-----------------------------------------------+
+| ["missense_variant"]                          |
+| ["missense_variant"]                          |
+| ["missense_variant"]                          |
+| ["missense_variant"]                          |
+| ["missense_variant"]                          |
+| ["missense_variant"]                          |
+| ["missense_variant"]                          |
+| ["missense_variant","splice_region_variant"]  |
+| ["missense_variant","splice_region_variant"]  |
+| ["missense_variant","splice_region_variant"]  |
++-----------------------------------------------+
+
++--------------------------------------+-------------------------------------+
+| vep.transcript_consequences.distance | vep.transcript_consequences.domains |
++--------------------------------------+-------------------------------------+
+|                                int32 | array<struct{db: str, name: str}>   |
++--------------------------------------+-------------------------------------+
+|                                   NA | NA                                  |
+|                                   NA | NA                                  |
+|                                   NA | NA                                  |
+|                                   NA | NA                                  |
+|                                   NA | NA                                  |
+|                                   NA | NA                                  |
+|                                   NA | NA                                  |
+|                                   NA | NA                                  |
+|                                   NA | NA                                  |
+|                                   NA | NA                                  |
++--------------------------------------+-------------------------------------+
+
++----------------------------------+-----------------------------------+
+| vep.transcript_consequences.exon | vep.transcript_consequences.flags |
++----------------------------------+-----------------------------------+
+| str                              | str                               |
++----------------------------------+-----------------------------------+
+| "2/3"                            | NA                                |
+| "2/3"                            | NA                                |
+| "2/3"                            | NA                                |
+| "2/3"                            | NA                                |
+| "2/3"                            | NA                                |
+| "2/3"                            | NA                                |
+| "2/3"                            | NA                                |
+| "2/3"                            | NA                                |
+| "2/3"                            | NA                                |
+| "2/3"                            | NA                                |
++----------------------------------+-----------------------------------+
+
++-------------------------------------+----------------------------------------+
+| vep.transcript_consequences.gene_id | vep.transcript_consequences.gene_pheno |
++-------------------------------------+----------------------------------------+
+| str                                 |                                  int32 |
++-------------------------------------+----------------------------------------+
+| "ENSG00000186092"                   |                                     NA |
+| "ENSG00000186092"                   |                                     NA |
+| "ENSG00000186092"                   |                                     NA |
+| "ENSG00000186092"                   |                                     NA |
+| "ENSG00000186092"                   |                                     NA |
+| "ENSG00000186092"                   |                                     NA |
+| "ENSG00000186092"                   |                                     NA |
+| "ENSG00000186092"                   |                                     NA |
+| "ENSG00000186092"                   |                                     NA |
+| "ENSG00000186092"                   |                                     NA |
++-------------------------------------+----------------------------------------+
+
++-----------------------------------------+
+| vep.transcript_consequences.gene_symbol |
++-----------------------------------------+
+| str                                     |
++-----------------------------------------+
+| "OR4F5"                                 |
+| "OR4F5"                                 |
+| "OR4F5"                                 |
+| "OR4F5"                                 |
+| "OR4F5"                                 |
+| "OR4F5"                                 |
+| "OR4F5"                                 |
+| "OR4F5"                                 |
+| "OR4F5"                                 |
+| "OR4F5"                                 |
++-----------------------------------------+
+
++------------------------------------------------+
+| vep.transcript_consequences.gene_symbol_source |
++------------------------------------------------+
+| str                                            |
++------------------------------------------------+
+| "HGNC"                                         |
+| "HGNC"                                         |
+| "HGNC"                                         |
+| "HGNC"                                         |
+| "HGNC"                                         |
+| "HGNC"                                         |
+| "HGNC"                                         |
+| "HGNC"                                         |
+| "HGNC"                                         |
+| "HGNC"                                         |
++------------------------------------------------+
+
++-------------------------------------+-----------------------------------+
+| vep.transcript_consequences.hgnc_id | vep.transcript_consequences.hgvsc |
++-------------------------------------+-----------------------------------+
+| str                                 | str                               |
++-------------------------------------+-----------------------------------+
+| "HGNC:14825"                        | "ENST00000641515.2:c.4A>C"        |
+| "HGNC:14825"                        | "ENST00000641515.2:c.4A>G"        |
+| "HGNC:14825"                        | "ENST00000641515.2:c.5A>C"        |
+| "HGNC:14825"                        | "ENST00000641515.2:c.5A>G"        |
+| "HGNC:14825"                        | "ENST00000641515.2:c.5A>T"        |
+| "HGNC:14825"                        | "ENST00000641515.2:c.6G>C"        |
+| "HGNC:14825"                        | "ENST00000641515.2:c.6G>T"        |
+| "HGNC:14825"                        | "ENST00000641515.2:c.7A>C"        |
+| "HGNC:14825"                        | "ENST00000641515.2:c.7A>G"        |
+| "HGNC:14825"                        | "ENST00000641515.2:c.8A>C"        |
++-------------------------------------+-----------------------------------+
+
++-----------------------------------+-----------------------------------------+
+| vep.transcript_consequences.hgvsp | vep.transcript_consequences.hgvs_offset |
++-----------------------------------+-----------------------------------------+
+| str                               |                                   int32 |
++-----------------------------------+-----------------------------------------+
+| "ENSP00000493376.2:p.Lys2Gln"     |                                      NA |
+| "ENSP00000493376.2:p.Lys2Glu"     |                                      NA |
+| "ENSP00000493376.2:p.Lys2Thr"     |                                      NA |
+| "ENSP00000493376.2:p.Lys2Arg"     |                                      NA |
+| "ENSP00000493376.2:p.Lys2Met"     |                                      NA |
+| "ENSP00000493376.2:p.Lys2Asn"     |                                      NA |
+| "ENSP00000493376.2:p.Lys2Asn"     |                                      NA |
+| "ENSP00000493376.2:p.Lys3Gln"     |                                      NA |
+| "ENSP00000493376.2:p.Lys3Glu"     |                                      NA |
+| "ENSP00000493376.2:p.Lys3Thr"     |                                      NA |
++-----------------------------------+-----------------------------------------+
+
++------------------------------------+------------------------------------+
+| vep.transcript_consequences.impact | vep.transcript_consequences.intron |
++------------------------------------+------------------------------------+
+| str                                | str                                |
++------------------------------------+------------------------------------+
+| "MODERATE"                         | NA                                 |
+| "MODERATE"                         | NA                                 |
+| "MODERATE"                         | NA                                 |
+| "MODERATE"                         | NA                                 |
+| "MODERATE"                         | NA                                 |
+| "MODERATE"                         | NA                                 |
+| "MODERATE"                         | NA                                 |
+| "MODERATE"                         | NA                                 |
+| "MODERATE"                         | NA                                 |
+| "MODERATE"                         | NA                                 |
++------------------------------------+------------------------------------+
+
++---------------------------------+---------------------------------------+
+| vep.transcript_consequences.lof | vep.transcript_consequences.lof_flags |
++---------------------------------+---------------------------------------+
+| str                             | str                                   |
++---------------------------------+---------------------------------------+
+| NA                              | NA                                    |
+| NA                              | NA                                    |
+| NA                              | NA                                    |
+| NA                              | NA                                    |
+| NA                              | NA                                    |
+| NA                              | NA                                    |
+| NA                              | NA                                    |
+| NA                              | NA                                    |
+| NA                              | NA                                    |
+| NA                              | NA                                    |
++---------------------------------+---------------------------------------+
+
++----------------------------------------+
+| vep.transcript_consequences.lof_filter |
++----------------------------------------+
+| str                                    |
++----------------------------------------+
+| NA                                     |
+| NA                                     |
+| NA                                     |
+| NA                                     |
+| NA                                     |
+| NA                                     |
+| NA                                     |
+| NA                                     |
+| NA                                     |
+| NA                                     |
++----------------------------------------+
+
++--------------------------------------+
+| vep.transcript_consequences.lof_info |
++--------------------------------------+
+| str                                  |
++--------------------------------------+
+| NA                                   |
+| NA                                   |
+| NA                                   |
+| NA                                   |
+| NA                                   |
+| NA                                   |
+| NA                                   |
+| NA                                   |
+| NA                                   |
+| NA                                   |
++--------------------------------------+
+
++-----------------------------------------+
+| vep.transcript_consequences.mane_select |
++-----------------------------------------+
+| str                                     |
++-----------------------------------------+
+| "NM_001005484.2"                        |
+| "NM_001005484.2"                        |
+| "NM_001005484.2"                        |
+| "NM_001005484.2"                        |
+| "NM_001005484.2"                        |
+| "NM_001005484.2"                        |
+| "NM_001005484.2"                        |
+| "NM_001005484.2"                        |
+| "NM_001005484.2"                        |
+| "NM_001005484.2"                        |
++-----------------------------------------+
+
++------------------------------------------------+
+| vep.transcript_consequences.mane_plus_clinical |
++------------------------------------------------+
+| str                                            |
++------------------------------------------------+
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
++------------------------------------------------+
+
++---------------------------------------+-----------------------------------+
+| vep.transcript_consequences.minimised | vep.transcript_consequences.mirna |
++---------------------------------------+-----------------------------------+
+|                                 int32 | array<str>                        |
++---------------------------------------+-----------------------------------+
+|                                    NA | NA                                |
+|                                    NA | NA                                |
+|                                    NA | NA                                |
+|                                    NA | NA                                |
+|                                    NA | NA                                |
+|                                    NA | NA                                |
+|                                    NA | NA                                |
+|                                    NA | NA                                |
+|                                    NA | NA                                |
+|                                    NA | NA                                |
++---------------------------------------+-----------------------------------+
+
++-------------------------------------------------+
+| vep.transcript_consequences.polyphen_prediction |
++-------------------------------------------------+
+| str                                             |
++-------------------------------------------------+
+| "benign"                                        |
+| "benign"                                        |
+| "benign"                                        |
+| "benign"                                        |
+| "benign"                                        |
+| "benign"                                        |
+| "benign"                                        |
+| "benign"                                        |
+| "benign"                                        |
+| "benign"                                        |
++-------------------------------------------------+
+
++--------------------------------------------+
+| vep.transcript_consequences.polyphen_score |
++--------------------------------------------+
+|                                    float64 |
++--------------------------------------------+
+|                                   2.50e-02 |
+|                                   7.00e-03 |
+|                                   7.00e-03 |
+|                                   1.20e-02 |
+|                                   1.52e-01 |
+|                                   7.00e-03 |
+|                                   7.00e-03 |
+|                                   0.00e+00 |
+|                                   0.00e+00 |
+|                                   3.30e-02 |
++--------------------------------------------+
+
++-----------------------------------------+
+| vep.transcript_consequences.protein_end |
++-----------------------------------------+
+|                                   int32 |
++-----------------------------------------+
+|                                       2 |
+|                                       2 |
+|                                       2 |
+|                                       2 |
+|                                       2 |
+|                                       2 |
+|                                       2 |
+|                                       3 |
+|                                       3 |
+|                                       3 |
++-----------------------------------------+
+
++-------------------------------------------+
+| vep.transcript_consequences.protein_start |
++-------------------------------------------+
+|                                     int32 |
++-------------------------------------------+
+|                                         2 |
+|                                         2 |
+|                                         2 |
+|                                         2 |
+|                                         2 |
+|                                         2 |
+|                                         2 |
+|                                         3 |
+|                                         3 |
+|                                         3 |
++-------------------------------------------+
+
++----------------------------------------+
+| vep.transcript_consequences.protein_id |
++----------------------------------------+
+| str                                    |
++----------------------------------------+
+| "ENSP00000493376"                      |
+| "ENSP00000493376"                      |
+| "ENSP00000493376"                      |
+| "ENSP00000493376"                      |
+| "ENSP00000493376"                      |
+| "ENSP00000493376"                      |
+| "ENSP00000493376"                      |
+| "ENSP00000493376"                      |
+| "ENSP00000493376"                      |
+| "ENSP00000493376"                      |
++----------------------------------------+
+
++---------------------------------------------+
+| vep.transcript_consequences.sift_prediction |
++---------------------------------------------+
+| str                                         |
++---------------------------------------------+
+| "tolerated_low_confidence"                  |
+| "tolerated_low_confidence"                  |
+| "tolerated_low_confidence"                  |
+| "tolerated_low_confidence"                  |
+| "tolerated_low_confidence"                  |
+| "tolerated_low_confidence"                  |
+| "tolerated_low_confidence"                  |
+| "tolerated_low_confidence"                  |
+| "deleterious_low_confidence"                |
+| "deleterious_low_confidence"                |
++---------------------------------------------+
+
++----------------------------------------+------------------------------------+
+| vep.transcript_consequences.sift_score | vep.transcript_consequences.source |
++----------------------------------------+------------------------------------+
+|                                float64 | str                                |
++----------------------------------------+------------------------------------+
+|                               3.70e-01 | "Ensembl"                          |
+|                               3.30e-01 | "Ensembl"                          |
+|                               2.50e-01 | "Ensembl"                          |
+|                               8.20e-01 | "Ensembl"                          |
+|                               6.00e-02 | "Ensembl"                          |
+|                               2.20e-01 | "Ensembl"                          |
+|                               2.20e-01 | "Ensembl"                          |
+|                               9.30e-01 | "Ensembl"                          |
+|                               4.00e-02 | "Ensembl"                          |
+|                               3.00e-02 | "Ensembl"                          |
++----------------------------------------+------------------------------------+
+
++------------------------------------+---------------------------------------+
+| vep.transcript_consequences.strand | vep.transcript_consequences.swissprot |
++------------------------------------+---------------------------------------+
+|                              int32 | str                                   |
++------------------------------------+---------------------------------------+
+|                                  1 | NA                                    |
+|                                  1 | NA                                    |
+|                                  1 | NA                                    |
+|                                  1 | NA                                    |
+|                                  1 | NA                                    |
+|                                  1 | NA                                    |
+|                                  1 | NA                                    |
+|                                  1 | NA                                    |
+|                                  1 | NA                                    |
+|                                  1 | NA                                    |
++------------------------------------+---------------------------------------+
+
++-------------------------------------------+
+| vep.transcript_consequences.transcript_id |
++-------------------------------------------+
+| str                                       |
++-------------------------------------------+
+| "ENST00000641515"                         |
+| "ENST00000641515"                         |
+| "ENST00000641515"                         |
+| "ENST00000641515"                         |
+| "ENST00000641515"                         |
+| "ENST00000641515"                         |
+| "ENST00000641515"                         |
+| "ENST00000641515"                         |
+| "ENST00000641515"                         |
+| "ENST00000641515"                         |
++-------------------------------------------+
+
++------------------------------------+---------------------------------+
+| vep.transcript_consequences.trembl | vep.transcript_consequences.tsl |
++------------------------------------+---------------------------------+
+| str                                |                           int32 |
++------------------------------------+---------------------------------+
+| NA                                 |                              NA |
+| NA                                 |                              NA |
+| NA                                 |                              NA |
+| NA                                 |                              NA |
+| NA                                 |                              NA |
+| NA                                 |                              NA |
+| NA                                 |                              NA |
+| NA                                 |                              NA |
+| NA                                 |                              NA |
+| NA                                 |                              NA |
++------------------------------------+---------------------------------+
+
++-------------------------------------+
+| vep.transcript_consequences.uniparc |
++-------------------------------------+
+| str                                 |
++-------------------------------------+
+| NA                                  |
+| NA                                  |
+| NA                                  |
+| NA                                  |
+| NA                                  |
+| NA                                  |
+| NA                                  |
+| NA                                  |
+| NA                                  |
+| NA                                  |
++-------------------------------------+
+
++---------------------------------------------+
+| vep.transcript_consequences.uniprot_isoform |
++---------------------------------------------+
+| array<str>                                  |
++---------------------------------------------+
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
++---------------------------------------------+
+
++--------------------------------------------+
+| vep.transcript_consequences.variant_allele |
++--------------------------------------------+
+| str                                        |
++--------------------------------------------+
+| "C"                                        |
+| "G"                                        |
+| "C"                                        |
+| "G"                                        |
+| "T"                                        |
+| "C"                                        |
+| "T"                                        |
+| "C"                                        |
+| "G"                                        |
+| "C"                                        |
++--------------------------------------------+
+
++-----------------------------------------------------+-------------------+
+| vep.transcript_consequences.most_severe_consequence | vep.variant_class |
++-----------------------------------------------------+-------------------+
+| str                                                 | str               |
++-----------------------------------------------------+-------------------+
+| "missense_variant"                                  | "SNV"             |
+| "missense_variant"                                  | "SNV"             |
+| "missense_variant"                                  | "SNV"             |
+| "missense_variant"                                  | "SNV"             |
+| "missense_variant"                                  | "SNV"             |
+| "missense_variant"                                  | "SNV"             |
+| "missense_variant"                                  | "SNV"             |
+| "missense_variant"                                  | "SNV"             |
+| "missense_variant"                                  | "SNV"             |
+| "missense_variant"                                  | "SNV"             |
++-----------------------------------------------------+-------------------+
+
++----------------------------+
+| vep.worst_consequence_term |
++----------------------------+
+| str                        |
++----------------------------+
+| "missense_variant"         |
+| "missense_variant"         |
+| "missense_variant"         |
+| "missense_variant"         |
+| "missense_variant"         |
+| "missense_variant"         |
+| "missense_variant"         |
+| "missense_variant"         |
+| "missense_variant"         |
+| "missense_variant"         |
++----------------------------+
+
++------------------------------------------------------------------------------+
+| vep.worst_csq_by_gene                                                        |
++------------------------------------------------------------------------------+
+| array<struct{allele_num: int32, amino_acids: str, appris: str, biotype: s... |
++------------------------------------------------------------------------------+
+| [(1,"K/Q","P1","protein_coding",1,NA,64,64,4,4,"Aag/Cag",["missense_varia... |
+| [(1,"K/E","P1","protein_coding",1,NA,64,64,4,4,"Aag/Gag",["missense_varia... |
+| [(1,"K/T","P1","protein_coding",1,NA,65,65,5,5,"aAg/aCg",["missense_varia... |
+| [(1,"K/R","P1","protein_coding",1,NA,65,65,5,5,"aAg/aGg",["missense_varia... |
+| [(1,"K/M","P1","protein_coding",1,NA,65,65,5,5,"aAg/aTg",["missense_varia... |
+| [(1,"K/N","P1","protein_coding",1,NA,66,66,6,6,"aaG/aaC",["missense_varia... |
+| [(1,"K/N","P1","protein_coding",1,NA,66,66,6,6,"aaG/aaT",["missense_varia... |
+| [(1,"K/Q","P1","protein_coding",1,NA,67,67,7,7,"Aag/Cag",["missense_varia... |
+| [(1,"K/E","P1","protein_coding",1,NA,67,67,7,7,"Aag/Gag",["missense_varia... |
+| [(1,"K/T","P1","protein_coding",1,NA,68,68,8,8,"aAg/aCg",["missense_varia... |
++------------------------------------------------------------------------------+
+
++--------------------------------------+---------------------------------------+
+| vep.worst_csq_for_variant.allele_num | vep.worst_csq_for_variant.amino_acids |
++--------------------------------------+---------------------------------------+
+|                                int32 | str                                   |
++--------------------------------------+---------------------------------------+
+|                                    1 | "K/Q"                                 |
+|                                    1 | "K/E"                                 |
+|                                    1 | "K/T"                                 |
+|                                    1 | "K/R"                                 |
+|                                    1 | "K/M"                                 |
+|                                    1 | "K/N"                                 |
+|                                    1 | "K/N"                                 |
+|                                    1 | "K/Q"                                 |
+|                                    1 | "K/E"                                 |
+|                                    1 | "K/T"                                 |
++--------------------------------------+---------------------------------------+
+
++----------------------------------+-----------------------------------+
+| vep.worst_csq_for_variant.appris | vep.worst_csq_for_variant.biotype |
++----------------------------------+-----------------------------------+
+| str                              | str                               |
++----------------------------------+-----------------------------------+
+| "P1"                             | "protein_coding"                  |
+| "P1"                             | "protein_coding"                  |
+| "P1"                             | "protein_coding"                  |
+| "P1"                             | "protein_coding"                  |
+| "P1"                             | "protein_coding"                  |
+| "P1"                             | "protein_coding"                  |
+| "P1"                             | "protein_coding"                  |
+| "P1"                             | "protein_coding"                  |
+| "P1"                             | "protein_coding"                  |
+| "P1"                             | "protein_coding"                  |
++----------------------------------+-----------------------------------+
+
++-------------------------------------+--------------------------------+
+| vep.worst_csq_for_variant.canonical | vep.worst_csq_for_variant.ccds |
++-------------------------------------+--------------------------------+
+|                               int32 | str                            |
++-------------------------------------+--------------------------------+
+|                                   1 | NA                             |
+|                                   1 | NA                             |
+|                                   1 | NA                             |
+|                                   1 | NA                             |
+|                                   1 | NA                             |
+|                                   1 | NA                             |
+|                                   1 | NA                             |
+|                                   1 | NA                             |
+|                                   1 | NA                             |
+|                                   1 | NA                             |
++-------------------------------------+--------------------------------+
+
++--------------------------------------+------------------------------------+
+| vep.worst_csq_for_variant.cdna_start | vep.worst_csq_for_variant.cdna_end |
++--------------------------------------+------------------------------------+
+|                                int32 |                              int32 |
++--------------------------------------+------------------------------------+
+|                                   64 |                                 64 |
+|                                   64 |                                 64 |
+|                                   65 |                                 65 |
+|                                   65 |                                 65 |
+|                                   65 |                                 65 |
+|                                   66 |                                 66 |
+|                                   66 |                                 66 |
+|                                   67 |                                 67 |
+|                                   67 |                                 67 |
+|                                   68 |                                 68 |
++--------------------------------------+------------------------------------+
+
++-----------------------------------+-------------------------------------+
+| vep.worst_csq_for_variant.cds_end | vep.worst_csq_for_variant.cds_start |
++-----------------------------------+-------------------------------------+
+|                             int32 |                               int32 |
++-----------------------------------+-------------------------------------+
+|                                 4 |                                   4 |
+|                                 4 |                                   4 |
+|                                 5 |                                   5 |
+|                                 5 |                                   5 |
+|                                 5 |                                   5 |
+|                                 6 |                                   6 |
+|                                 6 |                                   6 |
+|                                 7 |                                   7 |
+|                                 7 |                                   7 |
+|                                 8 |                                   8 |
++-----------------------------------+-------------------------------------+
+
++----------------------------------+
+| vep.worst_csq_for_variant.codons |
++----------------------------------+
+| str                              |
++----------------------------------+
+| "Aag/Cag"                        |
+| "Aag/Gag"                        |
+| "aAg/aCg"                        |
+| "aAg/aGg"                        |
+| "aAg/aTg"                        |
+| "aaG/aaC"                        |
+| "aaG/aaT"                        |
+| "Aag/Cag"                        |
+| "Aag/Gag"                        |
+| "aAg/aCg"                        |
++----------------------------------+
+
++----------------------------------------------+
+| vep.worst_csq_for_variant.consequence_terms  |
++----------------------------------------------+
+| array<str>                                   |
++----------------------------------------------+
+| ["missense_variant"]                         |
+| ["missense_variant"]                         |
+| ["missense_variant"]                         |
+| ["missense_variant"]                         |
+| ["missense_variant"]                         |
+| ["missense_variant"]                         |
+| ["missense_variant"]                         |
+| ["missense_variant","splice_region_variant"] |
+| ["missense_variant","splice_region_variant"] |
+| ["missense_variant","splice_region_variant"] |
++----------------------------------------------+
+
++------------------------------------+-----------------------------------+
+| vep.worst_csq_for_variant.distance | vep.worst_csq_for_variant.domains |
++------------------------------------+-----------------------------------+
+|                              int32 | array<struct{db: str, name: str}> |
++------------------------------------+-----------------------------------+
+|                                 NA | NA                                |
+|                                 NA | NA                                |
+|                                 NA | NA                                |
+|                                 NA | NA                                |
+|                                 NA | NA                                |
+|                                 NA | NA                                |
+|                                 NA | NA                                |
+|                                 NA | NA                                |
+|                                 NA | NA                                |
+|                                 NA | NA                                |
++------------------------------------+-----------------------------------+
+
++--------------------------------+---------------------------------+
+| vep.worst_csq_for_variant.exon | vep.worst_csq_for_variant.flags |
++--------------------------------+---------------------------------+
+| str                            | str                             |
++--------------------------------+---------------------------------+
+| "2/3"                          | NA                              |
+| "2/3"                          | NA                              |
+| "2/3"                          | NA                              |
+| "2/3"                          | NA                              |
+| "2/3"                          | NA                              |
+| "2/3"                          | NA                              |
+| "2/3"                          | NA                              |
+| "2/3"                          | NA                              |
+| "2/3"                          | NA                              |
+| "2/3"                          | NA                              |
++--------------------------------+---------------------------------+
+
++-----------------------------------+--------------------------------------+
+| vep.worst_csq_for_variant.gene_id | vep.worst_csq_for_variant.gene_pheno |
++-----------------------------------+--------------------------------------+
+| str                               |                                int32 |
++-----------------------------------+--------------------------------------+
+| "ENSG00000186092"                 |                                   NA |
+| "ENSG00000186092"                 |                                   NA |
+| "ENSG00000186092"                 |                                   NA |
+| "ENSG00000186092"                 |                                   NA |
+| "ENSG00000186092"                 |                                   NA |
+| "ENSG00000186092"                 |                                   NA |
+| "ENSG00000186092"                 |                                   NA |
+| "ENSG00000186092"                 |                                   NA |
+| "ENSG00000186092"                 |                                   NA |
+| "ENSG00000186092"                 |                                   NA |
++-----------------------------------+--------------------------------------+
+
++---------------------------------------+
+| vep.worst_csq_for_variant.gene_symbol |
++---------------------------------------+
+| str                                   |
++---------------------------------------+
+| "OR4F5"                               |
+| "OR4F5"                               |
+| "OR4F5"                               |
+| "OR4F5"                               |
+| "OR4F5"                               |
+| "OR4F5"                               |
+| "OR4F5"                               |
+| "OR4F5"                               |
+| "OR4F5"                               |
+| "OR4F5"                               |
++---------------------------------------+
+
++----------------------------------------------+
+| vep.worst_csq_for_variant.gene_symbol_source |
++----------------------------------------------+
+| str                                          |
++----------------------------------------------+
+| "HGNC"                                       |
+| "HGNC"                                       |
+| "HGNC"                                       |
+| "HGNC"                                       |
+| "HGNC"                                       |
+| "HGNC"                                       |
+| "HGNC"                                       |
+| "HGNC"                                       |
+| "HGNC"                                       |
+| "HGNC"                                       |
++----------------------------------------------+
+
++-----------------------------------+---------------------------------+
+| vep.worst_csq_for_variant.hgnc_id | vep.worst_csq_for_variant.hgvsc |
++-----------------------------------+---------------------------------+
+| str                               | str                             |
++-----------------------------------+---------------------------------+
+| "HGNC:14825"                      | "ENST00000641515.2:c.4A>C"      |
+| "HGNC:14825"                      | "ENST00000641515.2:c.4A>G"      |
+| "HGNC:14825"                      | "ENST00000641515.2:c.5A>C"      |
+| "HGNC:14825"                      | "ENST00000641515.2:c.5A>G"      |
+| "HGNC:14825"                      | "ENST00000641515.2:c.5A>T"      |
+| "HGNC:14825"                      | "ENST00000641515.2:c.6G>C"      |
+| "HGNC:14825"                      | "ENST00000641515.2:c.6G>T"      |
+| "HGNC:14825"                      | "ENST00000641515.2:c.7A>C"      |
+| "HGNC:14825"                      | "ENST00000641515.2:c.7A>G"      |
+| "HGNC:14825"                      | "ENST00000641515.2:c.8A>C"      |
++-----------------------------------+---------------------------------+
+
++---------------------------------+---------------------------------------+
+| vep.worst_csq_for_variant.hgvsp | vep.worst_csq_for_variant.hgvs_offset |
++---------------------------------+---------------------------------------+
+| str                             |                                 int32 |
++---------------------------------+---------------------------------------+
+| "ENSP00000493376.2:p.Lys2Gln"   |                                    NA |
+| "ENSP00000493376.2:p.Lys2Glu"   |                                    NA |
+| "ENSP00000493376.2:p.Lys2Thr"   |                                    NA |
+| "ENSP00000493376.2:p.Lys2Arg"   |                                    NA |
+| "ENSP00000493376.2:p.Lys2Met"   |                                    NA |
+| "ENSP00000493376.2:p.Lys2Asn"   |                                    NA |
+| "ENSP00000493376.2:p.Lys2Asn"   |                                    NA |
+| "ENSP00000493376.2:p.Lys3Gln"   |                                    NA |
+| "ENSP00000493376.2:p.Lys3Glu"   |                                    NA |
+| "ENSP00000493376.2:p.Lys3Thr"   |                                    NA |
++---------------------------------+---------------------------------------+
+
++----------------------------------+----------------------------------+
+| vep.worst_csq_for_variant.impact | vep.worst_csq_for_variant.intron |
++----------------------------------+----------------------------------+
+| str                              | str                              |
++----------------------------------+----------------------------------+
+| "MODERATE"                       | NA                               |
+| "MODERATE"                       | NA                               |
+| "MODERATE"                       | NA                               |
+| "MODERATE"                       | NA                               |
+| "MODERATE"                       | NA                               |
+| "MODERATE"                       | NA                               |
+| "MODERATE"                       | NA                               |
+| "MODERATE"                       | NA                               |
+| "MODERATE"                       | NA                               |
+| "MODERATE"                       | NA                               |
++----------------------------------+----------------------------------+
+
++-------------------------------+-------------------------------------+
+| vep.worst_csq_for_variant.lof | vep.worst_csq_for_variant.lof_flags |
++-------------------------------+-------------------------------------+
+| str                           | str                                 |
++-------------------------------+-------------------------------------+
+| NA                            | NA                                  |
+| NA                            | NA                                  |
+| NA                            | NA                                  |
+| NA                            | NA                                  |
+| NA                            | NA                                  |
+| NA                            | NA                                  |
+| NA                            | NA                                  |
+| NA                            | NA                                  |
+| NA                            | NA                                  |
+| NA                            | NA                                  |
++-------------------------------+-------------------------------------+
+
++--------------------------------------+------------------------------------+
+| vep.worst_csq_for_variant.lof_filter | vep.worst_csq_for_variant.lof_info |
++--------------------------------------+------------------------------------+
+| str                                  | str                                |
++--------------------------------------+------------------------------------+
+| NA                                   | NA                                 |
+| NA                                   | NA                                 |
+| NA                                   | NA                                 |
+| NA                                   | NA                                 |
+| NA                                   | NA                                 |
+| NA                                   | NA                                 |
+| NA                                   | NA                                 |
+| NA                                   | NA                                 |
+| NA                                   | NA                                 |
+| NA                                   | NA                                 |
++--------------------------------------+------------------------------------+
+
++---------------------------------------+
+| vep.worst_csq_for_variant.mane_select |
++---------------------------------------+
+| str                                   |
++---------------------------------------+
+| "NM_001005484.2"                      |
+| "NM_001005484.2"                      |
+| "NM_001005484.2"                      |
+| "NM_001005484.2"                      |
+| "NM_001005484.2"                      |
+| "NM_001005484.2"                      |
+| "NM_001005484.2"                      |
+| "NM_001005484.2"                      |
+| "NM_001005484.2"                      |
+| "NM_001005484.2"                      |
++---------------------------------------+
+
++----------------------------------------------+
+| vep.worst_csq_for_variant.mane_plus_clinical |
++----------------------------------------------+
+| str                                          |
++----------------------------------------------+
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
++----------------------------------------------+
+
++-------------------------------------+---------------------------------+
+| vep.worst_csq_for_variant.minimised | vep.worst_csq_for_variant.mirna |
++-------------------------------------+---------------------------------+
+|                               int32 | array<str>                      |
++-------------------------------------+---------------------------------+
+|                                  NA | NA                              |
+|                                  NA | NA                              |
+|                                  NA | NA                              |
+|                                  NA | NA                              |
+|                                  NA | NA                              |
+|                                  NA | NA                              |
+|                                  NA | NA                              |
+|                                  NA | NA                              |
+|                                  NA | NA                              |
+|                                  NA | NA                              |
++-------------------------------------+---------------------------------+
+
++-----------------------------------------------+
+| vep.worst_csq_for_variant.polyphen_prediction |
++-----------------------------------------------+
+| str                                           |
++-----------------------------------------------+
+| "benign"                                      |
+| "benign"                                      |
+| "benign"                                      |
+| "benign"                                      |
+| "benign"                                      |
+| "benign"                                      |
+| "benign"                                      |
+| "benign"                                      |
+| "benign"                                      |
+| "benign"                                      |
++-----------------------------------------------+
+
++------------------------------------------+
+| vep.worst_csq_for_variant.polyphen_score |
++------------------------------------------+
+|                                  float64 |
++------------------------------------------+
+|                                 2.50e-02 |
+|                                 7.00e-03 |
+|                                 7.00e-03 |
+|                                 1.20e-02 |
+|                                 1.52e-01 |
+|                                 7.00e-03 |
+|                                 7.00e-03 |
+|                                 0.00e+00 |
+|                                 0.00e+00 |
+|                                 3.30e-02 |
++------------------------------------------+
+
++---------------------------------------+
+| vep.worst_csq_for_variant.protein_end |
++---------------------------------------+
+|                                 int32 |
++---------------------------------------+
+|                                     2 |
+|                                     2 |
+|                                     2 |
+|                                     2 |
+|                                     2 |
+|                                     2 |
+|                                     2 |
+|                                     3 |
+|                                     3 |
+|                                     3 |
++---------------------------------------+
+
++-----------------------------------------+
+| vep.worst_csq_for_variant.protein_start |
++-----------------------------------------+
+|                                   int32 |
++-----------------------------------------+
+|                                       2 |
+|                                       2 |
+|                                       2 |
+|                                       2 |
+|                                       2 |
+|                                       2 |
+|                                       2 |
+|                                       3 |
+|                                       3 |
+|                                       3 |
++-----------------------------------------+
+
++--------------------------------------+
+| vep.worst_csq_for_variant.protein_id |
++--------------------------------------+
+| str                                  |
++--------------------------------------+
+| "ENSP00000493376"                    |
+| "ENSP00000493376"                    |
+| "ENSP00000493376"                    |
+| "ENSP00000493376"                    |
+| "ENSP00000493376"                    |
+| "ENSP00000493376"                    |
+| "ENSP00000493376"                    |
+| "ENSP00000493376"                    |
+| "ENSP00000493376"                    |
+| "ENSP00000493376"                    |
++--------------------------------------+
+
++-------------------------------------------+
+| vep.worst_csq_for_variant.sift_prediction |
++-------------------------------------------+
+| str                                       |
++-------------------------------------------+
+| "tolerated_low_confidence"                |
+| "tolerated_low_confidence"                |
+| "tolerated_low_confidence"                |
+| "tolerated_low_confidence"                |
+| "tolerated_low_confidence"                |
+| "tolerated_low_confidence"                |
+| "tolerated_low_confidence"                |
+| "tolerated_low_confidence"                |
+| "deleterious_low_confidence"              |
+| "deleterious_low_confidence"              |
++-------------------------------------------+
+
++--------------------------------------+----------------------------------+
+| vep.worst_csq_for_variant.sift_score | vep.worst_csq_for_variant.source |
++--------------------------------------+----------------------------------+
+|                              float64 | str                              |
++--------------------------------------+----------------------------------+
+|                             3.70e-01 | "Ensembl"                        |
+|                             3.30e-01 | "Ensembl"                        |
+|                             2.50e-01 | "Ensembl"                        |
+|                             8.20e-01 | "Ensembl"                        |
+|                             6.00e-02 | "Ensembl"                        |
+|                             2.20e-01 | "Ensembl"                        |
+|                             2.20e-01 | "Ensembl"                        |
+|                             9.30e-01 | "Ensembl"                        |
+|                             4.00e-02 | "Ensembl"                        |
+|                             3.00e-02 | "Ensembl"                        |
++--------------------------------------+----------------------------------+
+
++----------------------------------+-------------------------------------+
+| vep.worst_csq_for_variant.strand | vep.worst_csq_for_variant.swissprot |
++----------------------------------+-------------------------------------+
+|                            int32 | str                                 |
++----------------------------------+-------------------------------------+
+|                                1 | NA                                  |
+|                                1 | NA                                  |
+|                                1 | NA                                  |
+|                                1 | NA                                  |
+|                                1 | NA                                  |
+|                                1 | NA                                  |
+|                                1 | NA                                  |
+|                                1 | NA                                  |
+|                                1 | NA                                  |
+|                                1 | NA                                  |
++----------------------------------+-------------------------------------+
+
++-----------------------------------------+----------------------------------+
+| vep.worst_csq_for_variant.transcript_id | vep.worst_csq_for_variant.trembl |
++-----------------------------------------+----------------------------------+
+| str                                     | str                              |
++-----------------------------------------+----------------------------------+
+| "ENST00000641515"                       | NA                               |
+| "ENST00000641515"                       | NA                               |
+| "ENST00000641515"                       | NA                               |
+| "ENST00000641515"                       | NA                               |
+| "ENST00000641515"                       | NA                               |
+| "ENST00000641515"                       | NA                               |
+| "ENST00000641515"                       | NA                               |
+| "ENST00000641515"                       | NA                               |
+| "ENST00000641515"                       | NA                               |
+| "ENST00000641515"                       | NA                               |
++-----------------------------------------+----------------------------------+
+
++-------------------------------+-----------------------------------+
+| vep.worst_csq_for_variant.tsl | vep.worst_csq_for_variant.uniparc |
++-------------------------------+-----------------------------------+
+|                         int32 | str                               |
++-------------------------------+-----------------------------------+
+|                            NA | NA                                |
+|                            NA | NA                                |
+|                            NA | NA                                |
+|                            NA | NA                                |
+|                            NA | NA                                |
+|                            NA | NA                                |
+|                            NA | NA                                |
+|                            NA | NA                                |
+|                            NA | NA                                |
+|                            NA | NA                                |
++-------------------------------+-----------------------------------+
+
++-------------------------------------------+
+| vep.worst_csq_for_variant.uniprot_isoform |
++-------------------------------------------+
+| array<str>                                |
++-------------------------------------------+
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
++-------------------------------------------+
+
++------------------------------------------+
+| vep.worst_csq_for_variant.variant_allele |
++------------------------------------------+
+| str                                      |
++------------------------------------------+
+| "C"                                      |
+| "G"                                      |
+| "C"                                      |
+| "G"                                      |
+| "T"                                      |
+| "C"                                      |
+| "T"                                      |
+| "C"                                      |
+| "G"                                      |
+| "C"                                      |
++------------------------------------------+
+
++---------------------------------------------------+
+| vep.worst_csq_for_variant.most_severe_consequence |
++---------------------------------------------------+
+| str                                               |
++---------------------------------------------------+
+| "missense_variant"                                |
+| "missense_variant"                                |
+| "missense_variant"                                |
+| "missense_variant"                                |
+| "missense_variant"                                |
+| "missense_variant"                                |
+| "missense_variant"                                |
+| "missense_variant"                                |
+| "missense_variant"                                |
+| "missense_variant"                                |
++---------------------------------------------------+
+
++-------------------------------------+
+| vep.worst_csq_for_variant.csq_score |
++-------------------------------------+
+|                             float64 |
++-------------------------------------+
+|                            1.09e+01 |
+|                            1.09e+01 |
+|                            1.09e+01 |
+|                            1.09e+01 |
+|                            1.09e+01 |
+|                            1.09e+01 |
+|                            1.09e+01 |
+|                            1.09e+01 |
+|                            1.09e+01 |
+|                            1.09e+01 |
++-------------------------------------+
+
++------------------------------------------------------------------------------+
+| vep.worst_csq_by_gene_canonical                                              |
++------------------------------------------------------------------------------+
+| array<struct{allele_num: int32, amino_acids: str, appris: str, biotype: s... |
++------------------------------------------------------------------------------+
+| [(1,"K/Q","P1","protein_coding",1,NA,64,64,4,4,"Aag/Cag",["missense_varia... |
+| [(1,"K/E","P1","protein_coding",1,NA,64,64,4,4,"Aag/Gag",["missense_varia... |
+| [(1,"K/T","P1","protein_coding",1,NA,65,65,5,5,"aAg/aCg",["missense_varia... |
+| [(1,"K/R","P1","protein_coding",1,NA,65,65,5,5,"aAg/aGg",["missense_varia... |
+| [(1,"K/M","P1","protein_coding",1,NA,65,65,5,5,"aAg/aTg",["missense_varia... |
+| [(1,"K/N","P1","protein_coding",1,NA,66,66,6,6,"aaG/aaC",["missense_varia... |
+| [(1,"K/N","P1","protein_coding",1,NA,66,66,6,6,"aaG/aaT",["missense_varia... |
+| [(1,"K/Q","P1","protein_coding",1,NA,67,67,7,7,"Aag/Cag",["missense_varia... |
+| [(1,"K/E","P1","protein_coding",1,NA,67,67,7,7,"Aag/Gag",["missense_varia... |
+| [(1,"K/T","P1","protein_coding",1,NA,68,68,8,8,"aAg/aCg",["missense_varia... |
++------------------------------------------------------------------------------+
+
++------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.allele_num |
++------------------------------------------------+
+|                                          int32 |
++------------------------------------------------+
+|                                              1 |
+|                                              1 |
+|                                              1 |
+|                                              1 |
+|                                              1 |
+|                                              1 |
+|                                              1 |
+|                                              1 |
+|                                              1 |
+|                                              1 |
++------------------------------------------------+
+
++-------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.amino_acids |
++-------------------------------------------------+
+| str                                             |
++-------------------------------------------------+
+| "K/Q"                                           |
+| "K/E"                                           |
+| "K/T"                                           |
+| "K/R"                                           |
+| "K/M"                                           |
+| "K/N"                                           |
+| "K/N"                                           |
+| "K/Q"                                           |
+| "K/E"                                           |
+| "K/T"                                           |
++-------------------------------------------------+
+
++--------------------------------------------+
+| vep.worst_csq_for_variant_canonical.appris |
++--------------------------------------------+
+| str                                        |
++--------------------------------------------+
+| "P1"                                       |
+| "P1"                                       |
+| "P1"                                       |
+| "P1"                                       |
+| "P1"                                       |
+| "P1"                                       |
+| "P1"                                       |
+| "P1"                                       |
+| "P1"                                       |
+| "P1"                                       |
++--------------------------------------------+
+
++---------------------------------------------+
+| vep.worst_csq_for_variant_canonical.biotype |
++---------------------------------------------+
+| str                                         |
++---------------------------------------------+
+| "protein_coding"                            |
+| "protein_coding"                            |
+| "protein_coding"                            |
+| "protein_coding"                            |
+| "protein_coding"                            |
+| "protein_coding"                            |
+| "protein_coding"                            |
+| "protein_coding"                            |
+| "protein_coding"                            |
+| "protein_coding"                            |
++---------------------------------------------+
+
++-----------------------------------------------+
+| vep.worst_csq_for_variant_canonical.canonical |
++-----------------------------------------------+
+|                                         int32 |
++-----------------------------------------------+
+|                                             1 |
+|                                             1 |
+|                                             1 |
+|                                             1 |
+|                                             1 |
+|                                             1 |
+|                                             1 |
+|                                             1 |
+|                                             1 |
+|                                             1 |
++-----------------------------------------------+
+
++------------------------------------------+
+| vep.worst_csq_for_variant_canonical.ccds |
++------------------------------------------+
+| str                                      |
++------------------------------------------+
+| NA                                       |
+| NA                                       |
+| NA                                       |
+| NA                                       |
+| NA                                       |
+| NA                                       |
+| NA                                       |
+| NA                                       |
+| NA                                       |
+| NA                                       |
++------------------------------------------+
+
++------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.cdna_start |
++------------------------------------------------+
+|                                          int32 |
++------------------------------------------------+
+|                                             64 |
+|                                             64 |
+|                                             65 |
+|                                             65 |
+|                                             65 |
+|                                             66 |
+|                                             66 |
+|                                             67 |
+|                                             67 |
+|                                             68 |
++------------------------------------------------+
+
++----------------------------------------------+
+| vep.worst_csq_for_variant_canonical.cdna_end |
++----------------------------------------------+
+|                                        int32 |
++----------------------------------------------+
+|                                           64 |
+|                                           64 |
+|                                           65 |
+|                                           65 |
+|                                           65 |
+|                                           66 |
+|                                           66 |
+|                                           67 |
+|                                           67 |
+|                                           68 |
++----------------------------------------------+
+
++---------------------------------------------+
+| vep.worst_csq_for_variant_canonical.cds_end |
++---------------------------------------------+
+|                                       int32 |
++---------------------------------------------+
+|                                           4 |
+|                                           4 |
+|                                           5 |
+|                                           5 |
+|                                           5 |
+|                                           6 |
+|                                           6 |
+|                                           7 |
+|                                           7 |
+|                                           8 |
++---------------------------------------------+
+
++-----------------------------------------------+
+| vep.worst_csq_for_variant_canonical.cds_start |
++-----------------------------------------------+
+|                                         int32 |
++-----------------------------------------------+
+|                                             4 |
+|                                             4 |
+|                                             5 |
+|                                             5 |
+|                                             5 |
+|                                             6 |
+|                                             6 |
+|                                             7 |
+|                                             7 |
+|                                             8 |
++-----------------------------------------------+
+
++--------------------------------------------+
+| vep.worst_csq_for_variant_canonical.codons |
++--------------------------------------------+
+| str                                        |
++--------------------------------------------+
+| "Aag/Cag"                                  |
+| "Aag/Gag"                                  |
+| "aAg/aCg"                                  |
+| "aAg/aGg"                                  |
+| "aAg/aTg"                                  |
+| "aaG/aaC"                                  |
+| "aaG/aaT"                                  |
+| "Aag/Cag"                                  |
+| "Aag/Gag"                                  |
+| "aAg/aCg"                                  |
++--------------------------------------------+
+
++-------------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.consequence_terms |
++-------------------------------------------------------+
+| array<str>                                            |
++-------------------------------------------------------+
+| ["missense_variant"]                                  |
+| ["missense_variant"]                                  |
+| ["missense_variant"]                                  |
+| ["missense_variant"]                                  |
+| ["missense_variant"]                                  |
+| ["missense_variant"]                                  |
+| ["missense_variant"]                                  |
+| ["missense_variant","splice_region_variant"]          |
+| ["missense_variant","splice_region_variant"]          |
+| ["missense_variant","splice_region_variant"]          |
++-------------------------------------------------------+
+
++----------------------------------------------+
+| vep.worst_csq_for_variant_canonical.distance |
++----------------------------------------------+
+|                                        int32 |
++----------------------------------------------+
+|                                           NA |
+|                                           NA |
+|                                           NA |
+|                                           NA |
+|                                           NA |
+|                                           NA |
+|                                           NA |
+|                                           NA |
+|                                           NA |
+|                                           NA |
++----------------------------------------------+
+
++---------------------------------------------+
+| vep.worst_csq_for_variant_canonical.domains |
++---------------------------------------------+
+| array<struct{db: str, name: str}>           |
++---------------------------------------------+
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
++---------------------------------------------+
+
++------------------------------------------+
+| vep.worst_csq_for_variant_canonical.exon |
++------------------------------------------+
+| str                                      |
++------------------------------------------+
+| "2/3"                                    |
+| "2/3"                                    |
+| "2/3"                                    |
+| "2/3"                                    |
+| "2/3"                                    |
+| "2/3"                                    |
+| "2/3"                                    |
+| "2/3"                                    |
+| "2/3"                                    |
+| "2/3"                                    |
++------------------------------------------+
+
++-------------------------------------------+
+| vep.worst_csq_for_variant_canonical.flags |
++-------------------------------------------+
+| str                                       |
++-------------------------------------------+
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
++-------------------------------------------+
+
++---------------------------------------------+
+| vep.worst_csq_for_variant_canonical.gene_id |
++---------------------------------------------+
+| str                                         |
++---------------------------------------------+
+| "ENSG00000186092"                           |
+| "ENSG00000186092"                           |
+| "ENSG00000186092"                           |
+| "ENSG00000186092"                           |
+| "ENSG00000186092"                           |
+| "ENSG00000186092"                           |
+| "ENSG00000186092"                           |
+| "ENSG00000186092"                           |
+| "ENSG00000186092"                           |
+| "ENSG00000186092"                           |
++---------------------------------------------+
+
++------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.gene_pheno |
++------------------------------------------------+
+|                                          int32 |
++------------------------------------------------+
+|                                             NA |
+|                                             NA |
+|                                             NA |
+|                                             NA |
+|                                             NA |
+|                                             NA |
+|                                             NA |
+|                                             NA |
+|                                             NA |
+|                                             NA |
++------------------------------------------------+
+
++-------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.gene_symbol |
++-------------------------------------------------+
+| str                                             |
++-------------------------------------------------+
+| "OR4F5"                                         |
+| "OR4F5"                                         |
+| "OR4F5"                                         |
+| "OR4F5"                                         |
+| "OR4F5"                                         |
+| "OR4F5"                                         |
+| "OR4F5"                                         |
+| "OR4F5"                                         |
+| "OR4F5"                                         |
+| "OR4F5"                                         |
++-------------------------------------------------+
+
++--------------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.gene_symbol_source |
++--------------------------------------------------------+
+| str                                                    |
++--------------------------------------------------------+
+| "HGNC"                                                 |
+| "HGNC"                                                 |
+| "HGNC"                                                 |
+| "HGNC"                                                 |
+| "HGNC"                                                 |
+| "HGNC"                                                 |
+| "HGNC"                                                 |
+| "HGNC"                                                 |
+| "HGNC"                                                 |
+| "HGNC"                                                 |
++--------------------------------------------------------+
+
++---------------------------------------------+
+| vep.worst_csq_for_variant_canonical.hgnc_id |
++---------------------------------------------+
+| str                                         |
++---------------------------------------------+
+| "HGNC:14825"                                |
+| "HGNC:14825"                                |
+| "HGNC:14825"                                |
+| "HGNC:14825"                                |
+| "HGNC:14825"                                |
+| "HGNC:14825"                                |
+| "HGNC:14825"                                |
+| "HGNC:14825"                                |
+| "HGNC:14825"                                |
+| "HGNC:14825"                                |
++---------------------------------------------+
+
++-------------------------------------------+
+| vep.worst_csq_for_variant_canonical.hgvsc |
++-------------------------------------------+
+| str                                       |
++-------------------------------------------+
+| "ENST00000641515.2:c.4A>C"                |
+| "ENST00000641515.2:c.4A>G"                |
+| "ENST00000641515.2:c.5A>C"                |
+| "ENST00000641515.2:c.5A>G"                |
+| "ENST00000641515.2:c.5A>T"                |
+| "ENST00000641515.2:c.6G>C"                |
+| "ENST00000641515.2:c.6G>T"                |
+| "ENST00000641515.2:c.7A>C"                |
+| "ENST00000641515.2:c.7A>G"                |
+| "ENST00000641515.2:c.8A>C"                |
++-------------------------------------------+
+
++-------------------------------------------+
+| vep.worst_csq_for_variant_canonical.hgvsp |
++-------------------------------------------+
+| str                                       |
++-------------------------------------------+
+| "ENSP00000493376.2:p.Lys2Gln"             |
+| "ENSP00000493376.2:p.Lys2Glu"             |
+| "ENSP00000493376.2:p.Lys2Thr"             |
+| "ENSP00000493376.2:p.Lys2Arg"             |
+| "ENSP00000493376.2:p.Lys2Met"             |
+| "ENSP00000493376.2:p.Lys2Asn"             |
+| "ENSP00000493376.2:p.Lys2Asn"             |
+| "ENSP00000493376.2:p.Lys3Gln"             |
+| "ENSP00000493376.2:p.Lys3Glu"             |
+| "ENSP00000493376.2:p.Lys3Thr"             |
++-------------------------------------------+
+
++-------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.hgvs_offset |
++-------------------------------------------------+
+|                                           int32 |
++-------------------------------------------------+
+|                                              NA |
+|                                              NA |
+|                                              NA |
+|                                              NA |
+|                                              NA |
+|                                              NA |
+|                                              NA |
+|                                              NA |
+|                                              NA |
+|                                              NA |
++-------------------------------------------------+
+
++--------------------------------------------+
+| vep.worst_csq_for_variant_canonical.impact |
++--------------------------------------------+
+| str                                        |
++--------------------------------------------+
+| "MODERATE"                                 |
+| "MODERATE"                                 |
+| "MODERATE"                                 |
+| "MODERATE"                                 |
+| "MODERATE"                                 |
+| "MODERATE"                                 |
+| "MODERATE"                                 |
+| "MODERATE"                                 |
+| "MODERATE"                                 |
+| "MODERATE"                                 |
++--------------------------------------------+
+
++--------------------------------------------+
+| vep.worst_csq_for_variant_canonical.intron |
++--------------------------------------------+
+| str                                        |
++--------------------------------------------+
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
++--------------------------------------------+
+
++-----------------------------------------+
+| vep.worst_csq_for_variant_canonical.lof |
++-----------------------------------------+
+| str                                     |
++-----------------------------------------+
+| NA                                      |
+| NA                                      |
+| NA                                      |
+| NA                                      |
+| NA                                      |
+| NA                                      |
+| NA                                      |
+| NA                                      |
+| NA                                      |
+| NA                                      |
++-----------------------------------------+
+
++-----------------------------------------------+
+| vep.worst_csq_for_variant_canonical.lof_flags |
++-----------------------------------------------+
+| str                                           |
++-----------------------------------------------+
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
++-----------------------------------------------+
+
++------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.lof_filter |
++------------------------------------------------+
+| str                                            |
++------------------------------------------------+
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
+| NA                                             |
++------------------------------------------------+
+
++----------------------------------------------+
+| vep.worst_csq_for_variant_canonical.lof_info |
++----------------------------------------------+
+| str                                          |
++----------------------------------------------+
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
+| NA                                           |
++----------------------------------------------+
+
++-------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.mane_select |
++-------------------------------------------------+
+| str                                             |
++-------------------------------------------------+
+| "NM_001005484.2"                                |
+| "NM_001005484.2"                                |
+| "NM_001005484.2"                                |
+| "NM_001005484.2"                                |
+| "NM_001005484.2"                                |
+| "NM_001005484.2"                                |
+| "NM_001005484.2"                                |
+| "NM_001005484.2"                                |
+| "NM_001005484.2"                                |
+| "NM_001005484.2"                                |
++-------------------------------------------------+
+
++--------------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.mane_plus_clinical |
++--------------------------------------------------------+
+| str                                                    |
++--------------------------------------------------------+
+| NA                                                     |
+| NA                                                     |
+| NA                                                     |
+| NA                                                     |
+| NA                                                     |
+| NA                                                     |
+| NA                                                     |
+| NA                                                     |
+| NA                                                     |
+| NA                                                     |
++--------------------------------------------------------+
+
++-----------------------------------------------+
+| vep.worst_csq_for_variant_canonical.minimised |
++-----------------------------------------------+
+|                                         int32 |
++-----------------------------------------------+
+|                                            NA |
+|                                            NA |
+|                                            NA |
+|                                            NA |
+|                                            NA |
+|                                            NA |
+|                                            NA |
+|                                            NA |
+|                                            NA |
+|                                            NA |
++-----------------------------------------------+
+
++-------------------------------------------+
+| vep.worst_csq_for_variant_canonical.mirna |
++-------------------------------------------+
+| array<str>                                |
++-------------------------------------------+
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
+| NA                                        |
++-------------------------------------------+
+
++---------------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.polyphen_prediction |
++---------------------------------------------------------+
+| str                                                     |
++---------------------------------------------------------+
+| "benign"                                                |
+| "benign"                                                |
+| "benign"                                                |
+| "benign"                                                |
+| "benign"                                                |
+| "benign"                                                |
+| "benign"                                                |
+| "benign"                                                |
+| "benign"                                                |
+| "benign"                                                |
++---------------------------------------------------------+
+
++----------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.polyphen_score |
++----------------------------------------------------+
+|                                            float64 |
++----------------------------------------------------+
+|                                           2.50e-02 |
+|                                           7.00e-03 |
+|                                           7.00e-03 |
+|                                           1.20e-02 |
+|                                           1.52e-01 |
+|                                           7.00e-03 |
+|                                           7.00e-03 |
+|                                           0.00e+00 |
+|                                           0.00e+00 |
+|                                           3.30e-02 |
++----------------------------------------------------+
+
++-------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.protein_end |
++-------------------------------------------------+
+|                                           int32 |
++-------------------------------------------------+
+|                                               2 |
+|                                               2 |
+|                                               2 |
+|                                               2 |
+|                                               2 |
+|                                               2 |
+|                                               2 |
+|                                               3 |
+|                                               3 |
+|                                               3 |
++-------------------------------------------------+
+
++---------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.protein_start |
++---------------------------------------------------+
+|                                             int32 |
++---------------------------------------------------+
+|                                                 2 |
+|                                                 2 |
+|                                                 2 |
+|                                                 2 |
+|                                                 2 |
+|                                                 2 |
+|                                                 2 |
+|                                                 3 |
+|                                                 3 |
+|                                                 3 |
++---------------------------------------------------+
+
++------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.protein_id |
++------------------------------------------------+
+| str                                            |
++------------------------------------------------+
+| "ENSP00000493376"                              |
+| "ENSP00000493376"                              |
+| "ENSP00000493376"                              |
+| "ENSP00000493376"                              |
+| "ENSP00000493376"                              |
+| "ENSP00000493376"                              |
+| "ENSP00000493376"                              |
+| "ENSP00000493376"                              |
+| "ENSP00000493376"                              |
+| "ENSP00000493376"                              |
++------------------------------------------------+
+
++-----------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.sift_prediction |
++-----------------------------------------------------+
+| str                                                 |
++-----------------------------------------------------+
+| "tolerated_low_confidence"                          |
+| "tolerated_low_confidence"                          |
+| "tolerated_low_confidence"                          |
+| "tolerated_low_confidence"                          |
+| "tolerated_low_confidence"                          |
+| "tolerated_low_confidence"                          |
+| "tolerated_low_confidence"                          |
+| "tolerated_low_confidence"                          |
+| "deleterious_low_confidence"                        |
+| "deleterious_low_confidence"                        |
++-----------------------------------------------------+
+
++------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.sift_score |
++------------------------------------------------+
+|                                        float64 |
++------------------------------------------------+
+|                                       3.70e-01 |
+|                                       3.30e-01 |
+|                                       2.50e-01 |
+|                                       8.20e-01 |
+|                                       6.00e-02 |
+|                                       2.20e-01 |
+|                                       2.20e-01 |
+|                                       9.30e-01 |
+|                                       4.00e-02 |
+|                                       3.00e-02 |
++------------------------------------------------+
+
++--------------------------------------------+
+| vep.worst_csq_for_variant_canonical.source |
++--------------------------------------------+
+| str                                        |
++--------------------------------------------+
+| "Ensembl"                                  |
+| "Ensembl"                                  |
+| "Ensembl"                                  |
+| "Ensembl"                                  |
+| "Ensembl"                                  |
+| "Ensembl"                                  |
+| "Ensembl"                                  |
+| "Ensembl"                                  |
+| "Ensembl"                                  |
+| "Ensembl"                                  |
++--------------------------------------------+
+
++--------------------------------------------+
+| vep.worst_csq_for_variant_canonical.strand |
++--------------------------------------------+
+|                                      int32 |
++--------------------------------------------+
+|                                          1 |
+|                                          1 |
+|                                          1 |
+|                                          1 |
+|                                          1 |
+|                                          1 |
+|                                          1 |
+|                                          1 |
+|                                          1 |
+|                                          1 |
++--------------------------------------------+
+
++-----------------------------------------------+
+| vep.worst_csq_for_variant_canonical.swissprot |
++-----------------------------------------------+
+| str                                           |
++-----------------------------------------------+
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
+| NA                                            |
++-----------------------------------------------+
+
++---------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.transcript_id |
++---------------------------------------------------+
+| str                                               |
++---------------------------------------------------+
+| "ENST00000641515"                                 |
+| "ENST00000641515"                                 |
+| "ENST00000641515"                                 |
+| "ENST00000641515"                                 |
+| "ENST00000641515"                                 |
+| "ENST00000641515"                                 |
+| "ENST00000641515"                                 |
+| "ENST00000641515"                                 |
+| "ENST00000641515"                                 |
+| "ENST00000641515"                                 |
++---------------------------------------------------+
+
++--------------------------------------------+
+| vep.worst_csq_for_variant_canonical.trembl |
++--------------------------------------------+
+| str                                        |
++--------------------------------------------+
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
+| NA                                         |
++--------------------------------------------+
+
++-----------------------------------------+
+| vep.worst_csq_for_variant_canonical.tsl |
++-----------------------------------------+
+|                                   int32 |
++-----------------------------------------+
+|                                      NA |
+|                                      NA |
+|                                      NA |
+|                                      NA |
+|                                      NA |
+|                                      NA |
+|                                      NA |
+|                                      NA |
+|                                      NA |
+|                                      NA |
++-----------------------------------------+
+
++---------------------------------------------+
+| vep.worst_csq_for_variant_canonical.uniparc |
++---------------------------------------------+
+| str                                         |
++---------------------------------------------+
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
+| NA                                          |
++---------------------------------------------+
+
++-----------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.uniprot_isoform |
++-----------------------------------------------------+
+| array<str>                                          |
++-----------------------------------------------------+
+| NA                                                  |
+| NA                                                  |
+| NA                                                  |
+| NA                                                  |
+| NA                                                  |
+| NA                                                  |
+| NA                                                  |
+| NA                                                  |
+| NA                                                  |
+| NA                                                  |
++-----------------------------------------------------+
+
++----------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.variant_allele |
++----------------------------------------------------+
+| str                                                |
++----------------------------------------------------+
+| "C"                                                |
+| "G"                                                |
+| "C"                                                |
+| "G"                                                |
+| "T"                                                |
+| "C"                                                |
+| "T"                                                |
+| "C"                                                |
+| "G"                                                |
+| "C"                                                |
++----------------------------------------------------+
+
++-------------------------------------------------------------+
+| vep.worst_csq_for_variant_canonical.most_severe_consequence |
++-------------------------------------------------------------+
+| str                                                         |
++-------------------------------------------------------------+
+| "missense_variant"                                          |
+| "missense_variant"                                          |
+| "missense_variant"                                          |
+| "missense_variant"                                          |
+| "missense_variant"                                          |
+| "missense_variant"                                          |
+| "missense_variant"                                          |
+| "missense_variant"                                          |
+| "missense_variant"                                          |
+| "missense_variant"                                          |
++-------------------------------------------------------------+
+
++-----------------------------------------------+----------------------+
+| vep.worst_csq_for_variant_canonical.csq_score | vep_proc_id.part_idx |
++-----------------------------------------------+----------------------+
+|                                       float64 |                int32 |
++-----------------------------------------------+----------------------+
+|                                      1.09e+01 |                    0 |
+|                                      1.09e+01 |                    0 |
+|                                      1.09e+01 |                    0 |
+|                                      1.09e+01 |                    0 |
+|                                      1.09e+01 |                    0 |
+|                                      1.09e+01 |                    0 |
+|                                      1.09e+01 |                    0 |
+|                                      1.09e+01 |                    0 |
+|                                      1.09e+01 |                    0 |
+|                                      1.09e+01 |                    0 |
++-----------------------------------------------+----------------------+
+
++-----------------------+----------+-------------+-----+-----+------------+
+| vep_proc_id.block_idx | coverage | meth_levels | ref | alt | transition |
++-----------------------+----------+-------------+-----+-----+------------+
+|                 int32 |    int32 |       int32 | str | str |       bool |
++-----------------------+----------+-------------+-----+-----+------------+
+|                   166 |        0 |          NA | "A" | "C" |      False |
+|                   166 |        0 |          NA | "A" | "G" |       True |
+|                   166 |        0 |          NA | "A" | "C" |      False |
+|                   166 |        0 |          NA | "A" | "G" |       True |
+|                   166 |        0 |          NA | "A" | "T" |      False |
+|                   166 |        0 |          NA | "C" | "G" |      False |
+|                   166 |        0 |          NA | "C" | "A" |      False |
+|                   166 |        0 |          NA | "A" | "C" |      False |
+|                   166 |        0 |          NA | "A" | "G" |       True |
+|                   166 |        0 |          NA | "A" | "C" |      False |
++-----------------------+----------+-------------+-----+-----+------------+
+
++-------+----------------------+---------------------+-------------------+
+|   cpg | mutation_type        | mutation_type_model | methylation_level |
++-------+----------------------+---------------------+-------------------+
+|  bool | str                  | str                 |             int32 |
++-------+----------------------+---------------------+-------------------+
+| False | "transversion"       | "non-CpG"           |                 0 |
+| False | "non-CpG transition" | "non-CpG"           |                 0 |
+| False | "transversion"       | "non-CpG"           |                 0 |
+| False | "non-CpG transition" | "non-CpG"           |                 0 |
+| False | "transversion"       | "non-CpG"           |                 0 |
+| False | "transversion"       | "non-CpG"           |                 0 |
+| False | "transversion"       | "non-CpG"           |                 0 |
+| False | "transversion"       | "non-CpG"           |                 0 |
+| False | "non-CpG transition" | "non-CpG"           |                 0 |
+| False | "transversion"       | "non-CpG"           |                 0 |
++-------+----------------------+---------------------+-------------------+
+
++-------------+----------+--------+--------+--------+-----------------+
+| was_flipped |   mu_snp | aa_ref | aa_pos | aa_alt | uniprot_isoform |
++-------------+----------+--------+--------+--------+-----------------+
+|        bool |  float64 | str    |  int32 | str    | str             |
++-------------+----------+--------+--------+--------+-----------------+
+|       False | 1.20e-09 | "Lys"  |      2 | "Gln"  | "x"             |
+|       False | 3.03e-09 | "Lys"  |      2 | "Glu"  | "x"             |
+|       False | 1.54e-09 | "Lys"  |      2 | "Thr"  | "x"             |
+|       False | 3.92e-09 | "Lys"  |      2 | "Arg"  | "x"             |
+|       False | 9.49e-10 | "Lys"  |      2 | "Met"  | "x"             |
+|        True | 3.59e-09 | "Lys"  |      2 | "Asn"  | "x"             |
+|        True | 2.69e-09 | "Lys"  |      2 | "Asn"  | "x"             |
+|       False | 1.20e-09 | "Lys"  |      3 | "Gln"  | "x"             |
+|       False | 3.03e-09 | "Lys"  |      3 | "Glu"  | "x"             |
+|       False | 1.54e-09 | "Lys"  |      3 | "Thr"  | "x"             |
++-------------+----------+--------+--------+--------+-----------------+
+showing top 10 rows
+

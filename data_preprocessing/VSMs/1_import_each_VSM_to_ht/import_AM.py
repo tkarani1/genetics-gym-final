@@ -1,9 +1,10 @@
 import hail as hl
 hl.init(worker_memory="highmem", driver_memory='highmem') 
-from resources import AM_ISOFORMS_PATH, AM_CANONICAL_PATH
-from resources.paths import WRITE_VSM_TABLES_PATH
+from resources.paths import MISSENSE_SCORE_RESOURCE_PATHS, FORMATTED_VSM_HT_PATHS
 
 # AM
+AM_ISOFORMS_PATH = MISSENSE_SCORE_RESOURCE_PATHS['AM_ISOFORMS_PATH']
+AM_CANONICAL_PATH = MISSENSE_SCORE_RESOURCE_PATHS['AM_CANONICAL_PATH']
 # all isoforms table
 am_table = hl.import_table(AM_ISOFORMS_PATH, 
                            delimiter='\t', force_bgz=True, no_header=False, comment='#')
@@ -16,7 +17,7 @@ am_table = am_table.annotate(
    enst_orig = am_table.transcript_id
 )
 am_table = am_table.select('enst', 'aa_pos', 'aa_ref', 'aa_alt', 'AM', 'enst_orig')
-am_table.write(f'{WRITE_VSM_TABLES_PATH}/AM_isoforms.ht')
+am_table.write(FORMATTED_VSM_HT_PATHS['AM_ISOFORMS_PATH'])
 
 # # canonical table
 am_table = hl.import_table(AM_CANONICAL_PATH, 
@@ -32,5 +33,5 @@ am_table_fixed = am_table.annotate(
 am_table = am_table_fixed.annotate(enst = am_table_fixed.enst_orig.split('\.')[0])
 am_table_fixed = am_table_fixed.drop('f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9')
 am_table_fixed_k = am_table_fixed.key_by('locus', 'alleles', 'enst')
-am_table_fixed_k.write(f'{WRITE_VSM_TABLES_PATH}/AM_canonical.ht')
+am_table_fixed_k.write(FORMATTED_VSM_HT_PATHS['AM_CANONICAL_PATH'])  
 

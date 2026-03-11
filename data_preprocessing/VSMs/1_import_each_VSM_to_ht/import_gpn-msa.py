@@ -1,10 +1,10 @@
 import hail as hl
 hl.init(worker_memory="highmem", driver_memory='highmem') 
-from resources import GPN_MSA_PATH
-from resources.paths import WRITE_VSM_TABLES_PATH
+from resources.paths import MISSENSE_SCORE_RESOURCE_PATHS, WRITE_VSM_TABLES_PATH, FORMATTED_VSM_HT_PATHS
 
+METHOD = 'GPN_MSA'
 ## GPN-MSA
-ht = hl.import_table(GPN_MSA_PATH, delimiter='\t', force_bgz=True, no_header=True)
+ht = hl.import_table(MISSENSE_SCORE_RESOURCE_PATHS[METHOD], delimiter='\t', force_bgz=True, no_header=True)
 ht = ht.annotate(
     chr = 'chr'+ht.f0, 
     pos = hl.int(ht.f1), 
@@ -16,6 +16,5 @@ ht = ht.annotate(
 )
 ht = ht.select(ht.locus, ht.alleles, ht.gpn_msa_score)
 ht = ht.key_by('locus', 'alleles')
-ht.write(f'{WRITE_VSM_TABLES_PATH}/gpn_msa.ht')
-
+ht.write(FORMATTED_VSM_HT_PATHS[METHOD])    
 

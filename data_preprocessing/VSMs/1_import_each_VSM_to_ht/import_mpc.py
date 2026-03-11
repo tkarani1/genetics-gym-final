@@ -1,14 +1,13 @@
 import hail as hl
 hl.init(worker_memory="highmem", driver_memory='highmem') 
-from resources import MPC_PATH
-from resources.paths import WRITE_VSM_TABLES_PATH
-from resources.functions import locus_alleles_to_chr_pos_ref_alt
+from resources.paths import MISSENSE_SCORE_RESOURCE_PATHS, WRITE_VSM_TABLES_PATH, FORMATTED_VSM_HT_PATHS
 
+METHOD = 'MPC'
 # # MPC
 # # original: 
-ht = hl.read_table(MPC_PATH)
-ht = ht.key_by('locus','alleles')
-ht.write(f'{WRITE_VSM_TABLES_PATH}/mpc_grch38_deduped_with_outliers_2024-04-30.ht')
-ht = locus_alleles_to_chr_pos_ref_alt(ht)
-ht.export(f'{WRITE_VSM_TABLES_PATH}/mpc_grch38_deduped_with_outliers_2024-04-30.tsv.bgz')
+ht = hl.read_table(MISSENSE_SCORE_RESOURCE_PATHS[METHOD])
+ht = ht.rename({'mpc': 'mpc_score', 'transcript': 'enst'})
+ht = ht.key_by('locus','alleles', 'enst')
+ht.write(FORMATTED_VSM_HT_PATHS[METHOD], overwrite=True)    
+
 
