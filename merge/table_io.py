@@ -10,6 +10,13 @@ import polars as pl
 NULL_VALUES = ["N/A", "N/a", "n/a", "NA", "na", "Na"]
 
 
+def normalize_chrom_key(lf: pl.LazyFrame) -> pl.LazyFrame:
+    """Rename 'chr' -> 'chrom' if present, so all tables use a consistent key."""
+    if "chr" in lf.collect_schema().names():
+        return lf.rename({"chr": "chrom"})
+    return lf
+
+
 def _is_gcs_uri(uri: str) -> bool:
     return uri.startswith("gs://")
 
@@ -49,9 +56,7 @@ def scan_table(uri: str) -> pl.LazyFrame:
     fmt = detect_format(uri)
 
     if fmt == "parquet":
-        if _is_gcs_uri(uri):
-            return pl.scan_parquet(uri, storage_options={"token": "google_default"})
-        return pl.scan_parquet(uri)
+        return normalize_chrom_key(pl.scan_parquet(uri))
 
     # TSV or TSV.BGZ -- for GCS we need a local copy first
     path = uri
@@ -62,7 +67,7 @@ def scan_table(uri: str) -> pl.LazyFrame:
         _download_gcs_file(uri, tmp.name)
         path = tmp.name
 
-    return pl.scan_csv(
+    return normalize_chrom_key(pl.scan_csv(
         path,
         separator="\t",
         has_header=True,
@@ -70,7 +75,7 @@ def scan_table(uri: str) -> pl.LazyFrame:
         ignore_errors=False,
         low_memory=True,
         null_values=NULL_VALUES,
-    )
+    ))
 
 
 def _cache_key(uri: str) -> str:

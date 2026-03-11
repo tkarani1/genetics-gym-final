@@ -16,7 +16,7 @@ import time
 
 import polars as pl
 
-from table_io import ensure_parquet, write_parquet
+from table_io import ensure_parquet, normalize_chrom_key, write_parquet
 from merge import JOIN_KEYS
 
 
@@ -54,14 +54,9 @@ def apply_filters(
         flag_col = f"filter_{stem}"
 
         pq_path = ensure_parquet(uri, cache_dir)
-        storage_opts = (
-            {"storage_options": {"token": "google_default"}}
-            if pq_path.startswith("gs://")
-            else {}
-        )
 
         filter_keys = (
-            pl.scan_parquet(pq_path, **storage_opts)
+            normalize_chrom_key(pl.scan_parquet(pq_path))
             .select(JOIN_KEYS)
             .unique()
             .with_columns(pl.lit(True).alias(flag_col))
@@ -110,12 +105,7 @@ def main() -> None:
     cache_dir = os.path.join(tempfile.gettempdir(), "vsm_table_cache")
 
     pq_path = ensure_parquet(args.reference, cache_dir)
-    storage_opts = (
-        {"storage_options": {"token": "google_default"}}
-        if pq_path.startswith("gs://")
-        else {}
-    )
-    lf = pl.scan_parquet(pq_path, **storage_opts)
+    lf = normalize_chrom_key(pl.scan_parquet(pq_path))
 
     lf = apply_filters(lf, _parse_uri_list(args.filter_tables), cache_dir)
 

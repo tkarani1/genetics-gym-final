@@ -18,10 +18,11 @@ from collections import Counter
 
 import polars as pl
 
-from table_io import ensure_parquet, write_parquet
+from table_io import ensure_parquet, normalize_chrom_key, write_parquet
 from merge import merge_tables, JOIN_KEYS
 from percentile import add_percentile_columns
 from apply_filters import apply_filters
+from negate import compute_negations, negate_scores
 
 
 def _parse_uri_list(raw: str) -> list[str]:
@@ -58,6 +59,7 @@ def run_pipeline(
     percentile_order: str = "post",
     filter_uris: list[str] | None = None,
     keep_raw_scores: bool = False,
+    reference_score: str | None = "AM",
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -72,11 +74,7 @@ def run_pipeline(
 
     for uri in prediction_uris:
         pq_path = ensure_parquet(uri, cache_dir)
-        lf = pl.scan_parquet(
-            pq_path,
-            **({"storage_options": {"token": "google_default"}}
-               if pq_path.startswith("gs://") else {}),
-        )
+        lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         score_cols = _score_columns(lf)
         all_score_cols.extend(score_cols)
         lf = lf.select(JOIN_KEYS + score_cols)
@@ -91,11 +89,7 @@ def run_pipeline(
 
     for uri in evaluation_uris:
         pq_path = ensure_parquet(uri, cache_dir)
-        lf = pl.scan_parquet(
-            pq_path,
-            **({"storage_options": {"token": "google_default"}}
-               if pq_path.startswith("gs://") else {}),
-        )
+        lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         schema = lf.collect_schema()
         label_cols = [c for c, dtype in schema.items()
                       if c not in JOIN_KEYS and dtype == pl.Boolean]
@@ -140,6 +134,16 @@ def run_pipeline(
     merged_eval = merge_tables(eval_frames, join_type="outer")
 
     # --- Phase 2: Join pred tables with percentiles -----------------------
+    negate_enabled = reference_score is not None
+
+    if percentile_order == "pre" and negate_enabled:
+        print(
+            "  WARNING: --percentile_order 'pre' is incompatible with score "
+            "negation (requires merged frame); falling back to 'post'.",
+            file=sys.stderr,
+        )
+        percentile_order = "post"
+
     if percentile_order == "pre":
         print("  Calculating percentiles BEFORE pred merge ...", file=sys.stderr)
         pred_frames = [
@@ -153,6 +157,35 @@ def run_pipeline(
     )
     merged_pred = merge_tables(pred_frames, join_type=join_type)
 
+    if join_type == "inner" and all_score_cols:
+        print("  Dropping rows with any null score column ...", file=sys.stderr)
+        merged_pred = merged_pred.drop_nulls(subset=all_score_cols)
+
+    # --- Negate score columns (if reference provided) ---------------------
+    if negate_enabled:
+        if reference_score not in all_score_cols:
+            available = ", ".join(all_score_cols)
+            raise ValueError(
+                f"Reference score column '{reference_score}' not found in "
+                f"prediction tables. Available score columns: {available}"
+            )
+        print(
+            f"  Computing correlations with reference '{reference_score}' ...",
+            file=sys.stderr,
+        )
+        cols_to_negate = compute_negations(
+            merged_pred, all_score_cols, reference_score,
+        )
+        if cols_to_negate:
+            print(
+                f"  Negating {len(cols_to_negate)} column(s): {cols_to_negate}",
+                file=sys.stderr,
+            )
+            merged_pred = negate_scores(merged_pred, cols_to_negate)
+        else:
+            print("  All scores already aligned; no negation needed.",
+                  file=sys.stderr)
+
     if percentile_order == "post":
         print("  Calculating percentiles AFTER pred merge ...", file=sys.stderr)
         merged_pred = add_percentile_columns(merged_pred, all_score_cols)
@@ -164,7 +197,7 @@ def run_pipeline(
     )
 
     # --- Drop raw score columns (if requested) -------------------------------
-    if not keep_raw_scores and all_score_cols:
+    if not keep_raw_scores and all_score_cols and percentile_order != "none":
         print("  Dropping raw score columns ...", file=sys.stderr)
         merged = merged.drop(all_score_cols)
 
@@ -214,17 +247,31 @@ def main() -> None:
         default="inner",
         help=(
             "Join strategy for prediction tables (default: inner). "
-            "Evaluation tables are always outer-joined."
+            "'inner' keeps only rows where every score column is non-null "
+            "across all prediction tables. Evaluation tables are always "
+            "outer-joined."
         ),
     )
     parser.add_argument(
         "--percentile_order",
-        choices=["pre", "post"],
+        choices=["pre", "post", "none"],
         default="post",
         help=(
             "'pre' = compute percentile ranks on each prediction table before "
-            "merging; 'post' = compute after merging prediction tables "
-            "(default: post)."
+            "merging; 'post' = compute after merging prediction tables; "
+            "'none' = skip percentile computation and retain raw scores "
+            "(default: post). 'pre' is incompatible with score negation and "
+            "will fall back to 'post' when --reference_score is set."
+        ),
+    )
+    parser.add_argument(
+        "--reference_score",
+        default="AM",
+        help=(
+            "Reference score column for directional alignment. Scores with "
+            "negative Pearson correlation to this column are negated so all "
+            "scores point in the same direction. Set to 'none' to disable "
+            "negation (default: AM)."
         ),
     )
     parser.add_argument(
@@ -249,6 +296,10 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    ref = args.reference_score
+    if ref and ref.lower() == "none":
+        ref = None
+
     run_pipeline(
         prediction_uris=_parse_uri_list(args.prediction_tables),
         evaluation_uris=_parse_uri_list(args.evaluation_tables),
@@ -257,6 +308,7 @@ def main() -> None:
         percentile_order=args.percentile_order,
         filter_uris=_parse_uri_list(args.filter_tables) if args.filter_tables else None,
         keep_raw_scores=args.keep_raw_scores,
+        reference_score=ref,
     )
 
 
