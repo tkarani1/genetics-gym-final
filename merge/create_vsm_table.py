@@ -119,7 +119,7 @@ def run_pipeline(
             stem = _derive_stem(uri)
             frame_cols = set(eval_frames[i].collect_schema().names())
             renames = {
-                col: f"{col}__{stem}"
+                col: f"{col}_{stem}"
                 for col in collisions
                 if col in frame_cols
             }
