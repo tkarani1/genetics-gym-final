@@ -1,3 +1,5 @@
+.test_data/
 data/
 *.gz
 *.bgz
+
