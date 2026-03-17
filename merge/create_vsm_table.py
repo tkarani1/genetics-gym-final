@@ -346,6 +346,19 @@ def run_pipeline(
             )
             merged = apply_filters(merged, filter_uris, cache_dir)
 
+    # --- Select output columns (if requested) --------------------------------
+    if output_table_fields is not None:
+        available = set(merged.collect_schema().names())
+        unknown = [f for f in output_table_fields if f not in available]
+        if unknown:
+            raise ValueError(
+                f"--output_table_fields contains column(s) not present in "
+                f"the merged table: {unknown}. "
+                f"Available columns: {sorted(available - set(JOIN_KEYS))}"
+            )
+        keep = list(dict.fromkeys(JOIN_KEYS + output_table_fields))
+        merged = merged.select(keep)
+
     # --- Write output -----------------------------------------------------
     print(f"  Writing output to {output_uri} ...", file=sys.stderr)
     merged.sink_parquet(
