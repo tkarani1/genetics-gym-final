@@ -60,6 +60,7 @@ def run_pipeline(
     filter_uris: list[str] | None = None,
     keep_raw_scores: bool = False,
     reference_score: str | None = "AM",
+    output_table_fields: list[str] | None = None,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -209,6 +210,19 @@ def run_pipeline(
         )
         merged = apply_filters(merged, filter_uris, cache_dir)
 
+    # --- Select output columns (if requested) --------------------------------
+    if output_table_fields is not None:
+        available = set(merged.collect_schema().names())
+        unknown = [f for f in output_table_fields if f not in available]
+        if unknown:
+            raise ValueError(
+                f"--output_table_fields contains column(s) not present in "
+                f"the merged table: {unknown}. "
+                f"Available columns: {sorted(available - set(JOIN_KEYS))}"
+            )
+        keep = list(dict.fromkeys(JOIN_KEYS + output_table_fields))
+        merged = merged.select(keep)
+
     # --- Write output -----------------------------------------------------
     print(f"  Writing output to {output_uri} ...", file=sys.stderr)
     # write_parquet(merged, output_uri)
@@ -293,6 +307,15 @@ def main() -> None:
             "filter table."
         ),
     )
+    parser.add_argument(
+        "--output_table_fields",
+        default=None,
+        help=(
+            "Comma-separated list of column names to retain in the output "
+            "table. The genomic key columns (chrom, pos, ref, alt) are always "
+            "included regardless. If omitted, all columns are written."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -309,6 +332,10 @@ def main() -> None:
         filter_uris=_parse_uri_list(args.filter_tables) if args.filter_tables else None,
         keep_raw_scores=args.keep_raw_scores,
         reference_score=ref,
+        output_table_fields=(
+            [f.strip() for f in args.output_table_fields.split(",") if f.strip()]
+            if args.output_table_fields else None
+        ),
     )
 
 
