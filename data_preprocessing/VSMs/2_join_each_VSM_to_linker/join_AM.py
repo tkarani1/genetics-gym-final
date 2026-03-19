@@ -2,66 +2,51 @@ import hail as hl
 import json
 import os
 hl.init(worker_memory="highmem", driver_memory='highmem') 
-from resources.paths import FORMATTED_VSM_HT_PATHS, WRITE_VSM_LINKER_TABLES_PATH, LINKER_PATHS
+from resources.paths import FORMATTED_VSM_HT_PATHS, WRITE_VSM_LINKER_TABLES_BASE, LINKER_PATHS, VSM_TABLE_NAMES
+from resources.functions import write_tsv_bgz_from_ht
 
-linker = LINKER_PATHS['MISSENSE_ENST_TRANSCRIPT_AA']
+METHOD = 'AM'
+linker = LINKER_PATHS['MISSENSE_ENST_TRANSCRIPT']
 
 # Read and count raw data
-am1 = hl.read_table(FORMATTED_VSM_HT_PATHS['AM_ISOFORMS_PATH'])
-am1_raw_count = am1.count()
-am1 = am1.key_by('enst', 'aa_pos', 'aa_ref', 'aa_alt')
-am1 = am1.select(am1.AM)
+am_iso = hl.read_table(FORMATTED_VSM_HT_PATHS['AM_ISOFORMS'])
+am_iso = am_iso.key_by('locus', 'alleles', 'enst')
+am_iso = am_iso.select(am_iso.AM_iso_score)
 
-am2 = hl.read_table(FORMATTED_VSM_HT_PATHS['AM_CANONICAL_PATH'])
-am2_raw_count = am2.count()
-am2 = am2.key_by('locus', 'alleles', 'enst')
+am_canon = hl.read_table(FORMATTED_VSM_HT_PATHS['AM_CANONICAL'])
+am_canon = am_canon.key_by('locus', 'alleles', 'enst')
+am_canon = am_canon.select(am_canon.AM_canon)
 
 
 linker_ht = hl.read_table(linker)
-linker_ht = linker_ht.key_by('enst', 'aa_pos', 'aa_ref', 'aa_alt')
-ht = linker_ht.join(am1, how='right')
+linker_ht = linker_ht.key_by('locus', 'alleles', 'enst')
+ht = linker_ht.join(am_iso, how='right')
 
 ht = ht.key_by('locus', 'alleles', 'enst')
-ht = ht.join(am2, how='right')
-ht = ht.checkpoint(f'{WRITE_VSM_LINKER_TABLES_PATH}/temp/vsm_am_temp.ht', overwrite=True)
+ht = ht.join(am_canon, how='right')
+ht = ht.checkpoint(f'{WRITE_VSM_LINKER_TABLES_BASE}/temp/vsm_am_temp.ht', overwrite=True)
 
 ht = ht.annotate(
-    AM = hl.coalesce(ht.AM_score, ht.AM) # joining the canonical one first
+    AM = hl.coalesce(ht.AM_canon, ht.AM_iso_score) # joining the canonical one first
 )
-ht.write(f'{WRITE_VSM_LINKER_TABLES_PATH}/linker_AM.ht')
-
-am2_collected = am2.collect_by_key()
-am2_collected_count = am2_collected.count()
-am2_key2 = am2.key_by('locus', 'alleles')
-am2_key2_collected = am2_key2.collect_by_key()
-am2_key2_collected_count = am2_key2_collected.count()
-
-# Write AM counts to JSON
-am_counts_file = f'{WRITE_VSM_LINKER_TABLES_PATH}/AM_counts.json'
-# Load existing counts if file exists
-if hl.hadoop_exists(am_counts_file):
-    with hl.hadoop_open(am_counts_file, 'r') as f:
-        counts = json.load(f)
-else:
-    counts = {}
-
-# Update with AM counts
-counts['AM'] = {
-    'raw_isoforms': am1_raw_count,
-    'raw_canonical': am2_raw_count,
-    'collected_canonical_SNP_enst': am2_collected_count,
-    'collected_canonical_SNP_only': am2_key2_collected_count,
-}
-
-# Write updated counts to cloud
-with hl.hadoop_open(am_counts_file, 'w') as f:
-    json.dump(counts, f, indent=2)
-    
-print(f"Counts written to: {am_counts_file}")
+ht.write(f'{WRITE_VSM_LINKER_TABLES_BASE}{VSM_TABLE_NAMES[METHOD]}_both_joined.ht')
+write_tsv_bgz_from_ht(ht, f'{WRITE_VSM_LINKER_TABLES_BASE}{VSM_TABLE_NAMES[METHOD]}_both_joined.tsv.bgz')
 
 
+# Separate isoforms and canonical
+ht1 = linker_ht.join(am_iso, how='right')
+ht1 = ht1.rename({'AM_iso_score': 'AM'})
+ht1.write(f'{WRITE_VSM_LINKER_TABLES_BASE}{VSM_TABLE_NAMES[METHOD]}_iso.ht')
+write_tsv_bgz_from_ht(ht, f'{WRITE_VSM_LINKER_TABLES_BASE}{VSM_TABLE_NAMES[METHOD]}_iso.tsv.bgz')
 
+ht2 = linker_ht.join(am_canon, how='right')
+ht2 = ht2.rename({'AM_canon': 'AM'})
+ht2.write(f'{WRITE_VSM_LINKER_TABLES_BASE}{VSM_TABLE_NAMES[METHOD]}_canon.ht')
+write_tsv_bgz_from_ht(ht, f'{WRITE_VSM_LINKER_TABLES_BASE}{VSM_TABLE_NAMES[METHOD]}_canon.tsv.bgz')
 
-
+# concat
+ht = ht2.concat(ht1)
+ht.write(f'{WRITE_VSM_LINKER_TABLES_BASE}{VSM_TABLE_NAMES[METHOD]}_both_concat.ht')
+write_tsv_bgz_from_ht(ht, f'{WRITE_VSM_LINKER_TABLES_BASE}{VSM_TABLE_NAMES[METHOD]}_both_concat.tsv.bgz')
 
 
