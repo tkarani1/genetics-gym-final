@@ -40,61 +40,61 @@ def merge_tables_pairwise(
     anchor: str,
 ) -> tuple[pl.LazyFrame, list[str]]:
     """
-    Fully lazy, memory-safe merge of score tables.
+    Pairwise merge strategy for prediction score tables.
 
-    Strategy:
-    1. Extract only (JOIN_KEYS + relevant score columns) from each table
-    2. Perform a single multi-way inner join across tables
-    3. Rename the anchor column to ``{anchor}_anchor`` and create
-       ``{anchor}_anchor_with_{C}`` columns for each non-anchor column *C*
+    Strategy: outer-join all tables once, then create pairwise anchor
+    columns via null-masking expressions.  For each non-anchor column *C*,
+    ``{anchor}_pairwise_{C}`` contains the anchor value only on rows where
+    *C* is non-null (semantically equivalent to an independent inner join
+    of the anchor with *C*, but without extra join operations).
+
+    Parameters
+    ----------
+    tables : list[pl.LazyFrame]
+        Prediction table LazyFrames containing keys + score columns.
+    score_cols : list[str]
+        Names of all score columns across the tables.
+    anchor : str
+        The score column to use as the anchor for pairwise joining.
 
     Returns
     -------
     merged : pl.LazyFrame
-        LazyFrame with JOIN_KEYS, ``{anchor}_anchor``, each non-anchor
-        column, and ``{anchor}_anchor_with_{C}`` pairwise columns.
+        The outer-joined result containing keys, the original anchor column,
+        each non-anchor column, and each ``{anchor}_pairwise_{C}`` column.
     updated_score_cols : list[str]
-        Renamed anchor + non-anchor columns + pairwise column names.
+        Original *score_cols* plus the new pairwise column names.
     """
-
     if not tables:
         raise ValueError("No tables provided for merging.")
 
-    # Step 1: restrict each table to only relevant columns
     pruned_tables = []
     for table in tables:
         schema = table.collect_schema()
         cols = [c for c in schema.names() if c in score_cols]
-
         if cols:
             pruned_tables.append(table.select(JOIN_KEYS + cols))
 
     if not pruned_tables:
         raise ValueError("No score columns found in the provided tables.")
 
-    # Step 2: perform a single join across all tables
-    def _join(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
-        return left.join(right, on=JOIN_KEYS, how="inner")
+    merged = merge_tables(pruned_tables, join_type="outer")
 
-    merged = reduce(_join, pruned_tables)
-
-    # Step 3: rename anchor and define pairwise columns lazily
     non_anchor_cols = [c for c in score_cols if c != anchor]
-    anchor_renamed = f"{anchor}_anchor"
 
-    merged = merged.rename({anchor: anchor_renamed})
-
-    pairwise_exprs = [
-        pl.col(anchor_renamed).alias(f"{anchor_renamed}_with_{c}")
-        for c in non_anchor_cols
-    ]
+    pairwise_exprs = []
+    for c in non_anchor_cols:
+        both_non_null = pl.col(c).is_not_null() & pl.col(anchor).is_not_null()
+        pairwise_exprs.append(
+            pl.when(both_non_null).then(pl.col(anchor)).alias(f"{anchor}_pairwise_{c}")
+        )
+        pairwise_exprs.append(
+            pl.when(both_non_null).then(pl.col(c)).alias(c)
+        )
 
     merged = merged.with_columns(pairwise_exprs)
 
-    updated_score_cols = (
-        [anchor_renamed]
-        + non_anchor_cols
-        + [f"{anchor_renamed}_with_{c}" for c in non_anchor_cols]
-    )
+    pairwise_cols = [f"{anchor}_pairwise_{c}" for c in non_anchor_cols]
+    updated_score_cols = list(score_cols) + pairwise_cols
 
     return merged, updated_score_cols

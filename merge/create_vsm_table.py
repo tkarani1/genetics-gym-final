@@ -205,8 +205,6 @@ def run_pipeline(
         merged_pred, all_score_cols = merge_tables_pairwise(
             pred_frames, all_score_cols, anchor=anchor,
         )
-        if reference_score == anchor:
-            reference_score = f"{anchor}_anchor"
     else:
         merged_pred = merge_tables(pred_frames, join_type=join_type)
 
@@ -244,12 +242,13 @@ def run_pipeline(
         merged_pred = add_percentile_columns(merged_pred, all_score_cols)
 
     if join_type == "pairwise" and non_anchor_cols and percentile_order != "none":
-        anchor_renamed = f"{anchor}_anchor"
-        pct_renames = {}
+        pct_renames = {
+            f"{anchor}_percentile": f"{anchor}_anchor_percentile",
+        }
         for c in non_anchor_cols:
             pct_renames[f"{c}_percentile"] = f"{c}_percentile_with_anchor"
-            pct_renames[f"{anchor_renamed}_with_{c}_percentile"] = (
-                f"{anchor_renamed}_percentile_with_{c}"
+            pct_renames[f"{anchor}_pairwise_{c}_percentile"] = (
+                f"{anchor}_anchor_percentile_with_{c}"
             )
         merged_pred = merged_pred.rename(pct_renames)
 
