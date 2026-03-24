@@ -520,7 +520,10 @@ def main() -> None:
         help=(
             "Path to the sir-reference-data directory containing "
             "all_missense_variants_gr38.h5, pdb_pae_file_pos_guide.tsv, "
-            "pdb_files/, and pae_files/. Required when --smooth is set."
+            "pdb_files/, and pae_files/. Required when --smooth is set. "
+            "Reference data can be downloaded from: "
+            "https://www.dropbox.com/scl/fi/t4it7sa9lkdx9maj0vois/sir-data.tar.gz"
+            "?rlkey=flvsvmzyopj1cbn6gya0c3am0&st=uyk0l7iw&dl=0"
         ),
     )
     parser.add_argument(
