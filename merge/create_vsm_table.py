@@ -144,42 +144,53 @@ def run_pipeline(
         if linker_mode:
             label_cols = [c for c in schema.names()
                           if c not in JOIN_KEYS and c != "ensg"]
+            lf = lf.select(eval_keys + label_cols)
+            print(
+                f"  Evaluation table {uri}: label columns = {label_cols}",
+                file=sys.stderr,
+            )
         else:
-            label_cols = [c for c, dtype in schema.items()
-                          if c not in JOIN_KEYS and c != "ensg"
-                          and dtype == pl.Boolean]
-        lf = lf.select(eval_keys + label_cols)
-        print(
-            f"  Evaluation table {uri}: label columns = {label_cols}",
-            file=sys.stderr,
-        )
+            stem = _derive_stem(uri)
+            is_pos_cols = [c for c in schema.names() if "is_pos" in c]
+            if not is_pos_cols:
+                raise ValueError(
+                    f"Evaluation table {uri} has no column containing 'is_pos'."
+                )
+            is_pos_col = is_pos_cols[0]
+            target_name = f"is_pos_{stem}"
+            lf = lf.select(JOIN_KEYS + [is_pos_col]).rename({is_pos_col: target_name})
+            print(
+                f"  Evaluation table {uri}: {is_pos_col} -> {target_name}",
+                file=sys.stderr,
+            )
         eval_frames.append(lf)
 
     # --- Auto-suffix colliding eval label columns -------------------------
-    all_label_names = [
-        c
-        for lf in eval_frames
-        for c in lf.collect_schema().names()
-        if c not in eval_keys
-    ]
-    collisions = {
-        name for name, count in Counter(all_label_names).items() if count > 1
-    }
-    if collisions:
-        print(
-            f"  Renaming colliding label columns: {collisions}",
-            file=sys.stderr,
-        )
-        for i, uri in enumerate(evaluation_uris):
-            stem = _derive_stem(uri)
-            frame_cols = set(eval_frames[i].collect_schema().names())
-            renames = {
-                col: f"{col}_{stem}"
-                for col in collisions
-                if col in frame_cols
-            }
-            if renames:
-                eval_frames[i] = eval_frames[i].rename(renames)
+    if linker_mode:
+        all_label_names = [
+            c
+            for lf in eval_frames
+            for c in lf.collect_schema().names()
+            if c not in eval_keys
+        ]
+        collisions = {
+            name for name, count in Counter(all_label_names).items() if count > 1
+        }
+        if collisions:
+            print(
+                f"  Renaming colliding label columns: {collisions}",
+                file=sys.stderr,
+            )
+            for i, uri in enumerate(evaluation_uris):
+                stem = _derive_stem(uri)
+                frame_cols = set(eval_frames[i].collect_schema().names())
+                renames = {
+                    col: f"{col}_{stem}"
+                    for col in collisions
+                    if col in frame_cols
+                }
+                if renames:
+                    eval_frames[i] = eval_frames[i].rename(renames)
 
     # --- Phase 1: Outer-join eval tables (always) --------------------------
     print(
