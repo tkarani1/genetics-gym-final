@@ -4,6 +4,13 @@ Tests for smooth.py.
 Unit tests use synthetic data with mocked structure loaders and require no
 reference data. Integration tests require the sir-reference-data directory;
 they are skipped automatically if SMOOTH_REFERENCE_DIR is not set.
+
+The TP53 biology test uses real AlphaMissense scores for TP53 (sourced from
+gs://missense-scoring/all_models_scores.ht) stored locally in
+test_data_tp53_am.parquet. It verifies that spatial smoothing preserves the
+known pathogenic signal: hotspot residues (R175, R248, R273, etc.) in the
+DNA-binding domain should have higher smoothed scores than benign residues
+in the C-terminal tetramerisation domain.
 """
 from __future__ import annotations
 
@@ -409,3 +416,140 @@ class TestIntegration:
         var_large = result_large["score_a_smoothed"].dropna().var()
         assert var_large < var_small, \
             f"Expected larger sigma to reduce variance: {var_large:.4f} vs {var_small:.4f}"
+
+
+# ---------------------------------------------------------------------------
+# TP53 biology test (real AlphaMissense scores, real reference data)
+# ---------------------------------------------------------------------------
+
+TP53_DATA = os.path.join(os.path.dirname(__file__), "test_data_tp53_am.parquet")
+
+@pytest.mark.skipif(
+    not (os.path.isfile(TP53_DATA) and os.path.isdir(REFERENCE_DIR)),
+    reason="TP53 test data or reference dir not available",
+)
+class TestTP53Biology:
+    """
+    Verifies that spatial smoothing preserves known TP53 pathogenic signal.
+
+    TP53 has well-characterised hotspot mutations in the DNA-binding domain
+    (roughly residues 100-290): R175H, G245S, R248W/Q, R249S, R273H/C, R282W
+    are among the most common cancer-associated TP53 mutations. These residues
+    should have high AlphaMissense scores before and after smoothing.
+
+    The C-terminal tetramerisation / regulatory domain (residues 325-393) is
+    less constrained: mean smoothed scores there should be substantially lower
+    than at the hotspot residues.
+
+    Data sourced from gs://missense-scoring/all_models_scores.ht.
+    """
+
+    # Six canonical hotspot residues (IARC TP53 database)
+    HOTSPOT_RESIDUES = [175, 245, 248, 249, 273, 282]
+    # C-terminal region with lower pathogenicity signal
+    BENIGN_RESIDUES = list(range(350, 394))
+
+    @pytest.fixture(scope="class")
+    def smoothed(self):
+        lf = pl.read_parquet(TP53_DATA).select(
+            ["chrom", "pos", "ref", "alt", "am_pathogenicity"]
+        ).lazy()
+        return add_smoothed_columns(
+            lf, ["am_pathogenicity"], REFERENCE_DIR, sigma=10.0
+        ).collect().to_pandas()
+
+    @pytest.fixture(scope="class")
+    def smoothed_with_aa(self, smoothed):
+        aa = pl.read_parquet(TP53_DATA).select(["pos", "ref", "alt", "aa_pos"]).to_pandas()
+        return smoothed.merge(aa, on=["pos", "ref", "alt"], how="left")
+
+    def test_hotspots_have_high_smoothed_scores(self, smoothed_with_aa):
+        """All six canonical hotspot residues should have mean smoothed AM > 0.7."""
+        for aa in self.HOTSPOT_RESIDUES:
+            rows = smoothed_with_aa[smoothed_with_aa.aa_pos == aa]
+            assert len(rows) > 0, f"No variants found at hotspot residue {aa}"
+            mean_smoothed = rows["am_pathogenicity_smoothed"].mean()
+            assert mean_smoothed > 0.7, (
+                f"Hotspot R{aa} has low mean smoothed AM score: {mean_smoothed:.3f}"
+            )
+
+    def test_hotspots_higher_than_c_terminus(self, smoothed_with_aa):
+        """Mean smoothed score at hotspot residues should exceed C-terminal mean."""
+        hotspot_rows = smoothed_with_aa[smoothed_with_aa.aa_pos.isin(self.HOTSPOT_RESIDUES)]
+        benign_rows  = smoothed_with_aa[smoothed_with_aa.aa_pos.isin(self.BENIGN_RESIDUES)]
+
+        hotspot_mean = hotspot_rows["am_pathogenicity_smoothed"].mean()
+        benign_mean  = benign_rows["am_pathogenicity_smoothed"].mean()
+
+        assert hotspot_mean > benign_mean + 0.2, (
+            f"Hotspot mean ({hotspot_mean:.3f}) not sufficiently above "
+            f"C-terminal mean ({benign_mean:.3f})"
+        )
+
+    def test_smoothing_does_not_destroy_rank_ordering(self, smoothed_with_aa):
+        """Spearman correlation between raw and smoothed AM should be > 0.7."""
+        from scipy.stats import spearmanr
+        valid = smoothed_with_aa.dropna(subset=["am_pathogenicity", "am_pathogenicity_smoothed"])
+        rho, _ = spearmanr(valid["am_pathogenicity"], valid["am_pathogenicity_smoothed"])
+        assert rho > 0.7, f"Rank correlation between raw and smoothed AM is too low: {rho:.3f}"
+
+    def test_write_pymol_session(self, smoothed_with_aa):
+        """
+        Write tp53_am_smoothing.pse: two copies of the TP53 structure, one
+        coloured by raw AlphaMissense score and one by spatially smoothed score.
+        Scores are stored in the B-factor field and mapped blue→white→red.
+        Residues with no score are coloured grey.
+        """
+        import gzip
+        import pymol2
+
+        pdb_path = os.path.join(
+            REFERENCE_DIR, "pdb_files", "AF-P04637-F1-model_v4.pdb.gz"
+        )
+        out_path = os.path.join(os.path.dirname(__file__), "tp53_am_smoothing.pse")
+
+        # Per-residue mean scores (average over variants at the same aa_pos)
+        per_res = (
+            smoothed_with_aa
+            .dropna(subset=["aa_pos"])
+            .groupby("aa_pos")[["am_pathogenicity", "am_pathogenicity_smoothed"]]
+            .mean()
+            .reset_index()
+        )
+        raw_by_res      = dict(zip(per_res.aa_pos.astype(int), per_res.am_pathogenicity))
+        smoothed_by_res = dict(zip(per_res.aa_pos.astype(int), per_res.am_pathogenicity_smoothed))
+
+        with pymol2.PyMOL() as pm:
+            cmd = pm.cmd
+
+            # Load from gzipped PDB
+            with gzip.open(pdb_path, "rt") as fh:
+                pdb_str = fh.read()
+            cmd.read_pdbstr(pdb_str, "tp53_raw")
+            cmd.copy("tp53_smoothed", "tp53_raw")
+
+            for obj_name, score_dict in [
+                ("tp53_raw",      raw_by_res),
+                ("tp53_smoothed", smoothed_by_res),
+            ]:
+                # Default to grey (B=−1) for residues with no score
+                cmd.alter(obj_name, "b = -1")
+                for aa_pos, score in score_dict.items():
+                    cmd.alter(
+                        f"{obj_name} and resi {aa_pos}",
+                        f"b = {score:.4f}",
+                    )
+                cmd.sort(obj_name)
+                # Grey for missing, blue→white→red for scored residues
+                sel = f"_scored_{obj_name}"
+                cmd.select(sel, f"{obj_name} and b > -0.5")
+                cmd.color("grey70", obj_name)
+                cmd.spectrum("b", "blue_white_red", sel, minimum=0.0, maximum=1.0)
+                cmd.delete(sel)
+
+            cmd.show_as("cartoon")
+            cmd.orient()
+            cmd.save(out_path)
+
+        assert os.path.isfile(out_path), f"PyMOL session not written to {out_path}"
+        print(f"\n  PyMOL session written to {out_path}")
