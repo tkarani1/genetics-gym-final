@@ -22,6 +22,7 @@ import polars as pl
 from table_io import ensure_parquet, normalize_chrom_key, write_parquet
 from merge import merge_tables, merge_tables_pairwise, aggregate_by_gene, JOIN_KEYS
 from percentile import add_percentile_columns
+from smooth import add_smoothed_columns
 from apply_filters import apply_filters
 from negate import compute_negations, negate_scores
 
@@ -64,6 +65,9 @@ def run_pipeline(
     output_table_fields: list[str] | None = None,
     anchor: str | None = None,
     linker_uri: str | None = None,
+    smooth: bool = False,
+    smooth_reference_dir: str | None = None,
+    smooth_sigma: float = 10.0,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -319,6 +323,36 @@ def run_pipeline(
 
         drop_cols = all_score_cols
 
+    # --- Spatial smoothing (if requested) ---------------------------------
+    if smooth:
+        if percentile_order == "none":
+            print(
+                "  WARNING: --smooth requires percentile-ranked scores; "
+                "--percentile_order is 'none' so smoothing will operate on "
+                "raw scores instead.",
+                file=sys.stderr,
+            )
+        if smooth_reference_dir is None:
+            raise ValueError(
+                "--smooth_reference_dir is required when --smooth is set."
+            )
+        cols_to_smooth = (
+            [f"{c}_percentile" for c in all_score_cols]
+            if percentile_order != "none"
+            else all_score_cols
+        )
+        print(
+            f"  Spatially smoothing {len(cols_to_smooth)} column(s) "
+            f"(sigma={smooth_sigma} Å) ...",
+            file=sys.stderr,
+        )
+        merged_pred = add_smoothed_columns(
+            merged_pred,
+            cols_to_smooth,
+            reference_dir=smooth_reference_dir,
+            sigma=smooth_sigma,
+        )
+
     # --- Phase 3: Left-join eval onto pred --------------------------------
     print("  Left-joining eval and pred ...", file=sys.stderr)
     merged = merged_eval.join(
@@ -470,6 +504,34 @@ def main() -> None:
             "to be at gene level and are joined on ENSG."
         ),
     )
+    parser.add_argument(
+        "--smooth",
+        action="store_true",
+        default=False,
+        help=(
+            "Apply spatial smoothing to percentile-ranked scores using a "
+            "Gaussian kernel over 3D protein structure distances. Requires "
+            "--smooth_reference_dir."
+        ),
+    )
+    parser.add_argument(
+        "--smooth_reference_dir",
+        default=None,
+        help=(
+            "Path to the sir-reference-data directory containing "
+            "all_missense_variants_gr38.h5, pdb_pae_file_pos_guide.tsv, "
+            "pdb_files/, and pae_files/. Required when --smooth is set."
+        ),
+    )
+    parser.add_argument(
+        "--smooth_sigma",
+        type=float,
+        default=10.0,
+        help=(
+            "Gaussian kernel scale in Ångströms for spatial smoothing "
+            "(default: 10.0). Only used when --smooth is set."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -500,6 +562,9 @@ def main() -> None:
         ),
         anchor=args.anchor,
         linker_uri=args.linker_table,
+        smooth=args.smooth,
+        smooth_reference_dir=args.smooth_reference_dir,
+        smooth_sigma=args.smooth_sigma,
     )
 
 
