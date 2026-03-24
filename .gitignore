@@ -2,4 +2,6 @@
 data/
 *.gz
 *.bgz
+merge/test_data_tp53_am.parquet
+merge/tp53_am_smoothing.pse
 
