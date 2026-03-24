@@ -11,9 +11,15 @@ NULL_VALUES = ["N/A", "N/a", "n/a", "NA", "na", "Na"]
 
 
 def normalize_chrom_key(lf: pl.LazyFrame) -> pl.LazyFrame:
-    """Rename 'chr' -> 'chrom' if present, so all tables use a consistent key."""
-    if "chr" in lf.collect_schema().names():
-        return lf.rename({"chr": "chrom"})
+    """Rename 'chr' -> 'chrom' and 'ENSG' -> 'ensg' if present."""
+    names = lf.collect_schema().names()
+    renames: dict[str, str] = {}
+    if "chr" in names:
+        renames["chr"] = "chrom"
+    if "ENSG" in names and "ensg" not in names:
+        renames["ENSG"] = "ensg"
+    if renames:
+        return lf.rename(renames)
     return lf
 
 

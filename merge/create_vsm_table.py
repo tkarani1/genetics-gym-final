@@ -15,11 +15,12 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from functools import reduce
 
 import polars as pl
 
 from table_io import ensure_parquet, normalize_chrom_key, write_parquet
-from merge import merge_tables, JOIN_KEYS
+from merge import merge_tables, merge_tables_pairwise, aggregate_by_gene, JOIN_KEYS
 from percentile import add_percentile_columns
 from apply_filters import apply_filters
 from negate import compute_negations, negate_scores
@@ -60,6 +61,9 @@ def run_pipeline(
     filter_uris: list[str] | None = None,
     keep_raw_scores: bool = False,
     reference_score: str | None = "AM",
+    output_table_fields: list[str] | None = None,
+    anchor: str | None = None,
+    linker_uri: str | None = None,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -67,6 +71,32 @@ def run_pipeline(
     start = time.perf_counter()
 
     cache_dir = os.path.join(tempfile.gettempdir(), "vsm_table_cache")
+    linker_mode = linker_uri is not None
+
+    if linker_mode and percentile_order != "post":
+        print(
+            "  WARNING: --percentile_order is ignored in linker mode; "
+            "percentiles are computed on gene-level aggregates.",
+            file=sys.stderr,
+        )
+    if linker_mode:
+        percentile_order = "none"
+
+    # --- Validate output_table_fields against anchor / reference_score ----
+    fields_set: set[str] | None = None
+    if output_table_fields is not None:
+        fields_set = set(output_table_fields)
+        if join_type == "pairwise" and anchor not in fields_set:
+            raise ValueError(
+                f"--output_table_fields must include the anchor column "
+                f"'{anchor}' when --join_type is 'pairwise'."
+            )
+        if reference_score is not None and reference_score not in fields_set:
+            raise ValueError(
+                f"--output_table_fields must include the reference score "
+                f"column '{reference_score}' when score negation is enabled. "
+                f"Set --reference_score none to disable negation."
+            )
 
     # --- Load prediction tables -------------------------------------------
     pred_frames: list[pl.LazyFrame] = []
@@ -76,6 +106,14 @@ def run_pipeline(
         pq_path = ensure_parquet(uri, cache_dir)
         lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         score_cols = _score_columns(lf)
+        if fields_set is not None:
+            score_cols = [c for c in score_cols if c in fields_set]
+        if not score_cols:
+            print(
+                f"  Prediction table {uri}: no matching score columns, skipping.",
+                file=sys.stderr,
+            )
+            continue
         all_score_cols.extend(score_cols)
         lf = lf.select(JOIN_KEYS + score_cols)
         print(
@@ -84,16 +122,29 @@ def run_pipeline(
         )
         pred_frames.append(lf)
 
+    if not pred_frames:
+        specified = ", ".join(output_table_fields) if output_table_fields else "(none)"
+        raise ValueError(
+            f"None of the --output_table_fields ({specified}) matched any "
+            f"score columns in the prediction tables."
+        )
+
     # --- Load evaluation tables -------------------------------------------
+    eval_keys = ["ensg"] if linker_mode else JOIN_KEYS
     eval_frames: list[pl.LazyFrame] = []
 
     for uri in evaluation_uris:
         pq_path = ensure_parquet(uri, cache_dir)
         lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         schema = lf.collect_schema()
-        label_cols = [c for c, dtype in schema.items()
-                      if c not in JOIN_KEYS and dtype == pl.Boolean]
-        lf = lf.select(JOIN_KEYS + label_cols)
+        if linker_mode:
+            label_cols = [c for c in schema.names()
+                          if c not in JOIN_KEYS and c != "ensg"]
+        else:
+            label_cols = [c for c, dtype in schema.items()
+                          if c not in JOIN_KEYS and c != "ensg"
+                          and dtype == pl.Boolean]
+        lf = lf.select(eval_keys + label_cols)
         print(
             f"  Evaluation table {uri}: label columns = {label_cols}",
             file=sys.stderr,
@@ -105,7 +156,7 @@ def run_pipeline(
         c
         for lf in eval_frames
         for c in lf.collect_schema().names()
-        if c not in JOIN_KEYS
+        if c not in eval_keys
     ]
     collisions = {
         name for name, count in Counter(all_label_names).items() if count > 1
@@ -131,15 +182,29 @@ def run_pipeline(
         f"  Merging {len(eval_frames)} eval table(s) (outer join) ...",
         file=sys.stderr,
     )
-    merged_eval = merge_tables(eval_frames, join_type="outer")
+    if linker_mode:
+        def _eval_join(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
+            return left.join(right, on=eval_keys, how="outer", coalesce=True)
+
+        if len(eval_frames) == 1:
+            merged_eval = eval_frames[0]
+        else:
+            merged_eval = reduce(_eval_join, eval_frames)
+    else:
+        merged_eval = merge_tables(eval_frames, join_type="outer")
 
     # --- Phase 2: Join pred tables with percentiles -----------------------
     negate_enabled = reference_score is not None
 
-    if percentile_order == "pre" and negate_enabled:
+    if percentile_order == "pre" and (negate_enabled or join_type == "pairwise"):
+        reason = (
+            "score negation (requires merged frame)"
+            if negate_enabled
+            else "pairwise join (restructures columns)"
+        )
         print(
-            "  WARNING: --percentile_order 'pre' is incompatible with score "
-            "negation (requires merged frame); falling back to 'post'.",
+            f"  WARNING: --percentile_order 'pre' is incompatible with "
+            f"{reason}; falling back to 'post'.",
             file=sys.stderr,
         )
         percentile_order = "post"
@@ -155,7 +220,20 @@ def run_pipeline(
         f"  Merging {len(pred_frames)} pred table(s) ({join_type} join) ...",
         file=sys.stderr,
     )
-    merged_pred = merge_tables(pred_frames, join_type=join_type)
+    non_anchor_cols: list[str] = []
+    if join_type == "pairwise":
+        if anchor not in all_score_cols:
+            available = ", ".join(all_score_cols)
+            raise ValueError(
+                f"Anchor column '{anchor}' not found in prediction tables. "
+                f"Available score columns: {available}"
+            )
+        non_anchor_cols = [c for c in all_score_cols if c != anchor]
+        merged_pred, all_score_cols = merge_tables_pairwise(
+            pred_frames, all_score_cols, anchor=anchor,
+        )
+    else:
+        merged_pred = merge_tables(pred_frames, join_type=join_type)
 
     if join_type == "inner" and all_score_cols:
         print("  Dropping rows with any null score column ...", file=sys.stderr)
@@ -186,32 +264,90 @@ def run_pipeline(
             print("  All scores already aligned; no negation needed.",
                   file=sys.stderr)
 
-    if percentile_order == "post":
-        print("  Calculating percentiles AFTER pred merge ...", file=sys.stderr)
-        merged_pred = add_percentile_columns(merged_pred, all_score_cols)
+    # --- Linker mode: join onto linker, aggregate, percentile ---------------
+    if linker_mode:
+        print(f"  Loading linker table {linker_uri} ...", file=sys.stderr)
+        linker_pq = ensure_parquet(linker_uri, cache_dir)
+        linker_lf = normalize_chrom_key(pl.scan_parquet(linker_pq))
+        linker_lf = linker_lf.select(JOIN_KEYS + ["ensg"])
+
+        print("  Left-joining linker onto merged predictions ...", file=sys.stderr)
+        joined = linker_lf.join(
+            merged_pred, on=JOIN_KEYS, how="left", coalesce=True,
+        )
+
+        print("  Aggregating scores by ENSG (mean + max) ...", file=sys.stderr)
+        merged_pred, agg_score_cols = aggregate_by_gene(joined, all_score_cols)
+
+        print(
+            f"  Computing percentiles on {len(agg_score_cols)} aggregated columns ...",
+            file=sys.stderr,
+        )
+        merged_pred = add_percentile_columns(merged_pred, agg_score_cols)
+
+        if join_type == "pairwise" and non_anchor_cols:
+            pct_renames: dict[str, str] = {}
+            for suffix in ("mean", "max"):
+                pct_renames[f"{anchor}_{suffix}_percentile"] = (
+                    f"{anchor}_anchor_{suffix}_percentile"
+                )
+                for c in non_anchor_cols:
+                    pct_renames[f"{c}_{suffix}_percentile"] = (
+                        f"{c}_{suffix}_percentile_with_anchor"
+                    )
+                    pct_renames[f"{anchor}_pairwise_{c}_{suffix}_percentile"] = (
+                        f"{anchor}_anchor_{suffix}_percentile_with_{c}"
+                    )
+            merged_pred = merged_pred.rename(pct_renames)
+
+        drop_cols = agg_score_cols
+    else:
+        if percentile_order == "post":
+            print("  Calculating percentiles AFTER pred merge ...", file=sys.stderr)
+            merged_pred = add_percentile_columns(merged_pred, all_score_cols)
+
+        if join_type == "pairwise" and non_anchor_cols and percentile_order != "none":
+            pct_renames = {
+                f"{anchor}_percentile": f"{anchor}_anchor_percentile",
+            }
+            for c in non_anchor_cols:
+                pct_renames[f"{c}_percentile"] = f"{c}_percentile_with_anchor"
+                pct_renames[f"{anchor}_pairwise_{c}_percentile"] = (
+                    f"{anchor}_anchor_percentile_with_{c}"
+                )
+            merged_pred = merged_pred.rename(pct_renames)
+
+        drop_cols = all_score_cols
 
     # --- Phase 3: Left-join eval onto pred --------------------------------
     print("  Left-joining eval and pred ...", file=sys.stderr)
     merged = merged_eval.join(
-        merged_pred, on=JOIN_KEYS, how="left", coalesce=True,
+        merged_pred, on=eval_keys, how="left", coalesce=True,
     )
 
     # --- Drop raw score columns (if requested) -------------------------------
-    if not keep_raw_scores and all_score_cols and percentile_order != "none":
+    has_percentiles = linker_mode or percentile_order != "none"
+    if not keep_raw_scores and drop_cols and has_percentiles:
         print("  Dropping raw score columns ...", file=sys.stderr)
-        merged = merged.drop(all_score_cols)
+        merged = merged.drop(drop_cols)
 
     # --- Apply filter columns (if requested) --------------------------------
     if filter_uris:
-        print(
-            f"  Applying {len(filter_uris)} filter table(s) ...",
-            file=sys.stderr,
-        )
-        merged = apply_filters(merged, filter_uris, cache_dir)
+        if linker_mode:
+            print(
+                "  WARNING: --filter_tables ignored in linker mode "
+                "(gene-level output has no variant keys).",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"  Applying {len(filter_uris)} filter table(s) ...",
+                file=sys.stderr,
+            )
+            merged = apply_filters(merged, filter_uris, cache_dir)
 
     # --- Write output -----------------------------------------------------
     print(f"  Writing output to {output_uri} ...", file=sys.stderr)
-    # write_parquet(merged, output_uri)
     merged.sink_parquet(
         output_uri,
         compression="zstd"
@@ -243,13 +379,25 @@ def main() -> None:
     )
     parser.add_argument(
         "--join_type",
-        choices=["inner", "outer"],
+        choices=["inner", "outer", "pairwise"],
         default="inner",
         help=(
             "Join strategy for prediction tables (default: inner). "
             "'inner' keeps only rows where every score column is non-null "
-            "across all prediction tables. Evaluation tables are always "
-            "outer-joined."
+            "across all prediction tables. 'outer' keeps all rows. "
+            "'pairwise' inner-joins the column specified by --anchor with "
+            "each other score column to form pairs, then outer-joins all "
+            "pairs while preserving the full anchor column. "
+            "Evaluation tables are always outer-joined."
+        ),
+    )
+    parser.add_argument(
+        "--anchor",
+        default=None,
+        help=(
+            "Score column to use as the anchor for pairwise joining. "
+            "Required when --join_type is 'pairwise'. The anchor column "
+            "is inner-joined with each other score column to form pairs."
         ),
     )
     parser.add_argument(
@@ -293,8 +441,45 @@ def main() -> None:
             "filter table."
         ),
     )
+    parser.add_argument(
+        "--output_table_fields",
+        default=None,
+        help=(
+            "Comma-separated list of prediction score column names to include "
+            "from the --prediction_tables. Score columns are filtered to this "
+            "set BEFORE merging, so only the specified columns participate in "
+            "joins. Derived columns (percentiles, pairwise pairs) are "
+            "automatically generated for the included set. Evaluation label "
+            "columns are not affected and are always included in full. The "
+            "genomic key columns (chrom, pos, ref, alt) are always included. "
+            "When using --join_type pairwise, the --anchor column must be "
+            "listed. When score negation is enabled, the --reference_score "
+            "column must be listed. If omitted, all score columns are included."
+        ),
+    )
+
+    parser.add_argument(
+        "--linker_table",
+        default=None,
+        help=(
+            "URI of a linker parquet table mapping variant keys "
+            "(chrom, pos, ref, alt) to ENSG gene IDs. When provided, "
+            "prediction scores are left-joined onto the linker, aggregated "
+            "to gene level (mean + max per ENSG), and percentiles are "
+            "computed on the aggregated values. Eval tables are expected "
+            "to be at gene level and are joined on ENSG."
+        ),
+    )
 
     args = parser.parse_args()
+
+    if args.join_type == "pairwise" and args.anchor is None:
+        parser.error("--anchor is required when --join_type is 'pairwise'")
+    if args.join_type != "pairwise" and args.anchor is not None:
+        print(
+            "  WARNING: --anchor is ignored when --join_type is not 'pairwise'.",
+            file=sys.stderr,
+        )
 
     ref = args.reference_score
     if ref and ref.lower() == "none":
@@ -309,6 +494,12 @@ def main() -> None:
         filter_uris=_parse_uri_list(args.filter_tables) if args.filter_tables else None,
         keep_raw_scores=args.keep_raw_scores,
         reference_score=ref,
+        output_table_fields=(
+            [f.strip() for f in args.output_table_fields.split(",") if f.strip()]
+            if args.output_table_fields else None
+        ),
+        anchor=args.anchor,
+        linker_uri=args.linker_table,
     )
 
 
