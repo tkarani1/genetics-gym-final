@@ -68,6 +68,7 @@ def run_pipeline(
     smooth: bool = False,
     smooth_reference_dir: str | None = None,
     smooth_sigma: float = 10.0,
+    linker_uri: str | None = None,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -144,9 +145,13 @@ def run_pipeline(
         if linker_mode:
             label_cols = [c for c in schema.names()
                           if c not in JOIN_KEYS and c != "ensg"]
+            if not label_cols:
+                raise ValueError(
+                    f"Evaluation table {uri} has no non-key label columns."
+                )
             lf = lf.select(eval_keys + label_cols)
             print(
-                f"  Evaluation table {uri}: label columns = {label_cols}",
+                f"  Evaluation table {uri}: labels = {label_cols}",
                 file=sys.stderr,
             )
         else:
@@ -546,6 +551,18 @@ def main() -> None:
             "(default: 10.0). Only used when --smooth is set."
         ),
     )
+    parser.add_argument(
+        "--linker_table",
+        default=None,
+        help=(
+            "URI of a linker parquet table mapping variant keys "
+            "(chrom, pos, ref, alt) to ENSG gene IDs. When provided, "
+            "prediction scores are left-joined onto the linker, aggregated "
+            "to gene level (mean + max per ENSG), and percentiles are "
+            "computed on the aggregated values. Eval tables are expected "
+            "to be at gene level and are joined on ENSG."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -579,6 +596,7 @@ def main() -> None:
         smooth=args.smooth,
         smooth_reference_dir=args.smooth_reference_dir,
         smooth_sigma=args.smooth_sigma,
+        linker_uri=args.linker_table,
     )
 
 
