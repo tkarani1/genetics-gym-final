@@ -262,9 +262,6 @@ def add_smoothed_columns(
     for sc in smoothed_cols:
         df_joined[sc] = np.nan
 
-    # Load pdb_pae_file_pos_guide once (used by both distance and PAE loaders)
-    guide_info = pd.read_csv(guide_path, sep="\t")
-
     proteins_mapped = df_joined.dropna(subset=["uniprot_id"])
     n_skipped_missing = 0
     n_skipped_no_structure = 0
