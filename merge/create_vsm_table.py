@@ -68,7 +68,9 @@ def run_pipeline(
     smooth: bool = False,
     smooth_reference_dir: str | None = None,
     smooth_sigma: float = 10.0,
-    linker_uri: str | None = None,
+    linker_uris: list[str] | None = None,
+    aggregate_genes: bool = False,
+    collapse_genes: bool = True,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -76,15 +78,14 @@ def run_pipeline(
     start = time.perf_counter()
 
     cache_dir = os.path.join(tempfile.gettempdir(), "vsm_table_cache")
-    linker_mode = linker_uri is not None
 
-    if linker_mode and percentile_order != "post":
+    if aggregate_genes and percentile_order != "post":
         print(
-            "  WARNING: --percentile_order is ignored in linker mode; "
-            "percentiles are computed on gene-level aggregates.",
+            "  WARNING: --percentile_order is ignored when --aggregate_genes "
+            "is set; percentiles are computed on gene-level aggregates.",
             file=sys.stderr,
         )
-    if linker_mode:
+    if aggregate_genes:
         percentile_order = "none"
 
     # --- Validate output_table_fields against anchor / reference_score ----
@@ -135,14 +136,14 @@ def run_pipeline(
         )
 
     # --- Load evaluation tables -------------------------------------------
-    eval_keys = ["ensg"] if linker_mode else JOIN_KEYS
+    eval_keys = ["ensg"] if aggregate_genes else JOIN_KEYS
     eval_frames: list[pl.LazyFrame] = []
 
     for uri in evaluation_uris:
         pq_path = ensure_parquet(uri, cache_dir)
         lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         schema = lf.collect_schema()
-        if linker_mode:
+        if aggregate_genes:
             label_cols = [c for c in schema.names()
                           if c not in JOIN_KEYS and c != "ensg"]
             if not label_cols:
@@ -202,7 +203,7 @@ def run_pipeline(
         f"  Merging {len(eval_frames)} eval table(s) (outer join) ...",
         file=sys.stderr,
     )
-    if linker_mode:
+    if aggregate_genes:
         def _eval_join(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
             return left.join(right, on=eval_keys, how="outer", coalesce=True)
 
@@ -284,20 +285,40 @@ def run_pipeline(
             print("  All scores already aligned; no negation needed.",
                   file=sys.stderr)
 
-    # --- Linker mode: join onto linker, aggregate, percentile ---------------
-    if linker_mode:
-        print(f"  Loading linker table {linker_uri} ...", file=sys.stderr)
-        linker_pq = ensure_parquet(linker_uri, cache_dir)
-        linker_lf = normalize_chrom_key(pl.scan_parquet(linker_pq))
-        linker_lf = linker_lf.select(JOIN_KEYS + ["ensg"])
+    # --- Linker tables: add ensg column to predictions ----------------------
+    if linker_uris:
+        print(
+            f"  Loading {len(linker_uris)} linker table(s) ...",
+            file=sys.stderr,
+        )
+        linker_frames: list[pl.LazyFrame] = []
+        for uri in linker_uris:
+            pq = ensure_parquet(uri, cache_dir)
+            lf = normalize_chrom_key(pl.scan_parquet(pq)).select(
+                JOIN_KEYS + ["ensg"]
+            )
+            linker_frames.append(lf)
+        linker_lf = merge_tables(linker_frames, join_type="outer")
 
         print("  Left-joining linker onto merged predictions ...", file=sys.stderr)
-        joined = linker_lf.join(
+        merged_pred = linker_lf.join(
             merged_pred, on=JOIN_KEYS, how="left", coalesce=True,
         )
 
-        print("  Aggregating scores by ENSG (mean + max) ...", file=sys.stderr)
-        merged_pred, agg_score_cols = aggregate_by_gene(joined, all_score_cols)
+    # --- Gene-level aggregation (if requested) ----------------------------
+    if aggregate_genes:
+        pred_schema = merged_pred.collect_schema()
+        if "ensg" not in pred_schema.names():
+            raise ValueError(
+                "Gene-level aggregation requires an 'ensg' column. "
+                "Provide --linker_tables or ensure prediction tables "
+                "contain 'ensg'."
+            )
+
+        print("  Aggregating scores by ensg (mean + max) ...", file=sys.stderr)
+        merged_pred, agg_score_cols = aggregate_by_gene(
+            merged_pred, all_score_cols, collapse=collapse_genes,
+        )
 
         print(
             f"  Computing percentiles on {len(agg_score_cols)} aggregated columns ...",
@@ -376,17 +397,18 @@ def run_pipeline(
     )
 
     # --- Drop raw score columns (if requested) -------------------------------
-    has_percentiles = linker_mode or percentile_order != "none"
+    has_percentiles = aggregate_genes or percentile_order != "none"
     if not keep_raw_scores and drop_cols and has_percentiles:
         print("  Dropping raw score columns ...", file=sys.stderr)
         merged = merged.drop(drop_cols)
 
     # --- Apply filter columns (if requested) --------------------------------
     if filter_uris:
-        if linker_mode:
+        if aggregate_genes and collapse_genes:
             print(
-                "  WARNING: --filter_tables ignored in linker mode "
-                "(gene-level output has no variant keys).",
+                "  WARNING: --filter_tables ignored when --aggregate_genes "
+                "is set with --collapse_genes (gene-level output has no "
+                "variant keys).",
                 file=sys.stderr,
             )
         else:
@@ -552,15 +574,37 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--linker_table",
+        "--linker_tables",
         default=None,
         help=(
-            "URI of a linker parquet table mapping variant keys "
-            "(chrom, pos, ref, alt) to ENSG gene IDs. When provided, "
-            "prediction scores are left-joined onto the linker, aggregated "
-            "to gene level (mean + max per ENSG), and percentiles are "
-            "computed on the aggregated values. Eval tables are expected "
-            "to be at gene level and are joined on ENSG."
+            "Comma-separated URIs of linker parquet tables mapping variant "
+            "keys (chrom, pos, ref, alt) to ensg gene IDs. Multiple linker "
+            "tables are outer-joined together. The resulting ensg column is "
+            "added to the prediction frame via left join."
+        ),
+    )
+    parser.add_argument(
+        "--aggregate_genes",
+        action="store_true",
+        default=False,
+        help=(
+            "Aggregate prediction scores to gene level (mean + max per "
+            "ensg). Requires that the prediction frame contains an 'ensg' "
+            "column (via --linker_tables or already present in prediction "
+            "tables). Evaluation tables must be keyed on ensg when this "
+            "flag is set."
+        ),
+    )
+    parser.add_argument(
+        "--collapse_genes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "When --aggregate_genes is set, controls whether gene-level "
+            "aggregation collapses to one row per gene (default) or "
+            "preserves original variant rows with repeated mean/max values. "
+            "Use --no-collapse_genes to preserve rows. Only valid with "
+            "--aggregate_genes."
         ),
     )
 
@@ -573,6 +617,8 @@ def main() -> None:
             "  WARNING: --anchor is ignored when --join_type is not 'pairwise'.",
             file=sys.stderr,
         )
+    if not args.aggregate_genes and not args.collapse_genes:
+        parser.error("--no-collapse_genes is only valid with --aggregate_genes")
 
     ref = args.reference_score
     if ref and ref.lower() == "none":
@@ -596,7 +642,11 @@ def main() -> None:
         smooth=args.smooth,
         smooth_reference_dir=args.smooth_reference_dir,
         smooth_sigma=args.smooth_sigma,
-        linker_uri=args.linker_table,
+        linker_uris=(
+            _parse_uri_list(args.linker_tables) if args.linker_tables else None
+        ),
+        aggregate_genes=args.aggregate_genes,
+        collapse_genes=args.collapse_genes,
     )
 
 

@@ -103,34 +103,54 @@ def merge_tables_pairwise(
 def aggregate_by_gene(
     lf: pl.LazyFrame,
     score_cols: list[str],
+    collapse: bool = True,
 ) -> tuple[pl.LazyFrame, list[str]]:
     """
     Aggregate variant-level scores to gene level.
 
-    Groups *lf* by ``ENSG`` and computes mean and max for each column
-    in *score_cols*.
+    Computes mean and max for each column in *score_cols* grouped by
+    ``ensg``.
+
+    Parameters
+    ----------
+    collapse : bool
+        If True (default), collapse to one row per gene via group_by.
+        If False, preserve original rows and add gene-level aggregates
+        as window columns via ``over("ensg")``.
 
     Returns
     -------
-    aggregated : pl.LazyFrame
-        One row per ENSG with ``{col}_mean`` and ``{col}_max`` columns.
+    result : pl.LazyFrame
+        Aggregated (or window-annotated) frame.
     agg_score_cols : list[str]
         The new aggregated column names.
     """
-    agg_exprs: list[pl.Expr] = []
     agg_score_cols: list[str] = []
-
     for col in score_cols:
-        agg_exprs.append(pl.col(col).mean().alias(f"{col}_mean"))
-        agg_exprs.append(pl.col(col).max().alias(f"{col}_max"))
         agg_score_cols.append(f"{col}_mean")
         agg_score_cols.append(f"{col}_max")
 
-    aggregated = lf.group_by("ensg").agg(agg_exprs)
+    if collapse:
+        agg_exprs: list[pl.Expr] = []
+        for col in score_cols:
+            agg_exprs.append(pl.col(col).mean().alias(f"{col}_mean"))
+            agg_exprs.append(pl.col(col).max().alias(f"{col}_max"))
+        result = lf.group_by("ensg").agg(agg_exprs)
+    else:
+        window_exprs: list[pl.Expr] = []
+        for col in score_cols:
+            window_exprs.append(
+                pl.col(col).mean().over("ensg").alias(f"{col}_mean")
+            )
+            window_exprs.append(
+                pl.col(col).max().over("ensg").alias(f"{col}_max")
+            )
+        result = lf.with_columns(window_exprs)
 
+    label = "collapsed" if collapse else "window"
     print(
-        f"  Aggregated to gene level: {len(agg_score_cols)} agg columns",
+        f"  Aggregated to gene level ({label}): {len(agg_score_cols)} agg columns",
         file=sys.stderr,
     )
 
-    return aggregated, agg_score_cols
+    return result, agg_score_cols
