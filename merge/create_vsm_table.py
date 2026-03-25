@@ -154,18 +154,49 @@ def run_pipeline(
     # --- Phase 2: Join pred tables with percentiles -----------------------
     negate_enabled = reference_score is not None
 
-    if percentile_order == "pre" and (negate_enabled or join_type == "pairwise"):
-        reason = (
-            "score negation (requires merged frame)"
-            if negate_enabled
-            else "pairwise join (restructures columns)"
-        )
+    if percentile_order == "pre" and join_type == "pairwise":
         print(
-            f"  WARNING: --percentile_order 'pre' is incompatible with "
-            f"{reason}; falling back to 'post'.",
+            "  WARNING: --percentile_order 'pre' is incompatible with "
+            "pairwise join (restructures columns); falling back to 'post'.",
             file=sys.stderr,
         )
         percentile_order = "post"
+
+    # --- Pre-merge negation discovery pass --------------------------------
+    if negate_enabled and percentile_order == "pre":
+        if reference_score not in all_score_cols:
+            available = ", ".join(all_score_cols)
+            raise ValueError(
+                f"Reference score column '{reference_score}' not found in "
+                f"prediction tables. Available score columns: {available}"
+            )
+        print(
+            f"  Discovery pass: computing correlations with "
+            f"'{reference_score}' ...",
+            file=sys.stderr,
+        )
+        temp_merged = merge_tables(pred_frames, join_type="inner")
+        cols_to_negate = compute_negations(
+            temp_merged, all_score_cols, reference_score,
+        )
+        if cols_to_negate:
+            print(
+                f"  Negating {len(cols_to_negate)} column(s) on individual "
+                f"frames: {cols_to_negate}",
+                file=sys.stderr,
+            )
+            pred_frames = [
+                negate_scores(
+                    lf,
+                    [c for c in cols_to_negate
+                     if c in lf.collect_schema().names()],
+                )
+                for lf in pred_frames
+            ]
+        else:
+            print("  All scores already aligned; no negation needed.",
+                  file=sys.stderr)
+        negate_enabled = False
 
     if percentile_order == "pre":
         print("  Calculating percentiles BEFORE pred merge ...", file=sys.stderr)
