@@ -64,6 +64,8 @@ def run_pipeline(
     smooth: bool = False,
     smooth_reference_dir: str | None = None,
     smooth_sigma: float = 10.0,
+    use_cache: bool = False,
+    store_cache: bool = False,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -93,7 +95,7 @@ def run_pipeline(
     all_score_cols: list[str] = []
 
     for uri in prediction_uris:
-        pq_path = ensure_parquet(uri, cache_dir)
+        pq_path = ensure_parquet(uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
         lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         score_cols = _score_columns(lf)
         if fields_set is not None:
@@ -123,7 +125,7 @@ def run_pipeline(
     eval_frames: list[pl.LazyFrame] = []
 
     for uri in evaluation_uris:
-        pq_path = ensure_parquet(uri, cache_dir)
+        pq_path = ensure_parquet(uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
         lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         schema = lf.collect_schema()
         stem = _derive_stem(uri)
@@ -281,7 +283,7 @@ def run_pipeline(
             f"  Applying {len(filter_uris)} filter table(s) ...",
             file=sys.stderr,
         )
-        merged = apply_filters(merged, filter_uris, cache_dir)
+        merged = apply_filters(merged, filter_uris, cache_dir, use_cache=use_cache, store_cache=store_cache)
 
     # --- Write output -----------------------------------------------------
     print(f"  Writing output to {output_uri} ...", file=sys.stderr)
@@ -426,6 +428,24 @@ def main() -> None:
             "(default: 10.0). Only used when --smooth is set."
         ),
     )
+    parser.add_argument(
+        "--use_cache",
+        action="store_true",
+        default=False,
+        help=(
+            "Re-use previously cached TSV-to-Parquet conversions from "
+            "$TMPDIR/vsm_table_cache/ when available (default: off)."
+        ),
+    )
+    parser.add_argument(
+        "--store_cache",
+        action="store_true",
+        default=False,
+        help=(
+            "Persist TSV-to-Parquet conversions in $TMPDIR/vsm_table_cache/ "
+            "so subsequent runs can reuse them with --use_cache (default: off)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -458,6 +478,8 @@ def main() -> None:
         smooth=args.smooth,
         smooth_reference_dir=args.smooth_reference_dir,
         smooth_sigma=args.smooth_sigma,
+        use_cache=args.use_cache,
+        store_cache=args.store_cache,
     )
 
 

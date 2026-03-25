@@ -98,6 +98,8 @@ python create_vsm_table.py [OPTIONS]
 | `--join_type` | `inner` | `inner` or `outer` join across all tables |
 | `--percentile_order` | `post` | `pre` or `post` -- when to compute percentile ranks (see below) |
 | `--filter_tables` | *(none)* | Comma-separated URIs of filter tables -- each adds a boolean column (see below) |
+| `--use_cache` | off | Re-use previously cached TSV-to-Parquet conversions from `$TMPDIR/vsm_table_cache/` when available |
+| `--store_cache` | off | Persist TSV-to-Parquet conversions in `$TMPDIR/vsm_table_cache/` for future runs |
 
 ## How merging works
 
@@ -157,6 +159,8 @@ python apply_filters.py [OPTIONS]
 | `--reference` | URI of the reference parquet/tsv file to annotate |
 | `--filter_tables` | Comma-separated URIs of filter tables |
 | `--output` | Destination URI for the annotated Parquet file |
+| `--use_cache` | Re-use previously cached TSV-to-Parquet conversions (off by default) |
+| `--store_cache` | Persist TSV-to-Parquet conversions for future runs (off by default) |
 
 ## Examples
 
@@ -211,14 +215,17 @@ python apply_filters.py \
 
 **Mixed formats (TSV + Parquet):**
 
-TSV inputs are automatically converted to cached Parquet files before
-processing.  No extra flags are needed.
+TSV inputs are automatically converted to Parquet before processing.  No
+extra flags are needed.  To persist conversions for reuse across runs, add
+`--store_cache`; to read back previously cached conversions, add
+`--use_cache`.
 
 ```bash
 python create_vsm_table.py \
   --prediction_tables "./local_scores.tsv,gs://my-bucket/am.parquet" \
   --evaluation_tables "gs://my-bucket/clinvar.parquet" \
-  --output "./merged.parquet"
+  --output "./merged.parquet" \
+  --store_cache --use_cache
 ```
 
 ## Project layout
@@ -240,7 +247,7 @@ merge/
   The full computation graph is built lazily and only materialized when
   the final `sink_parquet` writes the output.  This keeps memory usage
   manageable even for tables exceeding 30 GB.
-* TSV-to-Parquet conversions are cached in a temp directory
-  (`$TMPDIR/vsm_table_cache/`).  Repeated runs with the same TSV inputs
-  skip the conversion step.
+* TSV-to-Parquet conversions are **not** cached by default.  Pass
+  `--store_cache` to persist conversions in `$TMPDIR/vsm_table_cache/`
+  and `--use_cache` to re-use them on subsequent runs.
 * Output Parquet files use **zstd** compression.

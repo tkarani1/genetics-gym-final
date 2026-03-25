@@ -44,6 +44,9 @@ def apply_filters(
     lf: pl.LazyFrame,
     filter_uris: list[str],
     cache_dir: str,
+    *,
+    use_cache: bool = False,
+    store_cache: bool = False,
 ) -> pl.LazyFrame:
     """
     For each URI in *filter_uris*, left-join a boolean ``filter_{stem}``
@@ -53,7 +56,7 @@ def apply_filters(
         stem = derive_filter_name(uri)
         flag_col = f"filter_{stem}"
 
-        pq_path = ensure_parquet(uri, cache_dir)
+        pq_path = ensure_parquet(uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
 
         filter_keys = (
             normalize_chrom_key(pl.scan_parquet(pq_path))
@@ -98,16 +101,34 @@ def main() -> None:
         required=True,
         help="Destination URI for the annotated parquet file.",
     )
+    parser.add_argument(
+        "--use_cache",
+        action="store_true",
+        default=False,
+        help=(
+            "Re-use previously cached TSV-to-Parquet conversions from "
+            "$TMPDIR/vsm_table_cache/ when available (default: off)."
+        ),
+    )
+    parser.add_argument(
+        "--store_cache",
+        action="store_true",
+        default=False,
+        help=(
+            "Persist TSV-to-Parquet conversions in $TMPDIR/vsm_table_cache/ "
+            "so subsequent runs can reuse them with --use_cache (default: off)."
+        ),
+    )
 
     args = parser.parse_args()
     start = time.perf_counter()
 
     cache_dir = os.path.join(tempfile.gettempdir(), "vsm_table_cache")
 
-    pq_path = ensure_parquet(args.reference, cache_dir)
+    pq_path = ensure_parquet(args.reference, cache_dir, use_cache=args.use_cache, store_cache=args.store_cache)
     lf = normalize_chrom_key(pl.scan_parquet(pq_path))
 
-    lf = apply_filters(lf, _parse_uri_list(args.filter_tables), cache_dir)
+    lf = apply_filters(lf, _parse_uri_list(args.filter_tables), cache_dir, use_cache=args.use_cache, store_cache=args.store_cache)
 
     write_parquet(lf, args.output)
 
