@@ -64,6 +64,8 @@ def run_pipeline(
     smooth: bool = False,
     smooth_reference_dir: str | None = None,
     smooth_sigma: float = 10.0,
+    use_cache: bool = False,
+    store_cache: bool = False,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -93,7 +95,7 @@ def run_pipeline(
     all_score_cols: list[str] = []
 
     for uri in prediction_uris:
-        pq_path = ensure_parquet(uri, cache_dir)
+        pq_path = ensure_parquet(uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
         lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         score_cols = _score_columns(lf)
         if fields_set is not None:
@@ -123,7 +125,7 @@ def run_pipeline(
     eval_frames: list[pl.LazyFrame] = []
 
     for uri in evaluation_uris:
-        pq_path = ensure_parquet(uri, cache_dir)
+        pq_path = ensure_parquet(uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
         lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         schema = lf.collect_schema()
         stem = _derive_stem(uri)
@@ -152,18 +154,49 @@ def run_pipeline(
     # --- Phase 2: Join pred tables with percentiles -----------------------
     negate_enabled = reference_score is not None
 
-    if percentile_order == "pre" and (negate_enabled or join_type == "pairwise"):
-        reason = (
-            "score negation (requires merged frame)"
-            if negate_enabled
-            else "pairwise join (restructures columns)"
-        )
+    if percentile_order == "pre" and join_type == "pairwise":
         print(
-            f"  WARNING: --percentile_order 'pre' is incompatible with "
-            f"{reason}; falling back to 'post'.",
+            "  WARNING: --percentile_order 'pre' is incompatible with "
+            "pairwise join (restructures columns); falling back to 'post'.",
             file=sys.stderr,
         )
         percentile_order = "post"
+
+    # --- Pre-merge negation discovery pass --------------------------------
+    if negate_enabled and percentile_order == "pre":
+        if reference_score not in all_score_cols:
+            available = ", ".join(all_score_cols)
+            raise ValueError(
+                f"Reference score column '{reference_score}' not found in "
+                f"prediction tables. Available score columns: {available}"
+            )
+        print(
+            f"  Discovery pass: computing correlations with "
+            f"'{reference_score}' ...",
+            file=sys.stderr,
+        )
+        temp_merged = merge_tables(pred_frames, join_type="inner")
+        cols_to_negate = compute_negations(
+            temp_merged, all_score_cols, reference_score,
+        )
+        if cols_to_negate:
+            print(
+                f"  Negating {len(cols_to_negate)} column(s) on individual "
+                f"frames: {cols_to_negate}",
+                file=sys.stderr,
+            )
+            pred_frames = [
+                negate_scores(
+                    lf,
+                    [c for c in cols_to_negate
+                     if c in lf.collect_schema().names()],
+                )
+                for lf in pred_frames
+            ]
+        else:
+            print("  All scores already aligned; no negation needed.",
+                  file=sys.stderr)
+        negate_enabled = False
 
     if percentile_order == "pre":
         print("  Calculating percentiles BEFORE pred merge ...", file=sys.stderr)
@@ -281,7 +314,7 @@ def run_pipeline(
             f"  Applying {len(filter_uris)} filter table(s) ...",
             file=sys.stderr,
         )
-        merged = apply_filters(merged, filter_uris, cache_dir)
+        merged = apply_filters(merged, filter_uris, cache_dir, use_cache=use_cache, store_cache=store_cache)
 
     # --- Write output -----------------------------------------------------
     print(f"  Writing output to {output_uri} ...", file=sys.stderr)
@@ -426,6 +459,24 @@ def main() -> None:
             "(default: 10.0). Only used when --smooth is set."
         ),
     )
+    parser.add_argument(
+        "--use_cache",
+        action="store_true",
+        default=False,
+        help=(
+            "Re-use previously cached TSV-to-Parquet conversions from "
+            "$TMPDIR/vsm_table_cache/ when available (default: off)."
+        ),
+    )
+    parser.add_argument(
+        "--store_cache",
+        action="store_true",
+        default=False,
+        help=(
+            "Persist TSV-to-Parquet conversions in $TMPDIR/vsm_table_cache/ "
+            "so subsequent runs can reuse them with --use_cache (default: off)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -458,6 +509,8 @@ def main() -> None:
         smooth=args.smooth,
         smooth_reference_dir=args.smooth_reference_dir,
         smooth_sigma=args.smooth_sigma,
+        use_cache=args.use_cache,
+        store_cache=args.store_cache,
     )
 
 
