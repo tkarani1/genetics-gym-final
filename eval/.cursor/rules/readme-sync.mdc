@@ -1,0 +1,16 @@
+---
+alwaysApply: true
+description: Keep README in sync with script changes
+---
+# README Sync Rule
+
+When updating CLI or runtime behavior in this project, also update [README.md](mdc:README.md) in the same change.
+
+Scope includes changes to:
+- `biostat_cli/cli.py`
+- `biostat_cli/cli_parallel.py`
+- `biostat_cli/config.py`
+- `biostat_cli/evaluators/*`
+- `biostat_cli/stats/*`
+
+Update README sections affected by the change, especially CLI arguments, defaults/validation, output schemas, and examples.

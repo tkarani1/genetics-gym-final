@@ -1,0 +1,85 @@
+{
+  "raw_score_columns": [
+    "AM_percentile",
+    "score_PAI3D_percentile",
+    "MisFit_D_score_percentile",
+    "MisFit_S_score_percentile",
+    "mpc_score_percentile"
+  ],
+  "pairwise_score_columns": [
+    "AM_percentile_with_anchor",
+    "score_PAI3D_percentile_with_anchor",
+    "MisFit_D_score_percentile_with_anchor",
+    "MisFit_S_score_percentile_with_anchor",
+    "mpc_score_anchor_percentile"
+  ],
+  "eval_set": [
+    "is_pos_dd-with-combined-controls-distinct",
+    "is_pos_schema",
+    "genebass_is_pos",
+    "is_pos_fine_mapped"
+  ],
+  "panel_order": ["A", "B", "C", "D"],
+  "panel_eval_map": {
+    "A": "is_pos_dd-with-combined-controls-distinct",
+    "B": "is_pos_schema",
+    "C": "genebass_is_pos",
+    "D": "is_pos_fine_mapped"
+  },
+  "panel_titles": {
+    "A": "DDD",
+    "B": "SCHEMA",
+    "C": "Genebass",
+    "D": "Fine-mapped"
+  },
+  "panel_metrics": {
+    "A": {
+      "raw": "rate_ratio",
+      "pairwise": "pairwise_rate_ratio"
+    },
+    "B": {
+      "raw": "enrichment",
+      "pairwise": "pairwise_enrichment"
+    },
+    "C": {
+      "raw": "enrichment",
+      "pairwise": "pairwise_enrichment"
+    },
+    "D": {
+      "raw": "enrichment",
+      "pairwise": "pairwise_enrichment"
+    }
+  },
+  "method_display_names": {
+    "AM_percentile": "AlphaMissense",
+    "score_PAI3D_percentile": "PrimateAI-3D",
+    "MisFit_D_score_percentile": "MisFit-D",
+    "mpc_score_percentile": "MPC",
+    "AM": "AlphaMissense",
+    "score_PAI3D": "PrimateAI-3D",
+    "MisFit_D_score": "MisFit-D",
+    "mpc_score": "MPC"
+  },
+  "method_order": [
+    "AM_percentile",
+    "score_PAI3D_percentile",
+    "MisFit_D_score_percentile",
+    "mpc_score_percentile",
+    "AM",
+    "score_PAI3D",
+    "MisFit_D_score",
+    "mpc_score"
+  ],
+  "rate_ratio_denominators": {
+    "is_pos_dd-with-combined-controls-distinct": {
+      "case_total": 31058,
+      "ctrl_total": 7281
+    },
+    "is_pos_schema": {},
+    "genebass_is_pos": {},
+    "is_pos_fine_mapped": {}
+  },
+  "default_threshold": 0.95,
+  "thresholds": [0.90, 0.95, 0.98, 0.99],
+  "default_filter_name": "none"
+}
