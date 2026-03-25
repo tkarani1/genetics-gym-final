@@ -14,8 +14,6 @@ import posixpath
 import sys
 import tempfile
 import time
-from collections import Counter
-
 import polars as pl
 
 from table_io import ensure_parquet, normalize_chrom_key, write_parquet
@@ -62,13 +60,10 @@ def run_pipeline(
     keep_raw_scores: bool = False,
     reference_score: str | None = "AM",
     output_table_fields: list[str] | None = None,
-<<<<<<< pairwise-merge
     anchor: str | None = None,
-=======
     smooth: bool = False,
     smooth_reference_dir: str | None = None,
     smooth_sigma: float = 10.0,
->>>>>>> main
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -131,40 +126,21 @@ def run_pipeline(
         pq_path = ensure_parquet(uri, cache_dir)
         lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         schema = lf.collect_schema()
-        label_cols = [c for c, dtype in schema.items()
-                      if c not in JOIN_KEYS and dtype == pl.Boolean]
-        lf = lf.select(JOIN_KEYS + label_cols)
+        stem = _derive_stem(uri)
+
+        is_pos_cols = [c for c in schema.names() if "is_pos" in c]
+        if not is_pos_cols:
+            raise ValueError(
+                f"Evaluation table {uri} has no column containing 'is_pos'."
+            )
+        is_pos_col = is_pos_cols[0]
+        target_name = f"is_pos_{stem}"
+        lf = lf.select(JOIN_KEYS + [is_pos_col]).rename({is_pos_col: target_name})
         print(
-            f"  Evaluation table {uri}: label columns = {label_cols}",
+            f"  Evaluation table {uri}: {is_pos_col} -> {target_name}",
             file=sys.stderr,
         )
         eval_frames.append(lf)
-
-    # --- Auto-suffix colliding eval label columns -------------------------
-    all_label_names = [
-        c
-        for lf in eval_frames
-        for c in lf.collect_schema().names()
-        if c not in JOIN_KEYS
-    ]
-    collisions = {
-        name for name, count in Counter(all_label_names).items() if count > 1
-    }
-    if collisions:
-        print(
-            f"  Renaming colliding label columns: {collisions}",
-            file=sys.stderr,
-        )
-        for i, uri in enumerate(evaluation_uris):
-            stem = _derive_stem(uri)
-            frame_cols = set(eval_frames[i].collect_schema().names())
-            renames = {
-                col: f"{col}_{stem}"
-                for col in collisions
-                if col in frame_cols
-            }
-            if renames:
-                eval_frames[i] = eval_frames[i].rename(renames)
 
     # --- Phase 1: Outer-join eval tables (always) --------------------------
     print(
@@ -248,7 +224,6 @@ def run_pipeline(
         print("  Calculating percentiles AFTER pred merge ...", file=sys.stderr)
         merged_pred = add_percentile_columns(merged_pred, all_score_cols)
 
-<<<<<<< pairwise-merge
     if join_type == "pairwise" and non_anchor_cols and percentile_order != "none":
         pct_renames = {
             f"{anchor}_percentile": f"{anchor}_anchor_percentile",
@@ -259,7 +234,6 @@ def run_pipeline(
                 f"{anchor}_anchor_percentile_with_{c}"
             )
         merged_pred = merged_pred.rename(pct_renames)
-=======
     # --- Spatial smoothing (if requested) ---------------------------------
     if smooth:
         if percentile_order == "none":
@@ -289,7 +263,6 @@ def run_pipeline(
             reference_dir=smooth_reference_dir,
             sigma=smooth_sigma,
         )
->>>>>>> main
 
     # --- Phase 3: Left-join eval onto pred --------------------------------
     print("  Left-joining eval and pred ...", file=sys.stderr)
@@ -481,13 +454,10 @@ def main() -> None:
             [f.strip() for f in args.output_table_fields.split(",") if f.strip()]
             if args.output_table_fields else None
         ),
-<<<<<<< pairwise-merge
         anchor=args.anchor,
-=======
         smooth=args.smooth,
         smooth_reference_dir=args.smooth_reference_dir,
         smooth_sigma=args.smooth_sigma,
->>>>>>> main
     )
 
 
