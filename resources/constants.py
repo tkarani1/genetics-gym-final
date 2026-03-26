@@ -8,7 +8,7 @@ class Direction(Enum):
 
 
 SCORE_FIELDS = {
-'ESM1B' : { 'esm1b_score': { 'sense': Direction.HIGHER_IS_LESS_DELETERIOUS }},
+'ESM1B' : { 'esm_score': { 'sense': Direction.HIGHER_IS_LESS_DELETERIOUS }},
 'MISFIT': {'MisFit_D_score': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS },
            'MisFit_S_score': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
 'CADD': {'cadd_score': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},

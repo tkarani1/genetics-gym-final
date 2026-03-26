@@ -7,10 +7,10 @@ from resources.constants import Direction
 from resources.paths import TEMP_PATH
 # hl.init(worker_memory="highmem", driver_memory='highmem') 
 
-
-def coalesce_VSM(ht_path, key_by, score_dict):
+def coalesce_VSM(ht_path, key_by, score_dict, keep_max_per_category=True): 
     ht = hl.read_table(ht_path)
     score_cols = list(score_dict.keys())
+    ht = ht.select(*key_by, *score_cols)
 
     for s in score_cols:
         if score_dict[s]['sense'] == Direction.HIGHER_IS_LESS_DELETERIOUS:
@@ -42,7 +42,9 @@ def coalesce_VSM(ht_path, key_by, score_dict):
         ht = ht.annotate(
             **{f'{s}': hl.coalesce(ht[f'{s}_mane_max'], ht[f'{s}_canon_max'], ht[f'{s}_any_max'])}
         )
-        to_drop = [f'{s}_mane_scores', f'{s}_canon_scores', f'{s}_any_scores']
+        to_drop = [f'{s}_mane_scores', f'{s}_canon_scores', f'{s}_any_scores', 'values']
+        if not keep_max_per_category:
+            to_drop.extend([f'{s}_mane_max', f'{s}_canon_max', f'{s}_any_max'])
         ht = ht.drop(*to_drop)
     ht = ht.key_by(*key_by)
     return ht
