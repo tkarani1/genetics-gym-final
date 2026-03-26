@@ -68,7 +68,6 @@ def run_pipeline(
     smooth: bool = False,
     smooth_reference_dir: str | None = None,
     smooth_sigma: float = 10.0,
-    linker_uris: list[str] | None = None,
     aggregate_genes: bool = False,
     collapse_genes: bool = True,
 ) -> None:
@@ -172,7 +171,7 @@ def run_pipeline(
         eval_frames.append(lf)
 
     # --- Auto-suffix colliding eval label columns -------------------------
-    if linker_mode:
+    if aggregate_genes:
         all_label_names = [
             c
             for lf in eval_frames
@@ -285,24 +284,19 @@ def run_pipeline(
             print("  All scores already aligned; no negation needed.",
                   file=sys.stderr)
 
-    # --- Linker tables: add ensg column to predictions ----------------------
-    if linker_uris:
-        print(
-            f"  Loading {len(linker_uris)} linker table(s) ...",
-            file=sys.stderr,
+    # --- Linker table: add ensg column to predictions -----------------------
+    if linker_uri:
+        print(f"  Loading linker table {linker_uri} ...", file=sys.stderr)
+        pq = ensure_parquet(linker_uri, cache_dir)
+        linker_lf = (
+            normalize_chrom_key(pl.scan_parquet(pq))
+            .select(JOIN_KEYS + ["ensg"])
+            .unique()
         )
-        linker_frames: list[pl.LazyFrame] = []
-        for uri in linker_uris:
-            pq = ensure_parquet(uri, cache_dir)
-            lf = normalize_chrom_key(pl.scan_parquet(pq)).select(
-                JOIN_KEYS + ["ensg"]
-            )
-            linker_frames.append(lf)
-        linker_lf = merge_tables(linker_frames, join_type="outer")
 
         print("  Left-joining linker onto merged predictions ...", file=sys.stderr)
-        merged_pred = linker_lf.join(
-            merged_pred, on=JOIN_KEYS, how="left", coalesce=True,
+        merged_pred = merged_pred.join(
+            linker_lf, on=JOIN_KEYS, how="left", coalesce=True,
         )
 
     # --- Gene-level aggregation (if requested) ----------------------------
@@ -311,7 +305,7 @@ def run_pipeline(
         if "ensg" not in pred_schema.names():
             raise ValueError(
                 "Gene-level aggregation requires an 'ensg' column. "
-                "Provide --linker_tables or ensure prediction tables "
+                "Provide --linker_table or ensure prediction tables "
                 "contain 'ensg'."
             )
 
@@ -404,19 +398,11 @@ def run_pipeline(
 
     # --- Apply filter columns (if requested) --------------------------------
     if filter_uris:
-        if aggregate_genes and collapse_genes:
-            print(
-                "  WARNING: --filter_tables ignored when --aggregate_genes "
-                "is set with --collapse_genes (gene-level output has no "
-                "variant keys).",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                f"  Applying {len(filter_uris)} filter table(s) ...",
-                file=sys.stderr,
-            )
-            merged = apply_filters(merged, filter_uris, cache_dir)
+        print(
+            f"  Applying {len(filter_uris)} filter table(s) ...",
+            file=sys.stderr,
+        )
+        merged = apply_filters(merged, filter_uris, cache_dir)
 
     # --- Write output -----------------------------------------------------
     print(f"  Writing output to {output_uri} ...", file=sys.stderr)
@@ -574,16 +560,6 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--linker_tables",
-        default=None,
-        help=(
-            "Comma-separated URIs of linker parquet tables mapping variant "
-            "keys (chrom, pos, ref, alt) to ensg gene IDs. Multiple linker "
-            "tables are outer-joined together. The resulting ensg column is "
-            "added to the prediction frame via left join."
-        ),
-    )
-    parser.add_argument(
         "--aggregate_genes",
         action="store_true",
         default=False,
@@ -642,9 +618,6 @@ def main() -> None:
         smooth=args.smooth,
         smooth_reference_dir=args.smooth_reference_dir,
         smooth_sigma=args.smooth_sigma,
-        linker_uris=(
-            _parse_uri_list(args.linker_tables) if args.linker_tables else None
-        ),
         aggregate_genes=args.aggregate_genes,
         collapse_genes=args.collapse_genes,
     )

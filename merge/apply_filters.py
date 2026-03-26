@@ -2,10 +2,15 @@
 """
 Annotate a table with boolean filter columns derived from filter tables.
 
-Each filter table is a curated set of (chrom, pos, ref, alt) variant keys.
+Filter tables can be keyed at two levels:
+
+* **Variant-level** -- contain (chrom, pos, ref, alt) columns.
+* **Gene-level** -- contain an ``ensg`` column, or are single-column
+  headerless files of ENSG identifiers.
+
 For each filter table a boolean column ``filter_{stem}`` is left-joined onto
-the reference table: True where the variant key exists in the filter table,
-False otherwise.
+the reference table: True where the key exists in the filter table, False
+otherwise.
 """
 import argparse
 import os
@@ -40,6 +45,36 @@ def derive_filter_name(uri: str) -> str:
     return os.path.splitext(basename)[0]
 
 
+def _detect_filter_keys(
+    filter_lf: pl.LazyFrame,
+) -> tuple[pl.LazyFrame, list[str]]:
+    """Determine whether *filter_lf* is variant-keyed or gene-keyed.
+
+    Returns the (possibly renamed) LazyFrame and the list of join key
+    column names to use.
+    """
+    schema = filter_lf.collect_schema()
+    names = schema.names()
+
+    if all(k in names for k in JOIN_KEYS):
+        return filter_lf, JOIN_KEYS
+
+    if "ensg" in names:
+        return filter_lf, ["ensg"]
+
+    if len(names) == 1 and names[0].startswith("ENSG"):
+        header_val = names[0]
+        filter_lf = filter_lf.rename({header_val: "ensg"})
+        first_row = pl.LazyFrame({"ensg": [header_val]})
+        filter_lf = pl.concat([first_row, filter_lf])
+        return filter_lf, ["ensg"]
+
+    raise ValueError(
+        f"Cannot determine filter key type. Columns: {names}. "
+        f"Expected either variant keys {JOIN_KEYS} or an 'ensg' column."
+    )
+
+
 def apply_filters(
     lf: pl.LazyFrame,
     filter_uris: list[str],
@@ -48,24 +83,33 @@ def apply_filters(
     """
     For each URI in *filter_uris*, left-join a boolean ``filter_{stem}``
     column onto *lf*.
+
+    Automatically detects whether each filter table is variant-keyed
+    (chrom, pos, ref, alt) or gene-keyed (ensg) and joins accordingly.
     """
     for uri in filter_uris:
         stem = derive_filter_name(uri)
         flag_col = f"filter_{stem}"
 
         pq_path = ensure_parquet(uri, cache_dir)
+        raw_lf = normalize_chrom_key(pl.scan_parquet(pq_path))
+        filter_lf, keys = _detect_filter_keys(raw_lf)
 
         filter_keys = (
-            normalize_chrom_key(pl.scan_parquet(pq_path))
-            .select(JOIN_KEYS)
+            filter_lf
+            .select(keys)
             .unique()
             .with_columns(pl.lit(True).alias(flag_col))
         )
 
-        print(f"  Applying filter '{flag_col}' from {uri}", file=sys.stderr)
+        key_label = "ensg" if keys == ["ensg"] else "variant"
+        print(
+            f"  Applying filter '{flag_col}' from {uri} ({key_label}-keyed)",
+            file=sys.stderr,
+        )
 
         lf = (
-            lf.join(filter_keys, on=JOIN_KEYS, how="left", coalesce=True)
+            lf.join(filter_keys, on=keys, how="left", coalesce=True)
             .with_columns(pl.col(flag_col).fill_null(False))
         )
 
