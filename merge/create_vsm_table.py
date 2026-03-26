@@ -70,6 +70,8 @@ def run_pipeline(
     smooth_sigma: float = 10.0,
     aggregate_genes: bool = False,
     collapse_genes: bool = True,
+    use_cache: bool = False,
+    store_cache: bool = False,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -108,7 +110,7 @@ def run_pipeline(
     all_score_cols: list[str] = []
 
     for uri in prediction_uris:
-        pq_path = ensure_parquet(uri, cache_dir)
+        pq_path = ensure_parquet(uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
         lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         score_cols = _score_columns(lf)
         if fields_set is not None:
@@ -139,7 +141,7 @@ def run_pipeline(
     eval_frames: list[pl.LazyFrame] = []
 
     for uri in evaluation_uris:
-        pq_path = ensure_parquet(uri, cache_dir)
+        pq_path = ensure_parquet(uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
         lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         schema = lf.collect_schema()
         if aggregate_genes:
@@ -287,7 +289,7 @@ def run_pipeline(
     # --- Linker table: add ensg column to predictions -----------------------
     if linker_uri:
         print(f"  Loading linker table {linker_uri} ...", file=sys.stderr)
-        pq = ensure_parquet(linker_uri, cache_dir)
+        pq = ensure_parquet(linker_uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
         linker_lf = (
             normalize_chrom_key(pl.scan_parquet(pq))
             .select(JOIN_KEYS + ["ensg"])
@@ -402,7 +404,7 @@ def run_pipeline(
             f"  Applying {len(filter_uris)} filter table(s) ...",
             file=sys.stderr,
         )
-        merged = apply_filters(merged, filter_uris, cache_dir)
+        merged = apply_filters(merged, filter_uris, cache_dir, use_cache=use_cache, store_cache=store_cache)
 
     # --- Write output -----------------------------------------------------
     print(f"  Writing output to {output_uri} ...", file=sys.stderr)
@@ -566,7 +568,7 @@ def main() -> None:
         help=(
             "Aggregate prediction scores to gene level (mean + max per "
             "ensg). Requires that the prediction frame contains an 'ensg' "
-            "column (via --linker_tables or already present in prediction "
+            "column (via --linker_table or already present in prediction "
             "tables). Evaluation tables must be keyed on ensg when this "
             "flag is set."
         ),
@@ -581,6 +583,24 @@ def main() -> None:
             "preserves original variant rows with repeated mean/max values. "
             "Use --no-collapse_genes to preserve rows. Only valid with "
             "--aggregate_genes."
+        ),
+    )
+    parser.add_argument(
+        "--use_cache",
+        action="store_true",
+        default=False,
+        help=(
+            "Re-use previously cached TSV-to-Parquet conversions from "
+            "$TMPDIR/vsm_table_cache/ when available (default: off)."
+        ),
+    )
+    parser.add_argument(
+        "--store_cache",
+        action="store_true",
+        default=False,
+        help=(
+            "Persist TSV-to-Parquet conversions in $TMPDIR/vsm_table_cache/ "
+            "so subsequent runs can reuse them with --use_cache (default: off)."
         ),
     )
 
@@ -620,6 +640,8 @@ def main() -> None:
         smooth_sigma=args.smooth_sigma,
         aggregate_genes=args.aggregate_genes,
         collapse_genes=args.collapse_genes,
+        use_cache=args.use_cache,
+        store_cache=args.store_cache,
     )
 
 

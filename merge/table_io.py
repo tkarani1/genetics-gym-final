@@ -88,28 +88,45 @@ def _cache_key(uri: str) -> str:
     return hashlib.sha256(uri.encode()).hexdigest()[:16]
 
 
-def ensure_parquet(uri: str, cache_dir: str) -> str:
+def ensure_parquet(
+    uri: str,
+    cache_dir: str,
+    *,
+    use_cache: bool = False,
+    store_cache: bool = False,
+) -> str:
     """
     If *uri* is already parquet, return it unchanged.
-    Otherwise convert TSV/TSV.BGZ to a parquet file inside *cache_dir*
-    and return the path to that file.
+    Otherwise convert TSV/TSV.BGZ to parquet.
+
+    When *use_cache* is True, look for an existing conversion in *cache_dir*
+    first.  When *store_cache* is True, persist the converted file in
+    *cache_dir* for future runs.  If neither flag is set the converted file
+    is written to a disposable temp file.
     """
     fmt = detect_format(uri)
     if fmt == "parquet":
         return uri
 
-    os.makedirs(cache_dir, exist_ok=True)
     parquet_name = f"{_cache_key(uri)}.parquet"
     parquet_path = os.path.join(cache_dir, parquet_name)
 
-    if os.path.exists(parquet_path):
+    if use_cache and os.path.exists(parquet_path):
         print(f"  Using cached parquet for {uri}", file=sys.stderr)
         return parquet_path
 
-    print(f"  Converting {uri} -> {parquet_path}", file=sys.stderr)
+    if store_cache:
+        os.makedirs(cache_dir, exist_ok=True)
+        dest = parquet_path
+    else:
+        dest = tempfile.NamedTemporaryFile(
+            suffix=".parquet", delete=False,
+        ).name
+
+    print(f"  Converting {uri} -> {dest}", file=sys.stderr)
     lf = scan_table(uri)
-    lf.sink_parquet(parquet_path, compression="zstd", statistics=True)
-    return parquet_path
+    lf.sink_parquet(dest, compression="zstd", statistics=True)
+    return dest
 
 
 def write_parquet(lf: pl.LazyFrame, uri: str) -> None:
