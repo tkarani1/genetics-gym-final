@@ -231,6 +231,42 @@ def run_pipeline(
         )
         percentile_order = "post"
 
+    # --- Pre-merge negation discovery pass --------------------------------
+    if negate_enabled and percentile_order == "pre":
+        if reference_score not in all_score_cols:
+            available = ", ".join(all_score_cols)
+            raise ValueError(
+                f"Reference score column '{reference_score}' not found in "
+                f"prediction tables. Available score columns: {available}"
+            )
+        print(
+            f"  Discovery pass: computing correlations with "
+            f"'{reference_score}' ...",
+            file=sys.stderr,
+        )
+        temp_merged = merge_tables(pred_frames, join_type="inner")
+        cols_to_negate = compute_negations(
+            temp_merged, all_score_cols, reference_score,
+        )
+        if cols_to_negate:
+            print(
+                f"  Negating {len(cols_to_negate)} column(s) on individual "
+                f"frames: {cols_to_negate}",
+                file=sys.stderr,
+            )
+            pred_frames = [
+                negate_scores(
+                    lf,
+                    [c for c in cols_to_negate
+                     if c in lf.collect_schema().names()],
+                )
+                for lf in pred_frames
+            ]
+        else:
+            print("  All scores already aligned; no negation needed.",
+                  file=sys.stderr)
+        negate_enabled = False
+
     if percentile_order == "pre":
         print("  Calculating percentiles BEFORE pred merge ...", file=sys.stderr)
         pred_frames = [
@@ -356,6 +392,46 @@ def run_pipeline(
 
         drop_cols = all_score_cols
 
+    # --- Spatial smoothing (if requested) ---------------------------------
+    if smooth:
+        if percentile_order == "none":
+            print(
+                "  WARNING: --smooth requires percentile-ranked scores; "
+                "--percentile_order is 'none' so smoothing will operate on "
+                "raw scores instead.",
+                file=sys.stderr,
+            )
+        if smooth_reference_dir is None:
+            raise ValueError(
+                "--smooth_reference_dir is required when --smooth is set."
+            )
+        cols_to_smooth = (
+            [f"{c}_percentile" for c in all_score_cols]
+            if percentile_order != "none"
+            else all_score_cols
+        )
+        print(
+            f"  Spatially smoothing {len(cols_to_smooth)} column(s) "
+            f"(sigma={smooth_sigma} Å) ...",
+            file=sys.stderr,
+        )
+        merged_pred = add_smoothed_columns(
+            merged_pred,
+            cols_to_smooth,
+            reference_dir=smooth_reference_dir,
+            sigma=smooth_sigma,
+        )
+
+    if join_type == "pairwise" and non_anchor_cols and percentile_order != "none":
+        pct_renames = {
+            f"{anchor}_percentile": f"{anchor}_anchor_percentile",
+        }
+        for c in non_anchor_cols:
+            pct_renames[f"{c}_percentile"] = f"{c}_percentile_with_anchor"
+            pct_renames[f"{anchor}_pairwise_{c}_percentile"] = (
+                f"{anchor}_anchor_percentile_with_{c}"
+            )
+        merged_pred = merged_pred.rename(pct_renames)
     # --- Spatial smoothing (if requested) ---------------------------------
     if smooth:
         if percentile_order == "none":

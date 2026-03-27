@@ -1,0 +1,33 @@
+{
+  "Table_info": {
+    "VSM_all_each_per": {
+      "Path": "gs://your-bucket/path/to/data.parquet",
+      "Level": "variant",
+      "Score_cols": [
+        "AM_per",
+        "esm1b_per"
+      ],
+      "Filters": {
+        "disordered": "filt_disordered_col",
+        "conserved": "filt_conserved_col"
+      },
+      "evals": [
+        "clinvar",
+        "gnomad"
+      ]
+    },
+    "GENE_sumvars_example": {
+      "Path": "gs://your-bucket/path/to/gene_data.parquet",
+      "Level": "gene",
+      "Score_cols": [
+        "gene_score_per"
+      ],
+      "Filters": {
+        "high_conf": "filt_high_conf"
+      },
+      "evals": [
+        "sum_variants"
+      ]
+    }
+  }
+}

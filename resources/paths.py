@@ -16,7 +16,8 @@ MISSENSE_SCORE_RESOURCE_PATHS = {
     "POLYPHEN": "gs://gcp-public-data--gnomad/resources/context/grch38_context_vep_annotated.v105.ht/",
     "CADD": "gs://genetics-gym-not-public/Trisha/whole_genome_SNVs.tsv.gz",
     "GPN_MSA": "gs://missense-scoring/GPN-MSA/scores.tsv.bgz",
-    "AM_ISOFORMS": "gs://dm_alphamissense/AlphaMissense_isoforms_aa_substitutions.tsv.gz",
+    "AM_ISOFORMS_AA_SUBSTITUTIONS": "gs://dm_alphamissense/AlphaMissense_isoforms_aa_substitutions.tsv.gz",
+    "AM_ISOFORMS": "gs://dm_alphamissense/AlphaMissense_isoforms_hg38.tsv.gz",
     "AM_CANONICAL": "gs://dm_alphamissense/AlphaMissense_hg38.tsv.gz"
     }
 
@@ -89,6 +90,21 @@ VSM_TABLE_NAMES = {
     "RASP": "rasp",
     "REVEL": "revel"
 }
+VSM_COLUMN_NAMES = { ##TODO: update these 
+    "AM": ["AM_iso_score", "AM_canon"],
+    "CADD": "cadd",
+    "CPT": "cpt",
+    "ESM1B": "esm1b",
+    "GPN_MSA": "gpn_msa",
+    "MISFIT": ["MisFit_D_score", "MisFit_S_score"],
+    "MPC": "mpc",
+    "PRIMATEAI3D": "PAI3D",
+    "POPEVE": ["popEVE", 'EVE', 'ESM_1v'],
+    "POLYPHEN": "polyphen",
+    "PROTEINMPNN": "protein_mpnn",
+    "RASP": "rasp",
+    "REVEL": "revel"
+}
 VSM_COUNTS_BASE = "gs://genetics-gym/vsm-tables/counts"
 
 # VSM_COUNTS_FILE = f'{WRITE_VSM_LINKER_TABLES_PATH}/VSM_counts.json'
@@ -110,3 +126,28 @@ TEMP_PATH = "gs://trisha-tmp/"
 #     "RASP": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}rasp.ht",
 #     "REVEL": f"{WRITE_SNP_COALESCED_VSM_TABLES_PATH}revel.ht",
 # }
+
+#######################################################################################
+# Evaluation table paths
+#######################################################################################
+EVALUATION_TABLES_BASE = "gs://genetics-gym/eval-tables-final/"
+EVALUATION_TABLE_NAMES = {
+    "GENEBASS": "genebass",
+    'DD': 'dd',
+    'CHD': 'chd',
+    'ASD': 'asd',
+}
+EVALUATION_TYPE_NAMES = {
+    "missense": "mis",
+    "lof": "lof",
+}
+
+EVALUATION_RESOURCE_PATHS = {
+    "GENEBASS": "gs://missense-scoring/mutation/genebass.ht",
+    "SCHEMA": "gs://missense-scoring/mutation/SCHEMA_variant_results.vcf.bgz",
+    "ASC": "gs://missense-scoring/mutation/ASC_variant_results.vcf.bgz",
+    "EPI25": "gs://exome-results-browsers-public/downloads/2022-12-01/Epi25/Epi25_variant_results.vcf.bgz",
+    # "DD": "gs://genetics-gym/raw_data/kaplanis_variants_annotated_2024-05-15.txt",
+    # "CHD": "gs://genetics-gym/raw_data/chd_variants_annotated_2024-05-15.txt",
+    # "ASD": "gs://genetics-gym/raw_data/asd_variants_annotated_2024-05-15.txt",
+}

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "biostat-cli"
+version = "0.2.0"
+description = "Memory-efficient genomic statistics CLI using Polars Lazy API"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "polars>=1.8.0",
+  "scipy>=1.11.0",
+  "scikit-learn>=1.4.0",
+  "matplotlib>=3.8.0",
+  "fsspec>=2024.0.0",
+  "gcsfs>=2024.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+[project.scripts]
+biostat-cli = "biostat_cli.cli:main"
+figure1-pipeline = "biostat_cli.pipeline:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["biostat_cli*"]

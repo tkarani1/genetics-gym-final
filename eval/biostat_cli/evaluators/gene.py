@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+import polars as pl
+
+from biostat_cli.evaluators.base import BaseEvaluator, Contingency, ScoreFrame
+
+
+SUM_VARIANTS_SENTINEL = "sum_variants"
+
+
+class GeneEvaluator(BaseEvaluator):
+    def requires_eval_non_null(self, eval_col: str) -> bool:
+        return eval_col != SUM_VARIANTS_SENTINEL
+
+    def contingency(self, score_frame: ScoreFrame, eval_col: str, score_col: str, threshold: float) -> Contingency:
+        return self.contingency_batch(score_frame, eval_col, score_col, [threshold])[0]
+
+    def contingency_batch(
+        self, score_frame: ScoreFrame, eval_col: str, score_col: str, thresholds: list[float]
+    ) -> list[Contingency]:
+        if not thresholds:
+            return []
+        exprs: list[pl.Expr] = []
+        if eval_col == SUM_VARIANTS_SENTINEL:
+            for i, t in enumerate(thresholds):
+                above = pl.col(score_col) > t
+                exprs.extend([
+                    pl.when(above).then(pl.col("n_case")).otherwise(0).sum().cast(pl.Float64).alias(f"tp_{i}"),
+                    pl.when(above).then(pl.col("n_ctrl")).otherwise(0).sum().cast(pl.Float64).alias(f"fp_{i}"),
+                    pl.when(~above).then(pl.col("n_ctrl")).otherwise(0).sum().cast(pl.Float64).alias(f"tn_{i}"),
+                    pl.when(~above).then(pl.col("n_case")).otherwise(0).sum().cast(pl.Float64).alias(f"fn_{i}"),
+                ])
+        else:
+            is_pos = pl.col(eval_col) == True  # noqa: E712
+            is_neg = pl.col(eval_col) == False  # noqa: E712
+            for i, t in enumerate(thresholds):
+                above = pl.col(score_col) > t
+                exprs.extend([
+                    pl.when(above & is_pos).then(1).otherwise(0).sum().cast(pl.Float64).alias(f"tp_{i}"),
+                    pl.when(above & is_neg).then(1).otherwise(0).sum().cast(pl.Float64).alias(f"fp_{i}"),
+                    pl.when((~above) & is_neg).then(1).otherwise(0).sum().cast(pl.Float64).alias(f"tn_{i}"),
+                    pl.when((~above) & is_pos).then(1).otherwise(0).sum().cast(pl.Float64).alias(f"fn_{i}"),
+                ])
+        row = score_frame.frame.select(exprs).collect(streaming=True).to_dicts()[0]
+        return [
+            Contingency(tp=row[f"tp_{i}"], fp=row[f"fp_{i}"], tn=row[f"tn_{i}"], fn=row[f"fn_{i}"])
+            for i in range(len(thresholds))
+        ]
+
+    def labels_and_scores(
+        self, score_frame: ScoreFrame, eval_col: str, score_col: str
+    ) -> tuple[list[int], list[float]] | None:
+        if eval_col == SUM_VARIANTS_SENTINEL:
+            return None
+        out = score_frame.frame.select(
+            pl.col(eval_col).cast(pl.Int64).alias("label"),
+            pl.col(score_col).cast(pl.Float64).alias("score"),
+        ).collect(streaming=True)
+        labels = out["label"].to_list()
+        scores = out["score"].to_list()
+        return labels, scores
