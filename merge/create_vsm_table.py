@@ -14,10 +14,13 @@ import posixpath
 import sys
 import tempfile
 import time
+from collections import Counter
+from functools import reduce
+
 import polars as pl
 
 from table_io import ensure_parquet, normalize_chrom_key, write_parquet
-from merge import merge_tables, merge_tables_pairwise, JOIN_KEYS
+from merge import merge_tables, merge_tables_pairwise, aggregate_by_gene, JOIN_KEYS
 from percentile import add_percentile_columns
 from smooth import add_smoothed_columns
 from apply_filters import apply_filters
@@ -61,9 +64,12 @@ def run_pipeline(
     reference_score: str | None = "AM",
     output_table_fields: list[str] | None = None,
     anchor: str | None = None,
+    linker_uri: str | None = None,
     smooth: bool = False,
     smooth_reference_dir: str | None = None,
     smooth_sigma: float = 10.0,
+    aggregate_genes: bool = False,
+    collapse_genes: bool = True,
     use_cache: bool = False,
     store_cache: bool = False,
 ) -> None:
@@ -73,6 +79,15 @@ def run_pipeline(
     start = time.perf_counter()
 
     cache_dir = os.path.join(tempfile.gettempdir(), "vsm_table_cache")
+
+    if aggregate_genes and percentile_order != "post":
+        print(
+            "  WARNING: --percentile_order is ignored when --aggregate_genes "
+            "is set; percentiles are computed on gene-level aggregates.",
+            file=sys.stderr,
+        )
+    if aggregate_genes:
+        percentile_order = "none"
 
     # --- Validate output_table_fields against anchor / reference_score ----
     fields_set: set[str] | None = None
@@ -122,42 +137,96 @@ def run_pipeline(
         )
 
     # --- Load evaluation tables -------------------------------------------
+    eval_keys = ["ensg"] if aggregate_genes else JOIN_KEYS
     eval_frames: list[pl.LazyFrame] = []
 
     for uri in evaluation_uris:
         pq_path = ensure_parquet(uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
         lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         schema = lf.collect_schema()
-        stem = _derive_stem(uri)
-
-        is_pos_cols = [c for c in schema.names() if "is_pos" in c]
-        if not is_pos_cols:
-            raise ValueError(
-                f"Evaluation table {uri} has no column containing 'is_pos'."
+        if aggregate_genes:
+            label_cols = [c for c in schema.names()
+                          if c not in JOIN_KEYS and c != "ensg"]
+            if not label_cols:
+                raise ValueError(
+                    f"Evaluation table {uri} has no non-key label columns."
+                )
+            lf = lf.select(eval_keys + label_cols)
+            print(
+                f"  Evaluation table {uri}: labels = {label_cols}",
+                file=sys.stderr,
             )
-        is_pos_col = is_pos_cols[0]
-        target_name = f"is_pos_{stem}"
-        lf = lf.select(JOIN_KEYS + [is_pos_col]).rename({is_pos_col: target_name})
-        print(
-            f"  Evaluation table {uri}: {is_pos_col} -> {target_name}",
-            file=sys.stderr,
-        )
+        else:
+            stem = _derive_stem(uri)
+            is_pos_cols = [c for c in schema.names() if "is_pos" in c]
+            if not is_pos_cols:
+                raise ValueError(
+                    f"Evaluation table {uri} has no column containing 'is_pos'."
+                )
+            is_pos_col = is_pos_cols[0]
+            target_name = f"is_pos_{stem}"
+            lf = lf.select(JOIN_KEYS + [is_pos_col]).rename({is_pos_col: target_name})
+            print(
+                f"  Evaluation table {uri}: {is_pos_col} -> {target_name}",
+                file=sys.stderr,
+            )
         eval_frames.append(lf)
+
+    # --- Auto-suffix colliding eval label columns -------------------------
+    if aggregate_genes:
+        all_label_names = [
+            c
+            for lf in eval_frames
+            for c in lf.collect_schema().names()
+            if c not in eval_keys
+        ]
+        collisions = {
+            name for name, count in Counter(all_label_names).items() if count > 1
+        }
+        if collisions:
+            print(
+                f"  Renaming colliding label columns: {collisions}",
+                file=sys.stderr,
+            )
+            for i, uri in enumerate(evaluation_uris):
+                stem = _derive_stem(uri)
+                frame_cols = set(eval_frames[i].collect_schema().names())
+                renames = {
+                    col: f"{col}_{stem}"
+                    for col in collisions
+                    if col in frame_cols
+                }
+                if renames:
+                    eval_frames[i] = eval_frames[i].rename(renames)
 
     # --- Phase 1: Outer-join eval tables (always) --------------------------
     print(
         f"  Merging {len(eval_frames)} eval table(s) (outer join) ...",
         file=sys.stderr,
     )
-    merged_eval = merge_tables(eval_frames, join_type="outer")
+    if aggregate_genes:
+        def _eval_join(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
+            return left.join(right, on=eval_keys, how="outer", coalesce=True)
+
+        if len(eval_frames) == 1:
+            merged_eval = eval_frames[0]
+        else:
+            merged_eval = reduce(_eval_join, eval_frames)
+    else:
+        merged_eval = merge_tables(eval_frames, join_type="outer")
 
     # --- Phase 2: Join pred tables with percentiles -----------------------
     negate_enabled = reference_score is not None
 
-    if percentile_order == "pre" and join_type == "pairwise":
+    if percentile_order == "pre" and (negate_enabled or join_type == "pairwise"):
+        reason = (
+            "score negation (requires merged frame)"
+            if negate_enabled
+            else "pairwise join (restructures columns)"
+        )
         print(
-            "  WARNING: --percentile_order 'pre' is incompatible with "
-            "pairwise join (restructures columns); falling back to 'post'.",
+            f"  WARNING: --percentile_order 'pre' is incompatible with "
+            f"{reason}; falling back to 'post'.",
             file=sys.stderr,
         )
         percentile_order = "post"
@@ -253,9 +322,105 @@ def run_pipeline(
             print("  All scores already aligned; no negation needed.",
                   file=sys.stderr)
 
-    if percentile_order == "post":
-        print("  Calculating percentiles AFTER pred merge ...", file=sys.stderr)
-        merged_pred = add_percentile_columns(merged_pred, all_score_cols)
+    # --- Linker table: add ensg column to predictions -----------------------
+    if linker_uri:
+        print(f"  Loading linker table {linker_uri} ...", file=sys.stderr)
+        pq = ensure_parquet(linker_uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
+        linker_lf = (
+            normalize_chrom_key(pl.scan_parquet(pq))
+            .select(JOIN_KEYS + ["ensg"])
+            .unique()
+        )
+
+        print("  Left-joining linker onto merged predictions ...", file=sys.stderr)
+        merged_pred = merged_pred.join(
+            linker_lf, on=JOIN_KEYS, how="left", coalesce=True,
+        )
+
+    # --- Gene-level aggregation (if requested) ----------------------------
+    if aggregate_genes:
+        pred_schema = merged_pred.collect_schema()
+        if "ensg" not in pred_schema.names():
+            raise ValueError(
+                "Gene-level aggregation requires an 'ensg' column. "
+                "Provide --linker_table or ensure prediction tables "
+                "contain 'ensg'."
+            )
+
+        print("  Aggregating scores by ensg (mean + max) ...", file=sys.stderr)
+        merged_pred, agg_score_cols = aggregate_by_gene(
+            merged_pred, all_score_cols, collapse=collapse_genes,
+        )
+
+        print(
+            f"  Computing percentiles on {len(agg_score_cols)} aggregated columns ...",
+            file=sys.stderr,
+        )
+        merged_pred = add_percentile_columns(merged_pred, agg_score_cols)
+
+        if join_type == "pairwise" and non_anchor_cols:
+            pct_renames: dict[str, str] = {}
+            for suffix in ("mean", "max"):
+                pct_renames[f"{anchor}_{suffix}_percentile"] = (
+                    f"{anchor}_anchor_{suffix}_percentile"
+                )
+                for c in non_anchor_cols:
+                    pct_renames[f"{c}_{suffix}_percentile"] = (
+                        f"{c}_{suffix}_percentile_with_anchor"
+                    )
+                    pct_renames[f"{anchor}_pairwise_{c}_{suffix}_percentile"] = (
+                        f"{anchor}_anchor_{suffix}_percentile_with_{c}"
+                    )
+            merged_pred = merged_pred.rename(pct_renames)
+
+        drop_cols = agg_score_cols
+    else:
+        if percentile_order == "post":
+            print("  Calculating percentiles AFTER pred merge ...", file=sys.stderr)
+            merged_pred = add_percentile_columns(merged_pred, all_score_cols)
+
+        if join_type == "pairwise" and non_anchor_cols and percentile_order != "none":
+            pct_renames = {
+                f"{anchor}_percentile": f"{anchor}_anchor_percentile",
+            }
+            for c in non_anchor_cols:
+                pct_renames[f"{c}_percentile"] = f"{c}_percentile_with_anchor"
+                pct_renames[f"{anchor}_pairwise_{c}_percentile"] = (
+                    f"{anchor}_anchor_percentile_with_{c}"
+                )
+            merged_pred = merged_pred.rename(pct_renames)
+
+        drop_cols = all_score_cols
+
+    # --- Spatial smoothing (if requested) ---------------------------------
+    if smooth:
+        if percentile_order == "none":
+            print(
+                "  WARNING: --smooth requires percentile-ranked scores; "
+                "--percentile_order is 'none' so smoothing will operate on "
+                "raw scores instead.",
+                file=sys.stderr,
+            )
+        if smooth_reference_dir is None:
+            raise ValueError(
+                "--smooth_reference_dir is required when --smooth is set."
+            )
+        cols_to_smooth = (
+            [f"{c}_percentile" for c in all_score_cols]
+            if percentile_order != "none"
+            else all_score_cols
+        )
+        print(
+            f"  Spatially smoothing {len(cols_to_smooth)} column(s) "
+            f"(sigma={smooth_sigma} Å) ...",
+            file=sys.stderr,
+        )
+        merged_pred = add_smoothed_columns(
+            merged_pred,
+            cols_to_smooth,
+            reference_dir=smooth_reference_dir,
+            sigma=smooth_sigma,
+        )
 
     if join_type == "pairwise" and non_anchor_cols and percentile_order != "none":
         pct_renames = {
@@ -300,13 +465,14 @@ def run_pipeline(
     # --- Phase 3: Left-join eval onto pred --------------------------------
     print("  Left-joining eval and pred ...", file=sys.stderr)
     merged = merged_eval.join(
-        merged_pred, on=JOIN_KEYS, how="left", coalesce=True,
+        merged_pred, on=eval_keys, how="left", coalesce=True,
     )
 
     # --- Drop raw score columns (if requested) -------------------------------
-    if not keep_raw_scores and all_score_cols and percentile_order != "none":
+    has_percentiles = aggregate_genes or percentile_order != "none"
+    if not keep_raw_scores and drop_cols and has_percentiles:
         print("  Dropping raw score columns ...", file=sys.stderr)
-        merged = merged.drop(all_score_cols)
+        merged = merged.drop(drop_cols)
 
     # --- Apply filter columns (if requested) --------------------------------
     if filter_uris:
@@ -318,7 +484,6 @@ def run_pipeline(
 
     # --- Write output -----------------------------------------------------
     print(f"  Writing output to {output_uri} ...", file=sys.stderr)
-    # write_parquet(merged, output_uri)
     merged.sink_parquet(
         output_uri,
         compression="zstd"
@@ -428,6 +593,19 @@ def main() -> None:
             "column must be listed. If omitted, all score columns are included."
         ),
     )
+
+    parser.add_argument(
+        "--linker_table",
+        default=None,
+        help=(
+            "URI of a linker parquet table mapping variant keys "
+            "(chrom, pos, ref, alt) to ENSG gene IDs. When provided, "
+            "prediction scores are left-joined onto the linker, aggregated "
+            "to gene level (mean + max per ENSG), and percentiles are "
+            "computed on the aggregated values. Eval tables are expected "
+            "to be at gene level and are joined on ENSG."
+        ),
+    )
     parser.add_argument(
         "--smooth",
         action="store_true",
@@ -460,6 +638,30 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--aggregate_genes",
+        action="store_true",
+        default=False,
+        help=(
+            "Aggregate prediction scores to gene level (mean + max per "
+            "ensg). Requires that the prediction frame contains an 'ensg' "
+            "column (via --linker_table or already present in prediction "
+            "tables). Evaluation tables must be keyed on ensg when this "
+            "flag is set."
+        ),
+    )
+    parser.add_argument(
+        "--collapse_genes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "When --aggregate_genes is set, controls whether gene-level "
+            "aggregation collapses to one row per gene (default) or "
+            "preserves original variant rows with repeated mean/max values. "
+            "Use --no-collapse_genes to preserve rows. Only valid with "
+            "--aggregate_genes."
+        ),
+    )
+    parser.add_argument(
         "--use_cache",
         action="store_true",
         default=False,
@@ -487,6 +689,8 @@ def main() -> None:
             "  WARNING: --anchor is ignored when --join_type is not 'pairwise'.",
             file=sys.stderr,
         )
+    if not args.aggregate_genes and not args.collapse_genes:
+        parser.error("--no-collapse_genes is only valid with --aggregate_genes")
 
     ref = args.reference_score
     if ref and ref.lower() == "none":
@@ -506,9 +710,12 @@ def main() -> None:
             if args.output_table_fields else None
         ),
         anchor=args.anchor,
+        linker_uri=args.linker_table,
         smooth=args.smooth,
         smooth_reference_dir=args.smooth_reference_dir,
         smooth_sigma=args.smooth_sigma,
+        aggregate_genes=args.aggregate_genes,
+        collapse_genes=args.collapse_genes,
         use_cache=args.use_cache,
         store_cache=args.store_cache,
     )

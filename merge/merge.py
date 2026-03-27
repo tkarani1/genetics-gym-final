@@ -98,3 +98,59 @@ def merge_tables_pairwise(
     updated_score_cols = list(score_cols) + pairwise_cols
 
     return merged, updated_score_cols
+
+
+def aggregate_by_gene(
+    lf: pl.LazyFrame,
+    score_cols: list[str],
+    collapse: bool = True,
+) -> tuple[pl.LazyFrame, list[str]]:
+    """
+    Aggregate variant-level scores to gene level.
+
+    Computes mean and max for each column in *score_cols* grouped by
+    ``ensg``.
+
+    Parameters
+    ----------
+    collapse : bool
+        If True (default), collapse to one row per gene via group_by.
+        If False, preserve original rows and add gene-level aggregates
+        as window columns via ``over("ensg")``.
+
+    Returns
+    -------
+    result : pl.LazyFrame
+        Aggregated (or window-annotated) frame.
+    agg_score_cols : list[str]
+        The new aggregated column names.
+    """
+    agg_score_cols: list[str] = []
+    for col in score_cols:
+        agg_score_cols.append(f"{col}_mean")
+        agg_score_cols.append(f"{col}_max")
+
+    if collapse:
+        agg_exprs: list[pl.Expr] = []
+        for col in score_cols:
+            agg_exprs.append(pl.col(col).mean().alias(f"{col}_mean"))
+            agg_exprs.append(pl.col(col).max().alias(f"{col}_max"))
+        result = lf.group_by("ensg").agg(agg_exprs)
+    else:
+        window_exprs: list[pl.Expr] = []
+        for col in score_cols:
+            window_exprs.append(
+                pl.col(col).mean().over("ensg").alias(f"{col}_mean")
+            )
+            window_exprs.append(
+                pl.col(col).max().over("ensg").alias(f"{col}_max")
+            )
+        result = lf.with_columns(window_exprs)
+
+    label = "collapsed" if collapse else "window"
+    print(
+        f"  Aggregated to gene level ({label}): {len(agg_score_cols)} agg columns",
+        file=sys.stderr,
+    )
+
+    return result, agg_score_cols
