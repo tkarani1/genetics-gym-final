@@ -25,6 +25,7 @@ from percentile import add_percentile_columns
 from smooth import add_smoothed_columns
 from apply_filters import apply_filters
 from negate import compute_negations, negate_scores
+from row_counts import RowCountsCollector, count_parquet_rows, count_lazy, write_report
 
 
 def _parse_uri_list(raw: str) -> list[str]:
@@ -72,11 +73,30 @@ def run_pipeline(
     collapse_genes: bool = True,
     use_cache: bool = False,
     store_cache: bool = False,
+    row_counts_output: str | None = None,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
     """
     start = time.perf_counter()
+
+    collector: RowCountsCollector | None = None
+    if row_counts_output is not None:
+        collector = RowCountsCollector()
+        collector.record_config("output_uri", output_uri)
+        collector.record_config("join_type", join_type)
+        collector.record_config("percentile_order", percentile_order)
+        if reference_score is not None:
+            collector.record_config("reference_score", reference_score)
+        if linker_uri is not None:
+            collector.record_config("linker_table", _derive_stem(linker_uri))
+        collector.record_config("aggregate_genes", str(aggregate_genes))
+        if aggregate_genes:
+            collector.record_config("collapse_genes", str(collapse_genes))
+        if smooth:
+            collector.record_config("smooth", "True")
+        if filter_uris:
+            collector.record_config("filter_count", str(len(filter_uris)))
 
     cache_dir = os.path.join(tempfile.gettempdir(), "vsm_table_cache")
 
@@ -111,6 +131,8 @@ def run_pipeline(
 
     for uri in prediction_uris:
         pq_path = ensure_parquet(uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
+        if collector is not None:
+            collector.record_input("pred", uri, count_parquet_rows(pq_path))
         lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         score_cols = _score_columns(lf)
         if fields_set is not None:
@@ -142,6 +164,8 @@ def run_pipeline(
 
     for uri in evaluation_uris:
         pq_path = ensure_parquet(uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
+        if collector is not None:
+            collector.record_input("eval", uri, count_parquet_rows(pq_path))
         lf = normalize_chrom_key(pl.scan_parquet(pq_path))
         schema = lf.collect_schema()
         if aggregate_genes:
@@ -214,6 +238,9 @@ def run_pipeline(
             merged_eval = reduce(_eval_join, eval_frames)
     else:
         merged_eval = merge_tables(eval_frames, join_type="outer")
+
+    if collector is not None:
+        collector.record("eval_merge", "rows", count_lazy(merged_eval))
 
     # --- Phase 2: Join pred tables with percentiles -----------------------
     negate_enabled = reference_score is not None
@@ -293,9 +320,14 @@ def run_pipeline(
     else:
         merged_pred = merge_tables(pred_frames, join_type=join_type)
 
+    if collector is not None:
+        collector.record("pred_merge", "rows", count_lazy(merged_pred))
+
     if join_type == "inner" and all_score_cols:
         print("  Dropping rows with any null score column ...", file=sys.stderr)
         merged_pred = merged_pred.drop_nulls(subset=all_score_cols)
+        if collector is not None:
+            collector.record("pred_merge", "after_null_drop", count_lazy(merged_pred))
 
     # --- Negate score columns (if reference provided) ---------------------
     if negate_enabled:
@@ -323,6 +355,7 @@ def run_pipeline(
                   file=sys.stderr)
 
     # --- Linker table: add ensg column to predictions -----------------------
+    linker_lf: pl.LazyFrame | None = None
     if linker_uri:
         print(f"  Loading linker table {linker_uri} ...", file=sys.stderr)
         pq = ensure_parquet(linker_uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
@@ -332,10 +365,34 @@ def run_pipeline(
             .unique()
         )
 
+        if collector is not None:
+            collector.record_input("linker", linker_uri, count_parquet_rows(pq))
+            linker_keys = linker_lf.select(JOIN_KEYS).unique()
+            collector.record("linker", "unique_variants", count_lazy(linker_keys))
+            collector.record(
+                "linker", "unique_ensgs",
+                linker_lf.select("ensg").unique().select(pl.len()).collect().item(),
+            )
+            eval_not_in_linker = count_lazy(
+                merged_eval.join(linker_keys, on=eval_keys, how="anti")
+            ) if eval_keys == JOIN_KEYS else count_lazy(
+                merged_eval.join(
+                    linker_lf.select("ensg").unique(), on=["ensg"], how="anti",
+                )
+            )
+            collector.record("coverage", "eval_not_in_linker", eval_not_in_linker)
+            eval_total = collector.stages["eval_merge"]["rows"]
+            collector.record("coverage", "eval_in_linker", eval_total - eval_not_in_linker)
+
         print("  Left-joining linker onto merged predictions ...", file=sys.stderr)
         merged_pred = merged_pred.join(
             linker_lf, on=JOIN_KEYS, how="left", coalesce=True,
         )
+
+        if collector is not None:
+            collector.record("linker", "pred_after_join", count_lazy(merged_pred))
+            pred_no_ensg = merged_pred.filter(pl.col("ensg").is_null()).select(pl.len()).collect().item()
+            collector.record("linker", "pred_no_ensg", pred_no_ensg)
 
     # --- Gene-level aggregation (if requested) ----------------------------
     if aggregate_genes:
@@ -351,6 +408,8 @@ def run_pipeline(
         merged_pred, agg_score_cols = aggregate_by_gene(
             merged_pred, all_score_cols, collapse=collapse_genes,
         )
+        if collector is not None:
+            collector.record("gene_agg", "rows", count_lazy(merged_pred))
 
         print(
             f"  Computing percentiles on {len(agg_score_cols)} aggregated columns ...",
@@ -462,11 +521,42 @@ def run_pipeline(
             sigma=smooth_sigma,
         )
 
+    # --- Coverage: eval vs pred (before Phase 3 join) -----------------------
+    if collector is not None:
+        eval_not_in_pred = count_lazy(
+            merged_eval.join(merged_pred, on=eval_keys, how="anti")
+        )
+        eval_total = collector.stages["eval_merge"]["rows"]
+        collector.record("coverage", "eval_not_in_pred", eval_not_in_pred)
+        collector.record("coverage", "eval_in_pred", eval_total - eval_not_in_pred)
+
     # --- Phase 3: Left-join eval onto pred --------------------------------
     print("  Left-joining eval and pred ...", file=sys.stderr)
     merged = merged_eval.join(
         merged_pred, on=eval_keys, how="left", coalesce=True,
     )
+
+    # --- Per-score null counts (after Phase 3 join) -----------------------
+    if collector is not None:
+        score_cols_to_check = (
+            [f"{c}_percentile" for c in drop_cols]
+            if aggregate_genes
+            else (
+                [f"{c}_percentile" for c in all_score_cols]
+                if percentile_order != "none"
+                else list(all_score_cols)
+            )
+        )
+        present = set(merged.collect_schema().names())
+        score_cols_to_check = [c for c in score_cols_to_check if c in present]
+        if score_cols_to_check:
+            null_counts = (
+                merged.select([
+                    pl.col(c).null_count().alias(c) for c in score_cols_to_check
+                ]).collect().row(0, named=True)
+            )
+            for col, n in null_counts.items():
+                collector.record("per_score_nulls", col, n)
 
     # --- Drop raw score columns (if requested) -------------------------------
     has_percentiles = aggregate_genes or percentile_order != "none"
@@ -488,6 +578,13 @@ def run_pipeline(
         output_uri,
         compression="zstd"
     )
+
+    if collector is not None and row_counts_output is not None:
+        try:
+            collector.record("output", "rows", count_parquet_rows(output_uri))
+        except Exception:
+            pass
+        write_report(collector, row_counts_output)
 
     elapsed = time.perf_counter() - start
     print(f"Done in {elapsed:.1f}s.", file=sys.stderr)
@@ -679,6 +776,16 @@ def main() -> None:
             "so subsequent runs can reuse them with --use_cache (default: off)."
         ),
     )
+    parser.add_argument(
+        "--row_counts",
+        default=None,
+        help=(
+            "Write a comprehensive markdown row-count report tracking data "
+            "through every pipeline stage. If the path ends with '.md' it "
+            "is used as-is; otherwise it is treated as a directory and the "
+            "filename is derived from the output table name."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -695,6 +802,13 @@ def main() -> None:
     ref = args.reference_score
     if ref and ref.lower() == "none":
         ref = None
+
+    row_counts_output = None
+    if args.row_counts is not None:
+        rc_path = args.row_counts
+        if not rc_path.endswith(".md"):
+            rc_path = os.path.join(rc_path, f"{_derive_stem(args.output)}_counts.md")
+        row_counts_output = rc_path
 
     run_pipeline(
         prediction_uris=_parse_uri_list(args.prediction_tables),
@@ -718,6 +832,7 @@ def main() -> None:
         collapse_genes=args.collapse_genes,
         use_cache=args.use_cache,
         store_cache=args.store_cache,
+        row_counts_output=row_counts_output,
     )
 
 
