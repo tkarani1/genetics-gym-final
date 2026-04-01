@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import os
 import posixpath
+import re
 import sys
 import tempfile
 import time
@@ -72,6 +73,7 @@ def run_pipeline(
     collapse_genes: bool = True,
     use_cache: bool = False,
     store_cache: bool = False,
+    percentile_thresholds: list[float] | None = None,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -482,6 +484,27 @@ def run_pipeline(
         )
         merged = apply_filters(merged, filter_uris, cache_dir, use_cache=use_cache, store_cache=store_cache)
 
+    # --- Percentile thresholds TSV (if requested) ---------------------------
+    if percentile_thresholds:
+        score_cols = drop_cols if aggregate_genes else all_score_cols
+        thresholds_df = merged_pred.select([
+            pl.col(c).quantile(q, interpolation="nearest").alias(f"{c}_p{q}")
+            for c in score_cols
+            for q in percentile_thresholds
+        ]).collect()
+
+        rows: list[dict[str, object]] = []
+        for c in score_cols:
+            row: dict[str, object] = {"score": c}
+            for q in percentile_thresholds:
+                row[f"p{q}"] = thresholds_df[f"{c}_p{q}"][0]
+            rows.append(row)
+        result = pl.DataFrame(rows)
+
+        tsv_path = re.sub(r"\.parquet$", "", output_uri) + ".percentile_thresholds.tsv"
+        result.write_csv(tsv_path, separator="\t")
+        print(f"  Percentile thresholds written to {tsv_path}", file=sys.stderr)
+
     # --- Write output -----------------------------------------------------
     print(f"  Writing output to {output_uri} ...", file=sys.stderr)
     merged.sink_parquet(
@@ -679,6 +702,15 @@ def main() -> None:
             "so subsequent runs can reuse them with --use_cache (default: off)."
         ),
     )
+    parser.add_argument(
+        "--percentile_thresholds",
+        default=None,
+        help=(
+            "Comma-separated percentile cutoffs (e.g. 0.85,0.9,0.95,0.995). "
+            "Writes a TSV of raw score values at each threshold next to the "
+            "output parquet (e.g. output.percentile_thresholds.tsv)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -695,6 +727,12 @@ def main() -> None:
     ref = args.reference_score
     if ref and ref.lower() == "none":
         ref = None
+
+    pct_thresholds = None
+    if args.percentile_thresholds is not None:
+        pct_thresholds = [
+            float(v.strip()) for v in args.percentile_thresholds.split(",") if v.strip()
+        ]
 
     run_pipeline(
         prediction_uris=_parse_uri_list(args.prediction_tables),
@@ -718,6 +756,7 @@ def main() -> None:
         collapse_genes=args.collapse_genes,
         use_cache=args.use_cache,
         store_cache=args.store_cache,
+        percentile_thresholds=pct_thresholds,
     )
 
 
