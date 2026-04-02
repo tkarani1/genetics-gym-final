@@ -28,11 +28,54 @@ from apply_filters import apply_filters
 from negate import compute_negations, negate_scores
 
 
-def _parse_uri_list(raw: str) -> list[str]:
-    return [s.strip() for s in raw.split(",") if s.strip()]
-
-
 _KNOWN_EXTENSIONS = (".tsv.bgz", ".tsv.gz", ".tsv", ".parquet")
+
+
+def _expand_path(entry: str) -> list[str]:
+    """If *entry* is a directory, return all files inside it with a known
+    table extension.  Works for both local paths and GCS URIs (the latter
+    require a trailing ``/`` to signal directory intent)."""
+    if entry.startswith("gs://"):
+        if not entry.endswith("/"):
+            return [entry]
+        import gcsfs
+        fs = gcsfs.GCSFileSystem()
+        blobs = fs.ls(entry, detail=False)
+        found = sorted(
+            f"gs://{b}" for b in blobs
+            if any(b.lower().endswith(ext) for ext in _KNOWN_EXTENSIONS)
+        )
+        if not found:
+            print(
+                f"  WARNING: GCS directory '{entry}' contains no files with "
+                f"recognised extensions {_KNOWN_EXTENSIONS}.",
+                file=sys.stderr,
+            )
+        return found
+
+    if os.path.isdir(entry):
+        found = sorted(
+            os.path.join(entry, name)
+            for name in os.listdir(entry)
+            if any(name.lower().endswith(ext) for ext in _KNOWN_EXTENSIONS)
+        )
+        if not found:
+            print(
+                f"  WARNING: Directory '{entry}' contains no files with "
+                f"recognised extensions {_KNOWN_EXTENSIONS}.",
+                file=sys.stderr,
+            )
+        return found
+
+    return [entry]
+
+
+def _parse_uri_list(raw: str) -> list[str]:
+    entries = [s.strip() for s in raw.split(",") if s.strip()]
+    expanded: list[str] = []
+    for entry in entries:
+        expanded.extend(_expand_path(entry))
+    return expanded
 
 
 def _derive_stem(uri: str) -> str:
@@ -524,12 +567,24 @@ def main() -> None:
     parser.add_argument(
         "--prediction_tables",
         required=True,
-        help="Comma-separated URIs (GCS or local) of prediction parquet/tsv files.",
+        help=(
+            "Comma-separated URIs (GCS or local) of prediction parquet/tsv "
+            "files. An entry may also be a directory path, in which case all "
+            "files with recognised extensions (.parquet, .tsv, .tsv.gz, "
+            ".tsv.bgz) inside it are used. For GCS directories, append a "
+            "trailing slash (e.g. gs://bucket/pred/)."
+        ),
     )
     parser.add_argument(
         "--evaluation_tables",
         required=True,
-        help="Comma-separated URIs (GCS or local) of evaluation parquet/tsv files.",
+        help=(
+            "Comma-separated URIs (GCS or local) of evaluation parquet/tsv "
+            "files. An entry may also be a directory path, in which case all "
+            "files with recognised extensions (.parquet, .tsv, .tsv.gz, "
+            ".tsv.bgz) inside it are used. For GCS directories, append a "
+            "trailing slash (e.g. gs://bucket/eval/)."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -597,7 +652,8 @@ def main() -> None:
         help=(
             "Comma-separated URIs of filter tables. Each adds a boolean "
             "column indicating whether the variant key is present in that "
-            "filter table."
+            "filter table. An entry may also be a directory path, in which "
+            "case all files with recognised extensions inside it are used."
         ),
     )
     parser.add_argument(
