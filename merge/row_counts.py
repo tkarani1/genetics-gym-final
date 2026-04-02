@@ -115,11 +115,8 @@ def write_report(collector: RowCountsCollector, path: str) -> None:
             continue
         _heading(3, label)
         rows = []
-        total = 0
         for uri, count in entries:
             rows.append([_stem(uri), _fmt(count)])
-            total += count
-        rows.append(["**Total**", f"**{_fmt(total)}**"])
         _table(["Source", "Rows"], rows)
 
     linker_entries = collector.inputs.get("linker", [])
