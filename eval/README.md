@@ -60,6 +60,7 @@ pip install -e .
 - `--case-total-by-eval` optional per-eval case totals (`eval_name:value,eval2:value2`)
 - `--ctrl-total-by-eval` optional per-eval control totals (`eval_name:value,eval2:value2`)
 - `--bootstrap [N]` enable nonparametric row bootstrap stderr calculation; optional `N` sets sample count (e.g., `--bootstrap 50`, default `100` when `N` omitted)
+- `--pvalue-method` p-value calculation method: `fisher` (default) or `poisson`. Fisher's exact test is recommended for 2×2 contingency tables; Poisson is the legacy approximation
 - `--out-fname` output naming schema/prefix (**required**)
 - `--write-missing` controls missing-entity report: `none`, `all`, or `any` (default: `none`)
 
@@ -211,6 +212,7 @@ python -m biostat_cli.cli \
   --eval-level variant \
   --stat "enrichment,auc" \
   --thresholds 0.90,0.95,0.98,0.99 \
+  --pvalue-method fisher \
   --out-fname ../results/VSM_v1 \
   --write-missing any
 ```

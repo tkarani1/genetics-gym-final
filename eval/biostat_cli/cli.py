@@ -22,7 +22,8 @@ from biostat_cli.config import (
     parse_stats,
     parse_thresholds,
 )
-from biostat_cli.utils import missing_category_sort_expr, normalize_chromosome_sort_expr
+from biostat_cli.stats.binary import DEFAULT_PVALUE_METHOD, PVALUE_METHODS
+from biostat_cli.utils import WITHIN_GENE_COL, missing_category_sort_expr, normalize_chromosome_sort_expr
 from biostat_cli.evaluators.base import BaseEvaluator, Contingency, PreparedFrame
 from biostat_cli.evaluators.gene import GeneEvaluator, SUM_VARIANTS_SENTINEL
 from biostat_cli.evaluators.variant import VariantEvaluator
@@ -48,6 +49,8 @@ class RunArgs:
     bootstrap_samples: int | None
     out_fname: str
     write_missing: str
+    within_gene_percentile: bool = False
+    pvalue_method: str = DEFAULT_PVALUE_METHOD
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -79,6 +82,18 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help="Enable nonparametric row-bootstrap and optionally set samples, e.g. --bootstrap 50 (default: 100)",
+    )
+    parser.add_argument(
+        "--within-gene-percentile",
+        action="store_true",
+        default=False,
+        help="Transform each score into its within-gene percentile rank (requires 'ensg' column)",
+    )
+    parser.add_argument(
+        "--pvalue-method",
+        choices=list(PVALUE_METHODS),
+        default=DEFAULT_PVALUE_METHOD,
+        help=f"P-value calculation method (default: {DEFAULT_PVALUE_METHOD})",
     )
     parser.add_argument("--out-fname", required=True)
     parser.add_argument("--write-missing", choices=["none", "all", "any"], default="none")
@@ -420,12 +435,13 @@ def _compute_binary_stats(
     eval_case_total: float | None,
     eval_ctrl_total: float | None,
     total_eval_rows: int,
+    pvalue_method: str = DEFAULT_PVALUE_METHOD,
 ) -> None:
     """Compute enrichment and rate_ratio statistics at each threshold."""
     conts = evaluator.contingency_batch(score_frame, eval_col=eval_col, score_col=score_col, thresholds=thresholds)
 
     if "enrichment" in requested_stats:
-        enr_results = StatFactory.enrichment_batch(conts)
+        enr_results = StatFactory.enrichment_batch(conts, pvalue_method=pvalue_method)
         for threshold, cont, out in zip(thresholds, conts, enr_results):
             _append_binary_row(
                 rows=rows,
@@ -445,7 +461,9 @@ def _compute_binary_stats(
             )
 
     if "rate_ratio" in requested_stats:
-        rr_results = StatFactory.rate_ratio_batch(conts, case_total=eval_case_total, ctrl_total=eval_ctrl_total)
+        rr_results = StatFactory.rate_ratio_batch(
+            conts, case_total=eval_case_total, ctrl_total=eval_ctrl_total, pvalue_method=pvalue_method,
+        )
         for threshold, cont, out in zip(thresholds, conts, rr_results):
             _append_binary_row(
                 rows=rows,
@@ -476,9 +494,14 @@ def _compute_pairwise_stats(
     eval_case_total: float | None,
     eval_ctrl_total: float | None,
     pairwise_cols: PairwiseColumns,
+    *,
+    within_gene_percentile: bool = False,
+    pvalue_method: str = DEFAULT_PVALUE_METHOD,
 ) -> None:
     """Compute pairwise_enrichment and pairwise_rate_ratio statistics."""
-    anchor_score_frame = evaluator.prepare_score_frame(prepared, score_col=pairwise_cols.anchor_full_col)
+    anchor_score_frame = evaluator.prepare_score_frame(
+        prepared, score_col=pairwise_cols.anchor_full_col, within_gene_percentile=within_gene_percentile,
+    )
     anchor_conts_full = evaluator.contingency_batch(
         anchor_score_frame, eval_col=eval_col, score_col=pairwise_cols.anchor_full_col, thresholds=thresholds
     )
@@ -493,13 +516,17 @@ def _compute_pairwise_stats(
 
         pairwise_prepared = PreparedFrame(frame=pairwise_df.lazy(), total_eval_rows=pairwise_rows_used)
         vsm_conts = evaluator.contingency_batch(
-            evaluator.prepare_score_frame(pairwise_prepared, score_col=vsm_col),
+            evaluator.prepare_score_frame(
+                pairwise_prepared, score_col=vsm_col, within_gene_percentile=within_gene_percentile,
+            ),
             eval_col=eval_col,
             score_col=vsm_col,
             thresholds=thresholds,
         )
         anchor_conts_pairwise = evaluator.contingency_batch(
-            evaluator.prepare_score_frame(pairwise_prepared, score_col=anchor_pairwise_col),
+            evaluator.prepare_score_frame(
+                pairwise_prepared, score_col=anchor_pairwise_col, within_gene_percentile=within_gene_percentile,
+            ),
             eval_col=eval_col,
             score_col=anchor_pairwise_col,
             thresholds=thresholds,
@@ -509,7 +536,9 @@ def _compute_pairwise_stats(
             thresholds, anchor_conts_full, anchor_conts_pairwise, vsm_conts
         ):
             if "pairwise_enrichment" in requested_stats:
-                out = StatFactory.pairwise_enrichment(anchor_cont_full, anchor_cont_pw, vsm_cont)
+                out = StatFactory.pairwise_enrichment(
+                    anchor_cont_full, anchor_cont_pw, vsm_cont, pvalue_method=pvalue_method,
+                )
                 _append_pairwise_row(
                     rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=vsm_base,
                     threshold=threshold, out=out, cont=vsm_cont,
@@ -517,7 +546,8 @@ def _compute_pairwise_stats(
                 )
             if "pairwise_rate_ratio" in requested_stats:
                 out = StatFactory.pairwise_rate_ratio(
-                    anchor_cont_full, anchor_cont_pw, vsm_cont, eval_case_total, eval_ctrl_total
+                    anchor_cont_full, anchor_cont_pw, vsm_cont, eval_case_total, eval_ctrl_total,
+                    pvalue_method=pvalue_method,
                 )
                 _append_pairwise_row(
                     rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=vsm_base,
@@ -528,14 +558,19 @@ def _compute_pairwise_stats(
     # Add anchor baseline rows
     for threshold, anchor_cont in zip(thresholds, anchor_conts_full):
         if "pairwise_enrichment" in requested_stats:
-            out = StatFactory.pairwise_enrichment(anchor_cont, anchor_cont, anchor_cont)
+            out = StatFactory.pairwise_enrichment(
+                anchor_cont, anchor_cont, anchor_cont, pvalue_method=pvalue_method,
+            )
             _append_pairwise_row(
                 rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=pairwise_cols.anchor_base,
                 threshold=threshold, out=out, cont=anchor_cont,
                 rows_used=anchor_score_frame.rows_used, total_eval_rows=prepared.total_eval_rows,
             )
         if "pairwise_rate_ratio" in requested_stats:
-            out = StatFactory.pairwise_rate_ratio(anchor_cont, anchor_cont, anchor_cont, eval_case_total, eval_ctrl_total)
+            out = StatFactory.pairwise_rate_ratio(
+                anchor_cont, anchor_cont, anchor_cont, eval_case_total, eval_ctrl_total,
+                pvalue_method=pvalue_method,
+            )
             _append_pairwise_row(
                 rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=pairwise_cols.anchor_base,
                 threshold=threshold, out=out, cont=anchor_cont,
@@ -554,6 +589,9 @@ def _compute_rows_for_prepared(
     eval_case_total: float | None,
     eval_ctrl_total: float | None,
     pairwise_cols: PairwiseColumns | None,
+    *,
+    within_gene_percentile: bool = False,
+    pvalue_method: str = DEFAULT_PVALUE_METHOD,
 ) -> list[dict[str, Any]]:
     """
     Compute all requested statistics for a prepared frame.
@@ -566,7 +604,9 @@ def _compute_rows_for_prepared(
     need_pairwise = bool(requested_stats & PAIRWISE_STATS)
 
     for score_col in score_cols:
-        score_frame = evaluator.prepare_score_frame(prepared, score_col=score_col)
+        score_frame = evaluator.prepare_score_frame(
+            prepared, score_col=score_col, within_gene_percentile=within_gene_percentile,
+        )
 
         if need_continuous:
             _compute_continuous_stats(
@@ -578,12 +618,15 @@ def _compute_rows_for_prepared(
             _compute_binary_stats(
                 rows, evaluator, score_frame, eval_col, filter_name, score_col,
                 requested_stats, thresholds, eval_case_total, eval_ctrl_total, prepared.total_eval_rows,
+                pvalue_method=pvalue_method,
             )
 
     if need_pairwise and pairwise_cols is not None and thresholds:
         _compute_pairwise_stats(
             rows, evaluator, prepared, eval_col, filter_name,
             requested_stats, thresholds, eval_case_total, eval_ctrl_total, pairwise_cols,
+            within_gene_percentile=within_gene_percentile,
+            pvalue_method=pvalue_method,
         )
 
     return rows
@@ -597,6 +640,16 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     requested_stats = parse_stats(args.stat)
 
     source = scan_table(table.path)
+
+    if args.within_gene_percentile:
+        if args.eval_level == "gene":
+            raise ValueError("--within-gene-percentile is not compatible with --eval-level gene.")
+        if WITHIN_GENE_COL not in source.collect_schema().names():
+            raise ValueError(
+                f"--within-gene-percentile requires column '{WITHIN_GENE_COL}' "
+                f"but it is not present in {table.path}."
+            )
+
     evaluator = _choose_evaluator(args.eval_level, source)
 
     eval_cols = _resolve_eval_cols(args.eval_set, table.evals, args.eval_level)
@@ -655,6 +708,8 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                 eval_case_total=eval_case_total,
                 eval_ctrl_total=eval_ctrl_total,
                 pairwise_cols=pairwise_cols,
+                within_gene_percentile=args.within_gene_percentile,
+                pvalue_method=args.pvalue_method,
             )
 
             # Bootstrap std_error is computed from replicate values only; point value/p_value stay from combo_rows.
@@ -679,6 +734,8 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                             eval_case_total=eval_case_total,
                             eval_ctrl_total=eval_ctrl_total,
                             pairwise_cols=pairwise_cols,
+                            within_gene_percentile=args.within_gene_percentile,
+                            pvalue_method=args.pvalue_method,
                         )
                         for row in sample_rows:
                             key = _row_identity_key(row)
@@ -728,8 +785,10 @@ def main() -> None:
         case_total_by_eval=ns.case_total_by_eval,
         ctrl_total_by_eval=ns.ctrl_total_by_eval,
         bootstrap_samples=ns.bootstrap,
+        within_gene_percentile=ns.within_gene_percentile,
         out_fname=ns.out_fname,
         write_missing=ns.write_missing,
+        pvalue_method=ns.pvalue_method,
     )
     try:
         output_paths = _resolve_output_paths(args.out_fname)

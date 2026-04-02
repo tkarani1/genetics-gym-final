@@ -132,6 +132,7 @@ def run_biostat(
     out_prefix: str,
     denominators: RateRatioDenominators,
     bootstrap_samples: int | None,
+    pvalue_method: str = "fisher",
 ) -> tuple[pl.DataFrame, list[dict[str, Any]], str]:
     """
     Execute biostat_cli.run() with the given configuration.
@@ -144,6 +145,7 @@ def run_biostat(
         out_prefix: Output file prefix.
         denominators: Rate ratio denominators.
         bootstrap_samples: Number of bootstrap samples (or None).
+        pvalue_method: P-value calculation method ("fisher" or "poisson").
 
     Returns:
         Tuple of (output DataFrame, timing info, output TSV path).
@@ -163,6 +165,7 @@ def run_biostat(
         bootstrap_samples=bootstrap_samples,
         out_fname=out_prefix,
         write_missing="none",
+        pvalue_method=pvalue_method,
     )
 
     out_df, eval_filter_timings, _ = biostat_cli.run(args)
@@ -320,6 +323,7 @@ def _run_combined_compute(
             out_prefix=raw_prefix,
             denominators=config.rate_ratio_denominators,
             bootstrap_samples=args.bootstrap,
+            pvalue_method=args.pvalue_method,
         )
         outputs["raw_tsv"] = raw_path
 
@@ -334,6 +338,7 @@ def _run_combined_compute(
             out_prefix=pw_prefix,
             denominators=config.rate_ratio_denominators,
             bootstrap_samples=args.bootstrap,
+            pvalue_method=args.pvalue_method,
         )
         outputs["pairwise_tsv"] = pw_path
 
@@ -368,6 +373,7 @@ def _run_per_eval_compute(
                 out_prefix=raw_prefix,
                 denominators=config.rate_ratio_denominators,
                 bootstrap_samples=args.bootstrap,
+                pvalue_method=args.pvalue_method,
             )
             outputs["raw_tsvs"].append(raw_path)
 
@@ -382,6 +388,7 @@ def _run_per_eval_compute(
                 out_prefix=pw_prefix,
                 denominators=config.rate_ratio_denominators,
                 bootstrap_samples=args.bootstrap,
+                pvalue_method=args.pvalue_method,
             )
             outputs["pairwise_tsvs"].append(pw_path)
 
