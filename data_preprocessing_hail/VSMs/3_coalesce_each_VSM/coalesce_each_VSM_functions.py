@@ -4,66 +4,60 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from resources.constants import Direction
-from resources.paths import TEMP_PATH
-# hl.init(worker_memory="highmem", driver_memory='highmem') 
+# hl.init(backend='spark', worker_memory="highmem", driver_memory='highmem') 
 
 def coalesce_VSM(ht_path, key_by, score_dict, keep_max_per_category=True): 
     ht = hl.read_table(ht_path)
     score_cols = list(score_dict.keys())
-    ht = ht.select(*key_by, *score_cols)
 
     for s in score_cols:
         if score_dict[s]['sense'] == Direction.HIGHER_IS_LESS_DELETERIOUS:
             ht = ht.annotate(**{f'{s}_neg': -1 * ht[s]})
-    ht = ht.key_by(*key_by)
-    print(1)
-    print(ht.describe())
-    ht = ht.collect_by_key()
-    print(2)
-    print(ht.describe())
-    ht = ht.checkpoint(TEMP_PATH + 'coalesce_VSM_temp.ht', overwrite=True)
-    print(3)
-    print(ht.describe())
+
+    grouped = ht.group_by(*[ht[k] for k in key_by])
+    agg_exprs = {}
+
+    max_field_names = []
     for s in score_cols:
-        if score_dict[s]['sense'] == Direction.HIGHER_IS_LESS_DELETERIOUS:
-            s = f'{s}_neg'
-        
-        ht = ht.annotate(
-            **{f'{s}_mane_scores':  hl.filter(lambda x: x.mane_select == True, ht.values).map(lambda x: x[s])},
-            **{f'{s}_canon_scores':  hl.filter(lambda x: x.canonical == True, ht.values).map(lambda x: x[s])},
-            **{f'{s}_any_scores':  hl.filter(lambda x: hl.is_defined(x[s]), ht.values).map(lambda x: x[s])},
-        )
+        value_field = f'{s}_neg' if score_dict[s]['sense'] == Direction.HIGHER_IS_LESS_DELETERIOUS else s
 
-        ht = ht.annotate(
-            **{f'{s}_mane_max': hl.max(ht[f'{s}_mane_scores'])},
-            **{f'{s}_canon_max': hl.max(ht[f'{s}_canon_scores'])},
-            **{f'{s}_any_max': hl.max(ht[f'{s}_any_scores'])},
-        )
-        ht = ht.annotate(
-            **{f'{s}': hl.coalesce(ht[f'{s}_mane_max'], ht[f'{s}_canon_max'], ht[f'{s}_any_max'])}
-        )
-        to_drop = [f'{s}_mane_scores', f'{s}_canon_scores', f'{s}_any_scores', 'values']
-        if not keep_max_per_category:
-            to_drop.extend([f'{s}_mane_max', f'{s}_canon_max', f'{s}_any_max'])
-        ht = ht.drop(*to_drop)
+        mane_max = hl.agg.filter(ht.mane_select & hl.is_defined(ht[value_field]), hl.agg.max(ht[value_field]))
+        canon_max = hl.agg.filter(ht.canonical & hl.is_defined(ht[value_field]), hl.agg.max(ht[value_field]))
+        any_max = hl.agg.filter(hl.is_defined(ht[value_field]), hl.agg.max(ht[value_field]))
+
+        agg_exprs[s] = hl.coalesce(mane_max, canon_max, any_max)
+        if keep_max_per_category:
+            mane_name = f'{s}_mane_max'
+            canon_name = f'{s}_canon_max'
+            any_name = f'{s}_any_max'
+            agg_exprs[mane_name] = mane_max
+            agg_exprs[canon_name] = canon_max
+            agg_exprs[any_name] = any_max
+            max_field_names.extend([mane_name, canon_name, any_name])
+
+    ht = grouped.aggregate(**agg_exprs)
     ht = ht.key_by(*key_by)
-    return ht
+    if keep_max_per_category:
+        return ht.select(*score_cols, *max_field_names)
+    return ht.select(*score_cols)
 
-def coalesce_VSM_no_hierarchy(ht_path, key_by, score_dict):
+def coalesce_VSM_no_hierarchy(ht_path, linker_ht_path, key_by, score_dict):
     ht = hl.read_table(ht_path)
+    linker_ht = hl.read_table(linker_ht_path)
+    ht = ht.join(linker_ht, how='inner')    # keep only missense SNPs
     score_cols = list(score_dict.keys())
     for s in score_cols:
         if score_dict[s]['sense'] == Direction.HIGHER_IS_LESS_DELETERIOUS:
             ht = ht.annotate(**{f'{s}_neg': -1 * ht[s]})
 
-    ht = ht.key_by(*key_by)
-    ht = ht.collect_by_key()
-    ht = ht.checkpoint(TEMP_PATH + 'coalesce_VSM_no_hierarchy_temp.ht', overwrite=True)
+    grouped = ht.group_by(*[ht[k] for k in key_by])
+    agg_exprs = {}
 
     for s in score_cols:
-        if score_dict[s]['sense'] == Direction.HIGHER_IS_LESS_DELETERIOUS:
-            s = f'{s}_neg'
-        ht = ht.annotate(**{f'{s}': hl.max(ht.values.map(lambda x: x[s]))})
-    return ht
+        value_field = f'{s}_neg' if score_dict[s]['sense'] == Direction.HIGHER_IS_LESS_DELETERIOUS else s
+        agg_exprs[s] = hl.agg.filter(hl.is_defined(ht[value_field]), hl.agg.max(ht[value_field]))
+
+    ht = grouped.aggregate(**agg_exprs)
+    return ht.key_by(*key_by)
 
     # should_negate = score_dict[original_s]['sense'] == Direction.HIGHER_IS_LESS_DELETERIOUS
