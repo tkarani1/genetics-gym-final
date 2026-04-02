@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import os
 import posixpath
+import re
 import sys
 import tempfile
 import time
@@ -28,11 +29,54 @@ from negate import compute_negations, negate_scores
 from row_counts import RowCountsCollector, count_parquet_rows, count_lazy, write_report
 
 
-def _parse_uri_list(raw: str) -> list[str]:
-    return [s.strip() for s in raw.split(",") if s.strip()]
-
-
 _KNOWN_EXTENSIONS = (".tsv.bgz", ".tsv.gz", ".tsv", ".parquet")
+
+
+def _expand_path(entry: str) -> list[str]:
+    """If *entry* is a directory, return all files inside it with a known
+    table extension.  Works for both local paths and GCS URIs (the latter
+    require a trailing ``/`` to signal directory intent)."""
+    if entry.startswith("gs://"):
+        if not entry.endswith("/"):
+            return [entry]
+        import gcsfs
+        fs = gcsfs.GCSFileSystem()
+        blobs = fs.ls(entry, detail=False)
+        found = sorted(
+            f"gs://{b}" for b in blobs
+            if any(b.lower().endswith(ext) for ext in _KNOWN_EXTENSIONS)
+        )
+        if not found:
+            print(
+                f"  WARNING: GCS directory '{entry}' contains no files with "
+                f"recognised extensions {_KNOWN_EXTENSIONS}.",
+                file=sys.stderr,
+            )
+        return found
+
+    if os.path.isdir(entry):
+        found = sorted(
+            os.path.join(entry, name)
+            for name in os.listdir(entry)
+            if any(name.lower().endswith(ext) for ext in _KNOWN_EXTENSIONS)
+        )
+        if not found:
+            print(
+                f"  WARNING: Directory '{entry}' contains no files with "
+                f"recognised extensions {_KNOWN_EXTENSIONS}.",
+                file=sys.stderr,
+            )
+        return found
+
+    return [entry]
+
+
+def _parse_uri_list(raw: str) -> list[str]:
+    entries = [s.strip() for s in raw.split(",") if s.strip()]
+    expanded: list[str] = []
+    for entry in entries:
+        expanded.extend(_expand_path(entry))
+    return expanded
 
 
 def _derive_stem(uri: str) -> str:
@@ -74,6 +118,7 @@ def run_pipeline(
     use_cache: bool = False,
     store_cache: bool = False,
     row_counts_output: str | None = None,
+    percentile_thresholds: list[float] | None = None,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -572,6 +617,27 @@ def run_pipeline(
         )
         merged = apply_filters(merged, filter_uris, cache_dir, use_cache=use_cache, store_cache=store_cache)
 
+    # --- Percentile thresholds TSV (if requested) ---------------------------
+    if percentile_thresholds:
+        score_cols = drop_cols if aggregate_genes else all_score_cols
+        thresholds_df = merged_pred.select([
+            pl.col(c).quantile(q, interpolation="nearest").alias(f"{c}_p{q}")
+            for c in score_cols
+            for q in percentile_thresholds
+        ]).collect()
+
+        rows: list[dict[str, object]] = []
+        for c in score_cols:
+            row: dict[str, object] = {"score": c}
+            for q in percentile_thresholds:
+                row[f"p{q}"] = thresholds_df[f"{c}_p{q}"][0]
+            rows.append(row)
+        result = pl.DataFrame(rows)
+
+        tsv_path = re.sub(r"\.parquet$", "", output_uri) + ".percentile_thresholds.tsv"
+        result.write_csv(tsv_path, separator="\t")
+        print(f"  Percentile thresholds written to {tsv_path}", file=sys.stderr)
+
     # --- Write output -----------------------------------------------------
     print(f"  Writing output to {output_uri} ...", file=sys.stderr)
     merged.sink_parquet(
@@ -598,12 +664,24 @@ def main() -> None:
     parser.add_argument(
         "--prediction_tables",
         required=True,
-        help="Comma-separated URIs (GCS or local) of prediction parquet/tsv files.",
+        help=(
+            "Comma-separated URIs (GCS or local) of prediction parquet/tsv "
+            "files. An entry may also be a directory path, in which case all "
+            "files with recognised extensions (.parquet, .tsv, .tsv.gz, "
+            ".tsv.bgz) inside it are used. For GCS directories, append a "
+            "trailing slash (e.g. gs://bucket/pred/)."
+        ),
     )
     parser.add_argument(
         "--evaluation_tables",
         required=True,
-        help="Comma-separated URIs (GCS or local) of evaluation parquet/tsv files.",
+        help=(
+            "Comma-separated URIs (GCS or local) of evaluation parquet/tsv "
+            "files. An entry may also be a directory path, in which case all "
+            "files with recognised extensions (.parquet, .tsv, .tsv.gz, "
+            ".tsv.bgz) inside it are used. For GCS directories, append a "
+            "trailing slash (e.g. gs://bucket/eval/)."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -671,7 +749,8 @@ def main() -> None:
         help=(
             "Comma-separated URIs of filter tables. Each adds a boolean "
             "column indicating whether the variant key is present in that "
-            "filter table."
+            "filter table. An entry may also be a directory path, in which "
+            "case all files with recognised extensions inside it are used."
         ),
     )
     parser.add_argument(
@@ -784,6 +863,14 @@ def main() -> None:
             "through every pipeline stage. If the path ends with '.md' it "
             "is used as-is; otherwise it is treated as a directory and the "
             "filename is derived from the output table name."
+    )
+    parser.add_argument(
+        "--percentile_thresholds",
+        default=None,
+        help=(
+            "Comma-separated percentile cutoffs (e.g. 0.85,0.9,0.95,0.995). "
+            "Writes a TSV of raw score values at each threshold next to the "
+            "output parquet (e.g. output.percentile_thresholds.tsv)."
         ),
     )
 
@@ -809,6 +896,12 @@ def main() -> None:
         if not rc_path.endswith(".md"):
             rc_path = os.path.join(rc_path, f"{_derive_stem(args.output)}_counts.md")
         row_counts_output = rc_path
+      
+    pct_thresholds = None
+    if args.percentile_thresholds is not None:
+        pct_thresholds = [
+            float(v.strip()) for v in args.percentile_thresholds.split(",") if v.strip()
+        ]
 
     run_pipeline(
         prediction_uris=_parse_uri_list(args.prediction_tables),
@@ -833,6 +926,7 @@ def main() -> None:
         use_cache=args.use_cache,
         store_cache=args.store_cache,
         row_counts_output=row_counts_output,
+        percentile_thresholds=pct_thresholds,
     )
 
 
