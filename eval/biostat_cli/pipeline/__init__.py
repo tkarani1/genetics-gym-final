@@ -27,6 +27,7 @@ from biostat_cli.pipeline.config import (
 )
 from biostat_cli.pipeline.panel import resolve_panel_df_for_plot
 from biostat_cli.pipeline.plot import render_plots
+from biostat_cli.stats.binary import DEFAULT_PVALUE_METHOD, PVALUE_METHODS
 from biostat_cli.types import OutputLayout, PipelineMode
 
 
@@ -60,6 +61,12 @@ def _build_parser() -> argparse.ArgumentParser:
             type=int,
             default=None,
             help="Enable bootstrap std_error with N samples (e.g., 100).",
+        )
+        subparser.add_argument(
+            "--pvalue-method",
+            choices=list(PVALUE_METHODS),
+            default=DEFAULT_PVALUE_METHOD,
+            help=f"P-value calculation method (default: {DEFAULT_PVALUE_METHOD})",
         )
         subparser.add_argument(
             "--eval-set",
@@ -286,6 +293,7 @@ def main() -> None:
         threshold=ns.threshold,
         thresholds=ns.thresholds,
         bootstrap=ns.bootstrap,
+        pvalue_method=getattr(ns, "pvalue_method", DEFAULT_PVALUE_METHOD),
         raw_parquet=getattr(ns, "raw_parquet", None),
         pairwise_parquet=getattr(ns, "pairwise_parquet", None),
         panel_table=getattr(ns, "panel_table", None),

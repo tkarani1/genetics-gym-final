@@ -16,7 +16,9 @@ from biostat_cli.evaluators.base import BaseEvaluator
 from biostat_cli.evaluators.gene import GeneEvaluator, SUM_VARIANTS_SENTINEL
 from biostat_cli.evaluators.variant import VariantEvaluator
 from biostat_cli.io import scan_table, write_json, write_tsv
+from biostat_cli.stats.binary import DEFAULT_PVALUE_METHOD, PVALUE_METHODS
 from biostat_cli.stats.factory import StatFactory
+from biostat_cli.utils import WITHIN_GENE_COL
 
 ERROR_INVALID_THRESHOLD = 22
 
@@ -34,6 +36,8 @@ class RunArgs:
     ctrl_total: float | None
     out_fname: str
     write_missing: str
+    within_gene_percentile: bool = False
+    pvalue_method: str = DEFAULT_PVALUE_METHOD
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -47,6 +51,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--thresholds", default=None, help="Comma-separated percentile thresholds")
     parser.add_argument("--case-total", type=float, default=None)
     parser.add_argument("--ctrl-total", type=float, default=None)
+    parser.add_argument(
+        "--within-gene-percentile",
+        action="store_true",
+        default=False,
+        help="Transform each score into its within-gene percentile rank (requires 'ensg' column)",
+    )
+    parser.add_argument(
+        "--pvalue-method",
+        choices=list(PVALUE_METHODS),
+        default=DEFAULT_PVALUE_METHOD,
+        help=f"P-value calculation method (default: {DEFAULT_PVALUE_METHOD})",
+    )
     parser.add_argument("--out-fname", required=True)
     parser.add_argument("--write-missing", choices=["none", "all", "any"], default="none")
     return parser
@@ -307,7 +323,9 @@ def _run_eval_filter_combo(
 
     combo_rows: list[dict[str, Any]] = []
     for score_col in score_cols:
-        score_frame = evaluator.prepare_score_frame(prepared, score_col=score_col)
+        score_frame = evaluator.prepare_score_frame(
+            prepared, score_col=score_col, within_gene_percentile=args.within_gene_percentile,
+        )
 
         if need_labels:
             labels_scores = evaluator.labels_and_scores(score_frame, eval_col=eval_col, score_col=score_col)
@@ -355,7 +373,7 @@ def _run_eval_filter_combo(
                 score_frame, eval_col=eval_col, score_col=score_col, thresholds=thresholds
             )
             if "enrichment" in requested_stats:
-                enr_results = StatFactory.enrichment_batch(conts)
+                enr_results = StatFactory.enrichment_batch(conts, pvalue_method=args.pvalue_method)
                 for threshold, cont, out in zip(thresholds, conts, enr_results):
                     _append_binary_row(
                         rows=combo_rows,
@@ -375,7 +393,8 @@ def _run_eval_filter_combo(
                     )
             if "rate_ratio" in requested_stats:
                 rr_results = StatFactory.rate_ratio_batch(
-                    conts, case_total=args.case_total, ctrl_total=args.ctrl_total
+                    conts, case_total=args.case_total, ctrl_total=args.ctrl_total,
+                    pvalue_method=args.pvalue_method,
                 )
                 for threshold, cont, out in zip(thresholds, conts, rr_results):
                     _append_binary_row(
@@ -410,6 +429,15 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
 
     # Share a single LazyFrame across all workers so parquet metadata is read once.
     source = scan_table(table.path)
+
+    if args.within_gene_percentile:
+        if args.eval_level == "gene":
+            raise ValueError("--within-gene-percentile is not compatible with --eval-level gene.")
+        if WITHIN_GENE_COL not in source.collect_schema().names():
+            raise ValueError(
+                f"--within-gene-percentile requires column '{WITHIN_GENE_COL}' "
+                f"but it is not present in {table.path}."
+            )
 
     eval_cols = _resolve_eval_cols(args.eval_set, table.evals, args.eval_level)
     filter_pairs = _resolve_filter_cols(args.filters, table.filters)
@@ -502,8 +530,10 @@ def main() -> None:
         thresholds=ns.thresholds,
         case_total=ns.case_total,
         ctrl_total=ns.ctrl_total,
+        within_gene_percentile=ns.within_gene_percentile,
         out_fname=ns.out_fname,
         write_missing=ns.write_missing,
+        pvalue_method=ns.pvalue_method,
     )
     try:
         output_paths = _resolve_output_paths(args.out_fname)

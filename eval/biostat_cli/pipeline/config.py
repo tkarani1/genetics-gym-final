@@ -71,6 +71,7 @@ class PipelineArgs:
     threshold: float | None
     thresholds: str | None
     bootstrap: int | None
+    pvalue_method: str
     raw_parquet: str | None
     pairwise_parquet: str | None
     panel_table: str | None

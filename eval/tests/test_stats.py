@@ -14,7 +14,14 @@ from biostat_cli.cli import (
 )
 from biostat_cli.config import detect_pairwise_columns, parse_eval_totals
 from biostat_cli.evaluators.base import Contingency
-from biostat_cli.stats.binary import enrichment, pairwise_enrichment, pairwise_rate_ratio, rate_ratio
+from biostat_cli.stats.binary import (
+    enrichment,
+    fisher_p_value,
+    pairwise_enrichment,
+    pairwise_rate_ratio,
+    poisson_p_value,
+    rate_ratio,
+)
 from biostat_cli.stats.continuous import compute_auc, compute_auprc
 
 
@@ -33,6 +40,43 @@ def test_binary_stats():
     assert not math.isnan(enr.p_value)
     assert not math.isnan(rr.value)
     assert not math.isnan(rr.p_value)
+
+
+def test_fisher_p_value():
+    cont = Contingency(tp=10, fp=5, tn=20, fn=15)
+    p = fisher_p_value(cont)
+    assert not math.isnan(p)
+    assert 0.0 <= p <= 1.0
+
+
+def test_poisson_p_value():
+    cont = Contingency(tp=10, fp=5, tn=20, fn=15)
+    p = poisson_p_value(cont)
+    assert not math.isnan(p)
+    assert 0.0 <= p <= 1.0
+
+
+def test_pvalue_method_parameter():
+    """Both methods produce valid (but potentially different) p-values."""
+    cont = Contingency(tp=10, fp=5, tn=20, fn=15)
+    enr_fisher = enrichment(cont, pvalue_method="fisher")
+    enr_poisson = enrichment(cont, pvalue_method="poisson")
+    assert enr_fisher.value == enr_poisson.value
+    assert not math.isnan(enr_fisher.p_value)
+    assert not math.isnan(enr_poisson.p_value)
+
+
+def test_fisher_is_default():
+    cont = Contingency(tp=10, fp=5, tn=20, fn=15)
+    default_p = enrichment(cont).p_value
+    fisher_p = enrichment(cont, pvalue_method="fisher").p_value
+    assert default_p == fisher_p
+
+
+def test_pvalue_empty_strata():
+    cont_empty_above = Contingency(tp=0, fp=0, tn=20, fn=15)
+    assert math.isnan(fisher_p_value(cont_empty_above))
+    assert math.isnan(poisson_p_value(cont_empty_above))
 
 
 def test_pairwise_enrichment():
