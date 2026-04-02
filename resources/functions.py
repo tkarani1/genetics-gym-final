@@ -8,8 +8,7 @@ def locus_alleles_to_chr_pos_ref_alt(ht):
         ref = ht.alleles[0],
         alt = ht.alleles[1]
     )
-    ht = ht.key_by()
-    ht.drop('locus', 'alleles')
+
     return ht
 
 def write_tsv_bgz_from_ht_path(ht_path, tsv_bgz_path):
@@ -24,6 +23,26 @@ def write_tsv_bgz_from_ht(ht, tsv_bgz_path):
     if not tsv_bgz_path.endswith('.tsv.bgz'):
         tsv_bgz_path += '.tsv.bgz'
     ht.export(tsv_bgz_path, delimiter='\t')
+
+
+def write_parquet_from_ht(ht, parquet_path, overwrite=True, compression="snappy"):
+    """Write a Hail Table to Parquet via Spark (requires SparkBackend)."""
+    ht = locus_alleles_to_chr_pos_ref_alt(ht)
+    backend_name = hl.current_backend().__class__.__name__
+    if backend_name != "SparkBackend":
+        print(
+            f"Skipping parquet write to {parquet_path}: "
+            f"requires SparkBackend, found {backend_name}."
+        )
+        return
+    df = ht.to_spark()
+    mode = "overwrite" if overwrite else "errorifexists"
+    df.write.mode(mode).option("compression", compression).parquet(parquet_path)
+
+
+def write_parquet_from_ht_path(ht_path, parquet_path, overwrite=True, compression="snappy"):
+    ht = hl.read_table(ht_path)
+    write_parquet_from_ht(ht, parquet_path, overwrite=overwrite, compression=compression)
 
 
 def check_duplicates(ht, key_by=None, output_path=None):
