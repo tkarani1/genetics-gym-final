@@ -863,6 +863,7 @@ def main() -> None:
             "through every pipeline stage. If the path ends with '.md' it "
             "is used as-is; otherwise it is treated as a directory and the "
             "filename is derived from the output table name."
+        )
     )
     parser.add_argument(
         "--percentile_thresholds",
