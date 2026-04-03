@@ -88,8 +88,27 @@ def missing_category_sort_expr() -> pl.Expr:
     )
 
 
+WITHIN_GENE_COL = "ensg"
+
+
+def apply_within_gene_percentile(lf: pl.LazyFrame, score_col: str, gene_col: str = WITHIN_GENE_COL) -> pl.LazyFrame:
+    """Replace *score_col* with within-gene ordinal rank divided by group size (roughly (0, 1])."""
+    schema_names = lf.collect_schema().names()
+    if gene_col not in schema_names:
+        raise ValueError(
+            f"Within-gene percentile requires column {gene_col!r}; available: {schema_names}"
+        )
+    return lf.with_columns(
+        (pl.col(score_col).rank("ordinal").over(gene_col) / pl.col(score_col).count().over(gene_col))
+        .cast(pl.Float64)
+        .alias(score_col)
+    )
+
+
 __all__ = [
     "normalize_chromosome_sort_expr",
     "sort_by_genomic_position",
     "missing_category_sort_expr",
+    "apply_within_gene_percentile",
+    "WITHIN_GENE_COL",
 ]

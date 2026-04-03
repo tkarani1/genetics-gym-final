@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 import polars as pl
 
+from biostat_cli.utils import apply_within_gene_percentile
+
 
 @dataclass(frozen=True)
 class PreparedFrame:
@@ -45,8 +47,13 @@ class BaseEvaluator(ABC):
         total_eval_rows = int(lf.select(pl.len().alias("n")).collect(streaming=True)["n"][0])
         return PreparedFrame(frame=lf, total_eval_rows=total_eval_rows)
 
-    def prepare_score_frame(self, prepared: PreparedFrame, score_col: str) -> ScoreFrame:
-        df = prepared.frame.filter(pl.col(score_col).is_not_null()).collect(streaming=True)
+    def prepare_score_frame(
+        self, prepared: PreparedFrame, score_col: str, *, within_gene_percentile: bool = False
+    ) -> ScoreFrame:
+        lf = prepared.frame
+        if within_gene_percentile:
+            lf = apply_within_gene_percentile(lf, score_col)
+        df = lf.filter(pl.col(score_col).is_not_null()).collect(streaming=True)
         return ScoreFrame(frame=df.lazy(), rows_used=df.height)
 
     @abstractmethod
