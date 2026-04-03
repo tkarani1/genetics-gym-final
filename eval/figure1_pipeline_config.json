@@ -54,20 +54,24 @@
     "AM_percentile": "AlphaMissense",
     "score_PAI3D_percentile": "PrimateAI-3D",
     "MisFit_D_score_percentile": "MisFit-D",
+    "MisFit_S_score_percentile": "MisFit-S",
     "mpc_score_percentile": "MPC",
     "AM": "AlphaMissense",
     "score_PAI3D": "PrimateAI-3D",
     "MisFit_D_score": "MisFit-D",
+    "MisFit_S_score": "MisFit-S",
     "mpc_score": "MPC"
   },
   "method_order": [
     "AM_percentile",
     "score_PAI3D_percentile",
     "MisFit_D_score_percentile",
+    "MisFit_S_score_percentile",
     "mpc_score_percentile",
     "AM",
     "score_PAI3D",
     "MisFit_D_score",
+    "MisFit_S_score",
     "mpc_score"
   ],
   "rate_ratio_denominators": {

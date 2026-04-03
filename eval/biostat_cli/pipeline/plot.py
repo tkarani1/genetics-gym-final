@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import matplotlib.pyplot as plt
 import polars as pl
@@ -26,12 +26,13 @@ def render_mode_figure(
     panel_df: pl.DataFrame,
     *,
     mode: str,
-    config: PipelineConfig,
+    config: Any,
     out_png: str,
     out_pdf: str,
     panel_order: list[str],
     panel_titles: dict[str, str],
     panel_metrics: dict[str, dict[str, str]],
+    suptitle: str | None = None,
 ) -> None:
     """
     Render figure for a single mode (raw or pairwise).
@@ -93,7 +94,7 @@ def render_mode_figure(
     for idx in range(n_panels, len(flat_axes)):
         flat_axes[idx].axis("off")
 
-    fig.suptitle(f"Figure 1-style panels ({mode})")
+    fig.suptitle(suptitle or f"Figure 1-style panels ({mode})")
     Path(out_png).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_png, dpi=220)
     fig.savefig(out_pdf)
@@ -102,12 +103,13 @@ def render_mode_figure(
 
 def render_combined_figure(
     panel_df: pl.DataFrame,
-    config: PipelineConfig,
+    config: Any,
     out_png: str,
     out_pdf: str,
     panel_order: list[str],
     panel_titles: dict[str, str],
     panel_metrics: dict[str, dict[str, str]],
+    suptitle: str | None = None,
 ) -> None:
     """
     Render combined figure with raw and pairwise side-by-side.
@@ -159,7 +161,7 @@ def render_combined_figure(
             ax.set_ylabel(panel_stat)
             ax.set_title(f"{panel_id}: {panel_titles.get(panel_id, panel_id)} [{family}]")
 
-    fig.suptitle("Figure 1-style panels (combined)")
+    fig.suptitle(suptitle or "Figure 1-style panels (combined)")
     Path(out_png).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_png, dpi=220)
     fig.savefig(out_pdf)
