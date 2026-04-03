@@ -14,6 +14,7 @@ from biostat_cli.cli import (
 )
 from biostat_cli.config import detect_pairwise_columns, parse_eval_totals
 from biostat_cli.evaluators.base import Contingency
+from biostat_cli.evaluators.variant import VariantEvaluator
 from biostat_cli.stats.binary import (
     enrichment,
     fisher_p_value,
@@ -23,6 +24,7 @@ from biostat_cli.stats.binary import (
     rate_ratio,
 )
 from biostat_cli.stats.continuous import compute_auc, compute_auprc
+from biostat_cli.utils import apply_within_gene_percentile
 
 
 def test_auc_and_auprc_basic():
@@ -403,3 +405,31 @@ def test_bootstrap_pairwise_std_error(tmp_path):
     assert rows
     assert all("std_error" in row for row in rows)
     assert any(not math.isnan(row["std_error"]) for row in rows)
+
+
+def test_apply_within_gene_percentile():
+    df = pl.DataFrame(
+        {"ensg": ["g1", "g1", "g1", "g2", "g2"], "score": [1.0, 2.0, 3.0, 10.0, 30.0]}
+    )
+    out = apply_within_gene_percentile(df.lazy(), "score").collect()
+    g1 = out.filter(pl.col("ensg") == "g1")["score"].sort()
+    g2 = out.filter(pl.col("ensg") == "g2")["score"].sort()
+    assert g1.to_list() == pytest.approx([1 / 3, 2 / 3, 1.0])
+    assert g2.to_list() == pytest.approx([0.5, 1.0])
+
+
+def test_apply_within_gene_percentile_requires_gene_col():
+    df = pl.DataFrame({"score": [1.0, 2.0]})
+    with pytest.raises(ValueError, match="Within-gene percentile"):
+        apply_within_gene_percentile(df.lazy(), "score").collect()
+
+
+def test_prepare_score_frame_within_gene_percentile():
+    source = pl.DataFrame(
+        {"ensg": ["a", "a", "a"], "y": [True, False, True], "s": [1.0, 2.0, 3.0]}
+    ).lazy()
+    ev = VariantEvaluator(source)
+    prepared = ev.prepare_eval_frame("y", None)
+    sf = ev.prepare_score_frame(prepared, "s", within_gene_percentile=True)
+    vals = sf.frame.select("s").collect()["s"].sort().to_list()
+    assert vals == pytest.approx([1 / 3, 2 / 3, 1.0])
