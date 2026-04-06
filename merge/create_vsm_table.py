@@ -232,7 +232,7 @@ def run_pipeline(
                 raise ValueError(
                     f"Evaluation table {uri} has no column containing 'is_pos'."
                 )
-            is_pos_col = is_pos_cols[0]
+            is_pos_col = "is_pos" if "is_pos" in is_pos_cols else is_pos_cols[0]
             target_name = f"is_pos_{stem}"
             lf = lf.select(JOIN_KEYS + [is_pos_col]).rename({is_pos_col: target_name})
             print(
@@ -496,46 +496,6 @@ def run_pipeline(
 
         drop_cols = all_score_cols
 
-    # --- Spatial smoothing (if requested) ---------------------------------
-    if smooth:
-        if percentile_order == "none":
-            print(
-                "  WARNING: --smooth requires percentile-ranked scores; "
-                "--percentile_order is 'none' so smoothing will operate on "
-                "raw scores instead.",
-                file=sys.stderr,
-            )
-        if smooth_reference_dir is None:
-            raise ValueError(
-                "--smooth_reference_dir is required when --smooth is set."
-            )
-        cols_to_smooth = (
-            [f"{c}_percentile" for c in all_score_cols]
-            if percentile_order != "none"
-            else all_score_cols
-        )
-        print(
-            f"  Spatially smoothing {len(cols_to_smooth)} column(s) "
-            f"(sigma={smooth_sigma} Å) ...",
-            file=sys.stderr,
-        )
-        merged_pred = add_smoothed_columns(
-            merged_pred,
-            cols_to_smooth,
-            reference_dir=smooth_reference_dir,
-            sigma=smooth_sigma,
-        )
-
-    if join_type == "pairwise" and non_anchor_cols and percentile_order != "none":
-        pct_renames = {
-            f"{anchor}_percentile": f"{anchor}_anchor_percentile",
-        }
-        for c in non_anchor_cols:
-            pct_renames[f"{c}_percentile"] = f"{c}_percentile_with_anchor"
-            pct_renames[f"{anchor}_pairwise_{c}_percentile"] = (
-                f"{anchor}_anchor_percentile_with_{c}"
-            )
-        merged_pred = merged_pred.rename(pct_renames)
     # --- Spatial smoothing (if requested) ---------------------------------
     if smooth:
         if percentile_order == "none":
