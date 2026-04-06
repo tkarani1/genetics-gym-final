@@ -504,7 +504,7 @@ class TestTP53Biology:
         import pymol2
 
         pdb_path = os.path.join(
-            REFERENCE_DIR, "pdb_files", "AF-P04637-F1-model_v4.pdb.gz"
+            REFERENCE_DIR, "pdb_files", "AF-P04637-F1-model_v6.pdb.gz"
         )
         out_path = os.path.join(os.path.dirname(__file__), "tp53_am_smoothing.pse")
 

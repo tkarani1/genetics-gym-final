@@ -110,7 +110,7 @@ def run_pipeline(
     output_table_fields: list[str] | None = None,
     anchor: str | None = None,
     linker_uri: str | None = None,
-    smooth: bool = False,
+    smooth_order: str = "none",
     smooth_reference_dir: str | None = None,
     smooth_sigma: float = 10.0,
     aggregate_genes: bool = False,
@@ -125,6 +125,23 @@ def run_pipeline(
     """
     start = time.perf_counter()
 
+    # --- Validate smooth_order -----------------------------------------------
+    if smooth_order != "none":
+        if smooth_reference_dir is None:
+            raise ValueError(
+                "--smooth_reference_dir is required when --smooth_order is set."
+            )
+        if smooth_order == "pre" and percentile_order != "pre":
+            raise ValueError(
+                "--smooth_order 'pre' requires --percentile_order 'pre' "
+                "(percentiles must be computed before smoothing)."
+            )
+        if smooth_order == "post" and percentile_order == "none":
+            raise ValueError(
+                "--smooth_order 'post' requires --percentile_order 'pre' or "
+                "'post' (smoothing operates on percentile-ranked scores)."
+            )
+
     collector: RowCountsCollector | None = None
     if row_counts_output is not None:
         collector = RowCountsCollector()
@@ -138,8 +155,8 @@ def run_pipeline(
         collector.record_config("aggregate_genes", str(aggregate_genes))
         if aggregate_genes:
             collector.record_config("collapse_genes", str(collapse_genes))
-        if smooth:
-            collector.record_config("smooth", "True")
+        if smooth_order != "none":
+            collector.record_config("smooth_order", smooth_order)
         if filter_uris:
             collector.record_config("filter_count", str(len(filter_uris)))
 
@@ -341,10 +358,24 @@ def run_pipeline(
 
     if percentile_order == "pre":
         print("  Calculating percentiles BEFORE pred merge ...", file=sys.stderr)
-        pred_frames = [
-            add_percentile_columns(lf, _score_columns(lf))
-            for lf in pred_frames
-        ]
+        new_frames = []
+        for lf in pred_frames:
+            score_cols = _score_columns(lf)
+            lf = add_percentile_columns(lf, score_cols)
+            if smooth_order == "pre":
+                pct_cols = [f"{c}_percentile" for c in score_cols]
+                print(
+                    f"  Spatially smoothing {len(pct_cols)} column(s) before "
+                    f"merge (sigma={smooth_sigma} Å) ...",
+                    file=sys.stderr,
+                )
+                lf = add_smoothed_columns(
+                    lf, pct_cols,
+                    reference_dir=smooth_reference_dir,
+                    sigma=smooth_sigma,
+                )
+            new_frames.append(lf)
+        pred_frames = new_frames
 
     print(
         f"  Merging {len(pred_frames)} pred table(s) ({join_type} join) ...",
@@ -496,67 +527,12 @@ def run_pipeline(
 
         drop_cols = all_score_cols
 
-    # --- Spatial smoothing (if requested) ---------------------------------
-    if smooth:
-        if percentile_order == "none":
-            print(
-                "  WARNING: --smooth requires percentile-ranked scores; "
-                "--percentile_order is 'none' so smoothing will operate on "
-                "raw scores instead.",
-                file=sys.stderr,
-            )
-        if smooth_reference_dir is None:
-            raise ValueError(
-                "--smooth_reference_dir is required when --smooth is set."
-            )
-        cols_to_smooth = (
-            [f"{c}_percentile" for c in all_score_cols]
-            if percentile_order != "none"
-            else all_score_cols
-        )
+    # --- Spatial smoothing post-merge (if requested) ----------------------
+    if smooth_order == "post":
+        cols_to_smooth = [f"{c}_percentile" for c in all_score_cols]
         print(
-            f"  Spatially smoothing {len(cols_to_smooth)} column(s) "
-            f"(sigma={smooth_sigma} Å) ...",
-            file=sys.stderr,
-        )
-        merged_pred = add_smoothed_columns(
-            merged_pred,
-            cols_to_smooth,
-            reference_dir=smooth_reference_dir,
-            sigma=smooth_sigma,
-        )
-
-    if join_type == "pairwise" and non_anchor_cols and percentile_order != "none":
-        pct_renames = {
-            f"{anchor}_percentile": f"{anchor}_anchor_percentile",
-        }
-        for c in non_anchor_cols:
-            pct_renames[f"{c}_percentile"] = f"{c}_percentile_with_anchor"
-            pct_renames[f"{anchor}_pairwise_{c}_percentile"] = (
-                f"{anchor}_anchor_percentile_with_{c}"
-            )
-        merged_pred = merged_pred.rename(pct_renames)
-    # --- Spatial smoothing (if requested) ---------------------------------
-    if smooth:
-        if percentile_order == "none":
-            print(
-                "  WARNING: --smooth requires percentile-ranked scores; "
-                "--percentile_order is 'none' so smoothing will operate on "
-                "raw scores instead.",
-                file=sys.stderr,
-            )
-        if smooth_reference_dir is None:
-            raise ValueError(
-                "--smooth_reference_dir is required when --smooth is set."
-            )
-        cols_to_smooth = (
-            [f"{c}_percentile" for c in all_score_cols]
-            if percentile_order != "none"
-            else all_score_cols
-        )
-        print(
-            f"  Spatially smoothing {len(cols_to_smooth)} column(s) "
-            f"(sigma={smooth_sigma} Å) ...",
+            f"  Spatially smoothing {len(cols_to_smooth)} column(s) after "
+            f"merge (sigma={smooth_sigma} Å) ...",
             file=sys.stderr,
         )
         merged_pred = add_smoothed_columns(
@@ -783,13 +759,18 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--smooth",
-        action="store_true",
-        default=False,
+        "--smooth_order",
+        choices=["pre", "post", "none"],
+        default="none",
         help=(
-            "Apply spatial smoothing to percentile-ranked scores using a "
-            "Gaussian kernel over 3D protein structure distances. Requires "
-            "--smooth_reference_dir."
+            "When to apply spatial smoothing to percentile-ranked scores using "
+            "a Gaussian kernel over 3D protein structure distances. "
+            "'pre' = smooth each VSM's percentile-ranked scores before merging "
+            "(requires --percentile_order pre); "
+            "'post' = smooth after merging prediction tables (requires "
+            "--percentile_order pre or post); "
+            "'none' = skip smoothing (default). "
+            "Requires --smooth_reference_dir when not 'none'."
         ),
     )
     parser.add_argument(
@@ -919,7 +900,7 @@ def main() -> None:
         ),
         anchor=args.anchor,
         linker_uri=args.linker_table,
-        smooth=args.smooth,
+        smooth_order=args.smooth_order,
         smooth_reference_dir=args.smooth_reference_dir,
         smooth_sigma=args.smooth_sigma,
         aggregate_genes=args.aggregate_genes,
