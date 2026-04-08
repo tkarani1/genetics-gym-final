@@ -584,6 +584,13 @@ def run_pipeline(
             sigma=smooth_sigma,
         )
 
+    # --- Retain raw anchor for future pairwise additions --------------------
+    if join_type == "pairwise" and anchor and not aggregate_genes:
+        raw_anchor_name = f"_raw_anchor_{anchor}"
+        merged_pred = merged_pred.rename({anchor: raw_anchor_name})
+        all_score_cols = [raw_anchor_name if c == anchor else c for c in all_score_cols]
+        drop_cols = [c for c in drop_cols if c != anchor]
+
     # --- Phase 3: Left-join eval onto pred --------------------------------
     if subtable == "pred" or merged_eval is None:
         merged = merged_pred

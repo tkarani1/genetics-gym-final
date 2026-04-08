@@ -5,6 +5,10 @@ avoiding a full pipeline re-run.
 
 Guarantees: merge(A, B, C) == join(merge(A, B), C) for inner/outer
 joins on unique-keyed tables.
+
+For pairwise tables, use --pairwise_anchor to also create the
+pairwise anchor-masked columns for the new score(s), matching the
+behaviour of merge_tables_pairwise in the full pipeline.
 """
 from __future__ import annotations
 
@@ -80,6 +84,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--pairwise_anchor",
+        default=None,
+        help=(
+            "Name of the pairwise anchor score (e.g. 'polyphen_score'). "
+            "When set, the base table must contain a '_raw_anchor_{name}' "
+            "column (written by create_vsm_table.py for pairwise subtables). "
+            "Pairwise anchor-masked columns are created for each new score, "
+            "replicating the merge_tables_pairwise behaviour."
+        ),
+    )
+    parser.add_argument(
         "--use_cache",
         action="store_true",
         default=False,
@@ -99,6 +114,17 @@ def main() -> None:
 
     print(f"  Loading base table: {args.base}", file=sys.stderr)
     base_lf = normalize_chrom_key(pl.scan_parquet(args.base))
+
+    if args.pairwise_anchor:
+        raw_anchor_col = f"_raw_anchor_{args.pairwise_anchor}"
+        base_schema = base_lf.collect_schema()
+        if raw_anchor_col not in base_schema.names():
+            raise ValueError(
+                f"Base table does not contain '{raw_anchor_col}'. "
+                f"Pairwise add-one requires the base table to have been "
+                f"written with raw anchor retention (create_vsm_table.py "
+                f"pairwise subtable mode)."
+            )
 
     print(f"  Loading new table: {args.new_table}", file=sys.stderr)
     pq_path = ensure_parquet(
@@ -134,9 +160,42 @@ def main() -> None:
         new_lf, on=JOIN_KEYS, how=args.join_type, coalesce=True,
     )
 
+    # --- Pairwise column creation -----------------------------------------
+    pairwise_cols: list[str] = []
+    if args.pairwise_anchor:
+        anchor = args.pairwise_anchor
+        raw_anchor_col = f"_raw_anchor_{anchor}"
+        print(
+            f"  Creating pairwise columns using {raw_anchor_col} ...",
+            file=sys.stderr,
+        )
+        pairwise_exprs: list[pl.Expr] = []
+        for c in score_cols:
+            both_non_null = pl.col(c).is_not_null() & pl.col(raw_anchor_col).is_not_null()
+            pw_name = f"{anchor}_pairwise_{c}"
+            pairwise_exprs.append(
+                pl.when(both_non_null).then(pl.col(raw_anchor_col)).alias(pw_name)
+            )
+            pairwise_exprs.append(
+                pl.when(both_non_null).then(pl.col(c)).alias(c)
+            )
+            pairwise_cols.append(pw_name)
+        result = result.with_columns(pairwise_exprs)
+
+    # --- Percentile computation (post) ------------------------------------
     if args.percentile_order == "post":
         print("  Computing percentiles AFTER join ...", file=sys.stderr)
-        result = add_percentile_columns(result, score_cols)
+        all_new_cols = score_cols + pairwise_cols
+        result = add_percentile_columns(result, all_new_cols)
+        if pairwise_cols:
+            anchor = args.pairwise_anchor
+            pct_renames: dict[str, str] = {}
+            for c in score_cols:
+                pct_renames[f"{c}_percentile"] = f"{c}_percentile_with_anchor"
+                pct_renames[f"{anchor}_pairwise_{c}_percentile"] = (
+                    f"{anchor}_anchor_percentile_with_{c}"
+                )
+            result = result.rename(pct_renames)
 
     print(f"  Writing output to {args.output} ...", file=sys.stderr)
     result.sink_parquet(args.output, compression="zstd")
