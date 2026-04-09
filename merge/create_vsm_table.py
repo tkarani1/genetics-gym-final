@@ -119,6 +119,9 @@ def run_pipeline(
     store_cache: bool = False,
     row_counts_output: str | None = None,
     percentile_thresholds: list[float] | None = None,
+    subtable: str | None = None,
+    precomputed_prediction: str | None = None,
+    precomputed_evaluation: str | None = None,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -170,6 +173,42 @@ def run_pipeline(
                 f"Set --reference_score none to disable negation."
             )
 
+    # --- Fast path: both prediction and eval are precomputed ---------------
+    if precomputed_prediction is not None and precomputed_evaluation is not None:
+        eval_keys = ["ensg"] if aggregate_genes else JOIN_KEYS
+        pq_eval = ensure_parquet(
+            precomputed_evaluation, cache_dir,
+            use_cache=use_cache, store_cache=store_cache,
+        )
+        pq_pred = ensure_parquet(
+            precomputed_prediction, cache_dir,
+            use_cache=use_cache, store_cache=store_cache,
+        )
+        merged_eval = normalize_chrom_key(pl.scan_parquet(pq_eval))
+        merged_pred = normalize_chrom_key(pl.scan_parquet(pq_pred))
+        if linker_uri:
+            print(f"  Left-joining linker {linker_uri} onto precomputed pred ...", file=sys.stderr)
+            linker_lf = normalize_chrom_key(pl.scan_parquet(linker_uri))
+            merged_pred = merged_pred.join(linker_lf, on=JOIN_KEYS, how="left", coalesce=True)
+        print("  Left-joining precomputed eval and pred ...", file=sys.stderr)
+        merged = merged_eval.join(
+            merged_pred, on=eval_keys, how="left", coalesce=True,
+        )
+        if filter_uris:
+            print(
+                f"  Applying {len(filter_uris)} filter table(s) ...",
+                file=sys.stderr,
+            )
+            merged = apply_filters(
+                merged, filter_uris, cache_dir,
+                use_cache=use_cache, store_cache=store_cache,
+            )
+        print(f"  Writing output to {output_uri} ...", file=sys.stderr)
+        merged.sink_parquet(output_uri, compression="zstd")
+        elapsed = time.perf_counter() - start
+        print(f"Done in {elapsed:.1f}s.", file=sys.stderr)
+        return
+
     # --- Load prediction tables -------------------------------------------
     pred_frames: list[pl.LazyFrame] = []
     all_score_cols: list[str] = []
@@ -196,7 +235,7 @@ def run_pipeline(
         )
         pred_frames.append(lf)
 
-    if not pred_frames:
+    if not pred_frames and subtable != "eval":
         specified = ", ".join(output_table_fields) if output_table_fields else "(none)"
         raise ValueError(
             f"None of the --output_table_fields ({specified}) matched any "
@@ -268,24 +307,42 @@ def run_pipeline(
                 if renames:
                     eval_frames[i] = eval_frames[i].rename(renames)
 
-    # --- Phase 1: Outer-join eval tables (always) --------------------------
-    print(
-        f"  Merging {len(eval_frames)} eval table(s) (outer join) ...",
-        file=sys.stderr,
-    )
-    if aggregate_genes:
-        def _eval_join(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
-            return left.join(right, on=eval_keys, how="outer", coalesce=True)
+    # --- Phase 1: Outer-join eval tables ------------------------------------
+    merged_eval: pl.LazyFrame | None = None
+    if eval_frames:
+        print(
+            f"  Merging {len(eval_frames)} eval table(s) (outer join) ...",
+            file=sys.stderr,
+        )
+        if aggregate_genes:
+            def _eval_join(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
+                return left.join(right, on=eval_keys, how="outer", coalesce=True)
 
-        if len(eval_frames) == 1:
-            merged_eval = eval_frames[0]
+            if len(eval_frames) == 1:
+                merged_eval = eval_frames[0]
+            else:
+                merged_eval = reduce(_eval_join, eval_frames)
         else:
-            merged_eval = reduce(_eval_join, eval_frames)
-    else:
-        merged_eval = merge_tables(eval_frames, join_type="outer")
+            merged_eval = merge_tables(eval_frames, join_type="outer")
 
-    if collector is not None:
-        collector.record("eval_merge", "rows", count_lazy(merged_eval))
+        if collector is not None:
+            collector.record("eval_merge", "rows", count_lazy(merged_eval))
+
+    if precomputed_evaluation is not None:
+        pq_eval = ensure_parquet(
+            precomputed_evaluation, cache_dir,
+            use_cache=use_cache, store_cache=store_cache,
+        )
+        merged_eval = normalize_chrom_key(pl.scan_parquet(pq_eval))
+
+    if subtable == "eval":
+        if merged_eval is None:
+            raise ValueError("No evaluation tables to merge.")
+        print(f"  Writing eval sub-table to {output_uri} ...", file=sys.stderr)
+        merged_eval.sink_parquet(output_uri, compression="zstd")
+        elapsed = time.perf_counter() - start
+        print(f"Done in {elapsed:.1f}s.", file=sys.stderr)
+        return
 
     # --- Phase 2: Join pred tables with percentiles -----------------------
     negate_enabled = reference_score is not None
@@ -418,16 +475,17 @@ def run_pipeline(
                 "linker", "unique_ensgs",
                 linker_lf.select("ensg").unique().select(pl.len()).collect().item(),
             )
-            eval_not_in_linker = count_lazy(
-                merged_eval.join(linker_keys, on=eval_keys, how="anti")
-            ) if eval_keys == JOIN_KEYS else count_lazy(
-                merged_eval.join(
-                    linker_lf.select("ensg").unique(), on=["ensg"], how="anti",
+            if merged_eval is not None:
+                eval_not_in_linker = count_lazy(
+                    merged_eval.join(linker_keys, on=eval_keys, how="anti")
+                ) if eval_keys == JOIN_KEYS else count_lazy(
+                    merged_eval.join(
+                        linker_lf.select("ensg").unique(), on=["ensg"], how="anti",
+                    )
                 )
-            )
-            collector.record("coverage", "eval_not_in_linker", eval_not_in_linker)
-            eval_total = collector.stages["eval_merge"]["rows"]
-            collector.record("coverage", "eval_in_linker", eval_total - eval_not_in_linker)
+                collector.record("coverage", "eval_not_in_linker", eval_not_in_linker)
+                eval_total = collector.stages["eval_merge"]["rows"]
+                collector.record("coverage", "eval_in_linker", eval_total - eval_not_in_linker)
 
         print("  Left-joining linker onto merged predictions ...", file=sys.stderr)
         merged_pred = merged_pred.join(
@@ -526,20 +584,29 @@ def run_pipeline(
             sigma=smooth_sigma,
         )
 
-    # --- Coverage: eval vs pred (before Phase 3 join) -----------------------
-    if collector is not None:
-        eval_not_in_pred = count_lazy(
-            merged_eval.join(merged_pred, on=eval_keys, how="anti")
-        )
-        eval_total = collector.stages["eval_merge"]["rows"]
-        collector.record("coverage", "eval_not_in_pred", eval_not_in_pred)
-        collector.record("coverage", "eval_in_pred", eval_total - eval_not_in_pred)
+    # --- Retain raw anchor for future pairwise additions --------------------
+    if join_type == "pairwise" and anchor and not aggregate_genes:
+        raw_anchor_name = f"_raw_anchor_{anchor}"
+        merged_pred = merged_pred.rename({anchor: raw_anchor_name})
+        all_score_cols = [raw_anchor_name if c == anchor else c for c in all_score_cols]
+        drop_cols = [c for c in drop_cols if c != anchor]
 
     # --- Phase 3: Left-join eval onto pred --------------------------------
-    print("  Left-joining eval and pred ...", file=sys.stderr)
-    merged = merged_eval.join(
-        merged_pred, on=eval_keys, how="left", coalesce=True,
-    )
+    if subtable == "pred" or merged_eval is None:
+        merged = merged_pred
+    else:
+        if collector is not None:
+            eval_not_in_pred = count_lazy(
+                merged_eval.join(merged_pred, on=eval_keys, how="anti")
+            )
+            eval_total = collector.stages["eval_merge"]["rows"]
+            collector.record("coverage", "eval_not_in_pred", eval_not_in_pred)
+            collector.record("coverage", "eval_in_pred", eval_total - eval_not_in_pred)
+
+        print("  Left-joining eval and pred ...", file=sys.stderr)
+        merged = merged_eval.join(
+            merged_pred, on=eval_keys, how="left", coalesce=True,
+        )
 
     # --- Per-score null counts (after Phase 3 join) -----------------------
     if collector is not None:
@@ -623,30 +690,63 @@ def main() -> None:
 
     parser.add_argument(
         "--prediction_tables",
-        required=True,
+        default=None,
         help=(
             "Comma-separated URIs (GCS or local) of prediction parquet/tsv "
             "files. An entry may also be a directory path, in which case all "
             "files with recognised extensions (.parquet, .tsv, .tsv.gz, "
             ".tsv.bgz) inside it are used. For GCS directories, append a "
-            "trailing slash (e.g. gs://bucket/pred/)."
+            "trailing slash (e.g. gs://bucket/pred/). "
+            "Required unless --subtable eval is set."
         ),
     )
     parser.add_argument(
         "--evaluation_tables",
-        required=True,
+        default=None,
         help=(
             "Comma-separated URIs (GCS or local) of evaluation parquet/tsv "
             "files. An entry may also be a directory path, in which case all "
             "files with recognised extensions (.parquet, .tsv, .tsv.gz, "
             ".tsv.bgz) inside it are used. For GCS directories, append a "
-            "trailing slash (e.g. gs://bucket/eval/)."
+            "trailing slash (e.g. gs://bucket/eval/). "
+            "Required unless --subtable pred is set."
         ),
     )
     parser.add_argument(
         "--output",
         required=True,
         help="Destination URI for the merged parquet file (GCS or local).",
+    )
+    parser.add_argument(
+        "--subtable",
+        choices=["pred", "eval"],
+        default=None,
+        help=(
+            "Write only a prediction or evaluation sub-table instead of the "
+            "full merged output. 'pred' merges and writes only prediction "
+            "tables (with optional percentiles, negation, filters, linker). "
+            "'eval' merges and writes only evaluation tables (outer join)."
+        ),
+    )
+    parser.add_argument(
+        "--precomputed_prediction",
+        default=None,
+        help=(
+            "Path to a precomputed prediction parquet file (e.g. output of "
+            "--subtable pred). Bypasses prediction table loading, merging, "
+            "negation, percentiles, linker, and gene aggregation. Must be "
+            "used together with --precomputed_evaluation."
+        ),
+    )
+    parser.add_argument(
+        "--precomputed_evaluation",
+        default=None,
+        help=(
+            "Path to a precomputed evaluation parquet file (e.g. output of "
+            "--subtable eval). Bypasses evaluation table loading and "
+            "merging. Can be used alone (with fresh --prediction_tables) "
+            "or together with --precomputed_prediction."
+        ),
     )
     parser.add_argument(
         "--join_type",
@@ -837,6 +937,28 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.precomputed_prediction and not args.precomputed_evaluation:
+        parser.error("--precomputed_prediction requires --precomputed_evaluation")
+    if args.prediction_tables and args.precomputed_prediction:
+        parser.error("--prediction_tables and --precomputed_prediction are mutually exclusive")
+    if args.evaluation_tables and args.precomputed_evaluation:
+        parser.error("--evaluation_tables and --precomputed_evaluation are mutually exclusive")
+
+    if (args.subtable != "eval"
+            and not args.prediction_tables
+            and not args.precomputed_prediction):
+        parser.error(
+            "--prediction_tables is required (unless --subtable eval "
+            "or --precomputed_prediction)"
+        )
+    if (args.subtable != "pred"
+            and not args.evaluation_tables
+            and not args.precomputed_evaluation):
+        parser.error(
+            "--evaluation_tables is required (unless --subtable pred "
+            "or --precomputed_evaluation)"
+        )
+
     if args.join_type == "pairwise" and args.anchor is None:
         parser.error("--anchor is required when --join_type is 'pairwise'")
     if args.join_type != "pairwise" and args.anchor is not None:
@@ -865,8 +987,8 @@ def main() -> None:
         ]
 
     run_pipeline(
-        prediction_uris=_parse_uri_list(args.prediction_tables),
-        evaluation_uris=_parse_uri_list(args.evaluation_tables),
+        prediction_uris=_parse_uri_list(args.prediction_tables) if args.prediction_tables else [],
+        evaluation_uris=_parse_uri_list(args.evaluation_tables) if args.evaluation_tables else [],
         output_uri=args.output,
         join_type=args.join_type,
         percentile_order=args.percentile_order,
@@ -888,6 +1010,9 @@ def main() -> None:
         store_cache=args.store_cache,
         row_counts_output=row_counts_output,
         percentile_thresholds=pct_thresholds,
+        subtable=args.subtable,
+        precomputed_prediction=args.precomputed_prediction,
+        precomputed_evaluation=args.precomputed_evaluation,
     )
 
 
