@@ -10,6 +10,7 @@ Proteins with any missing score values are skipped (smoothed columns = null).
 """
 from __future__ import annotations
 
+import functools
 import gzip
 import json
 import os
@@ -20,13 +21,19 @@ import hdf5plugin  # noqa: F401 -- registers HDF5 compression codecs
 import numpy as np
 import pandas as pd
 import polars as pl
-import sklearn.metrics
+import scipy.spatial.distance
 from Bio.PDB import PDBParser
 
 
 # ---------------------------------------------------------------------------
 # Structure loading utilities (adapted from structure-informed-rvas/utils.py)
 # ---------------------------------------------------------------------------
+
+@functools.lru_cache(maxsize=4)
+def _load_guide(guide_path: str) -> pd.DataFrame:
+    """Load and cache the PDB/PAE guide TSV (expensive; read at most once per path)."""
+    return pd.read_csv(guide_path, sep="\t")
+
 
 def _get_pairwise_distances(pdb_file: str, *args) -> np.ndarray:
     """Return CA-atom pairwise distance matrix (Å) for a PDB file.
@@ -56,14 +63,14 @@ def _get_pairwise_distances(pdb_file: str, *args) -> np.ndarray:
     else:
         ca_atoms = np.array(ca_atoms)
 
-    return sklearn.metrics.pairwise_distances(ca_atoms)
+    return scipy.spatial.distance.cdist(ca_atoms, ca_atoms)
 
 
 def _get_distance_matrix_structure(
     guide_path: str, pdb_dir: str, uniprot_id: str
 ) -> np.ndarray | None:
     """Return full-protein CA distance matrix (Å), handling multi-domain proteins."""
-    info = pd.read_csv(guide_path, sep="\t")
+    info = _load_guide(guide_path)
     pdb_files = info.loc[info.pdb_filename.str.contains(uniprot_id), "pdb_filename"]
 
     if len(pdb_files) == 0:
@@ -124,7 +131,7 @@ def _get_pae_matrix_structure(
 
     Returns None if no PAE data is available for this protein.
     """
-    info = pd.read_csv(guide_path, sep="\t")
+    info = _load_guide(guide_path)
     pae_files = info.loc[
         info.pae_filename.notnull() & info.pae_filename.str.contains(uniprot_id),
         "pae_filename",
@@ -283,22 +290,26 @@ def add_smoothed_columns(
             dist = dist.copy()
             dist[pae > pae_cutoff] = np.inf
 
-        # Gaussian kernel; exp(-inf) = 0 so PAE-masked pairs contribute nothing
-        W = np.exp(-((dist / sigma) ** 2))
-
         aa_idx = group["aa_pos"].values.astype(int) - 1  # 0-based
 
         if aa_idx.max() >= dist.shape[0]:
             n_skipped_no_structure += 1
             continue
 
-        # W_sub[i, j] = kernel weight between variant i's residue and variant j's
-        W_sub = W[np.ix_(aa_idx, aa_idx)]
+        # Subset to only residues with variants before computing kernel
+        dist_sub = dist[np.ix_(aa_idx, aa_idx)]
+
+        # Apply distance cutoff: pairs beyond 4*sigma contribute < exp(-16) ≈ 1e-7
+        dist_sub[dist_sub > 4 * sigma] = np.inf
+
+        # Gaussian kernel; exp(-inf) = 0 so masked pairs contribute nothing
+        W_sub = np.exp(-((dist_sub / sigma) ** 2))
         row_sums = W_sub.sum(axis=1)
 
-        for col, sc in zip(score_columns, smoothed_cols):
-            scores = group[col].values.astype(float)
-            df_joined.loc[group.index, sc] = (W_sub @ scores) / row_sums
+        # Vectorize over all score columns in a single matrix multiply
+        scores_mat = group[score_columns].values.astype(float)  # (n_variants, n_cols)
+        smoothed = (W_sub @ scores_mat) / row_sums[:, None]     # (n_variants, n_cols)
+        df_joined.loc[group.index, smoothed_cols] = smoothed
 
         n_smoothed += 1
 
