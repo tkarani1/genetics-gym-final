@@ -148,6 +148,7 @@ def _resolve_output_paths(out_fname: str) -> dict[str, str]:
         "tsv": f"{prefix}.tsv",
         "log": f"{prefix}_log.json",
         "missing_tsv": f"{prefix}_missing.tsv",
+        "vsm_comparison_tsv": f"{prefix}_vsm_comparison.tsv",
     }
 
 
@@ -294,6 +295,37 @@ def _build_missing_variant_rows(
     return report.select(out_cols).collect(streaming=True).to_dicts()
 
 
+def _compute_vsm_comparison_parallel(
+    conts_by_score: dict[str, tuple[list, int]],
+    eval_col: str,
+    filter_name: str,
+    thresholds: list[float],
+) -> list[dict[str, Any]]:
+    """All-pairs Fisher exact test comparing VSMs via their TP/FP counts."""
+    score_cols = list(conts_by_score.keys())
+    rows: list[dict[str, Any]] = []
+    for idx_i in range(len(score_cols)):
+        for idx_j in range(idx_i + 1, len(score_cols)):
+            col_i, col_j = score_cols[idx_i], score_cols[idx_j]
+            conts_i, rows_used_i = conts_by_score[col_i]
+            conts_j, rows_used_j = conts_by_score[col_j]
+            for t_idx, threshold in enumerate(thresholds):
+                result = StatFactory.vsm_comparison(conts_i[t_idx], conts_j[t_idx])
+                rows.append({
+                    "eval_name": eval_col,
+                    "filter_name": filter_name,
+                    "vsm_i": col_i,
+                    "vsm_j": col_j,
+                    "threshold": threshold,
+                    "odds_ratio": result.odds_ratio,
+                    "p_greater": result.p_greater,
+                    "p_less": result.p_less,
+                    "rows_used_i": rows_used_i,
+                    "rows_used_j": rows_used_j,
+                })
+    return rows
+
+
 def _run_eval_filter_combo(
     args: RunArgs,
     source: pl.LazyFrame,
@@ -304,7 +336,7 @@ def _run_eval_filter_combo(
     filter_name: str,
     filter_col: str | None,
     missing_mode: str | None,
-) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     combo_start = time.perf_counter()
     evaluator = _choose_evaluator(args.eval_level, source)
     prepared = evaluator.prepare_eval_frame(eval_col=eval_col, filter_col=filter_col)
@@ -320,6 +352,9 @@ def _run_eval_filter_combo(
 
     need_labels = "auc" in requested_stats or "auprc" in requested_stats
     need_cont = "enrichment" in requested_stats or "rate_ratio" in requested_stats
+    need_vsm_comparison = "vsm_comparison" in requested_stats
+
+    conts_by_score: dict[str, tuple[list, int]] = {}
 
     combo_rows: list[dict[str, Any]] = []
     for score_col in score_cols:
@@ -368,10 +403,12 @@ def _run_eval_filter_combo(
                     total_eval_rows=prepared.total_eval_rows,
                 )
 
-        if need_cont and thresholds:
+        if (need_cont or need_vsm_comparison) and thresholds:
             conts = evaluator.contingency_batch(
                 score_frame, eval_col=eval_col, score_col=score_col, thresholds=thresholds
             )
+            if need_vsm_comparison:
+                conts_by_score[score_col] = (conts, score_frame.rows_used)
             if "enrichment" in requested_stats:
                 enr_results = StatFactory.enrichment_batch(conts, pvalue_method=args.pvalue_method)
                 for threshold, cont, out in zip(thresholds, conts, enr_results):
@@ -413,15 +450,22 @@ def _run_eval_filter_combo(
                         rows_used=score_frame.rows_used,
                         total_eval_rows=prepared.total_eval_rows,
                     )
+
+    vsm_cmp_rows: list[dict[str, Any]] = []
+    if need_vsm_comparison and len(conts_by_score) >= 2 and thresholds:
+        vsm_cmp_rows = _compute_vsm_comparison_parallel(
+            conts_by_score, eval_col, filter_name, thresholds,
+        )
+
     timing = {
         "eval_name": eval_col,
         "filter_name": filter_name,
         "elapsed_seconds": time.perf_counter() - combo_start,
     }
-    return combo_rows, timing, combo_missing_rows
+    return combo_rows, timing, combo_missing_rows, vsm_cmp_rows
 
 
-def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame]:
+def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame, pl.DataFrame]:
     resources = load_resources(args.resources_json)
     table = get_table_config(resources, args.table_name)
     thresholds = parse_thresholds(args.thresholds)
@@ -453,11 +497,12 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     rows_by_idx: dict[int, list[dict[str, Any]]] = {}
     timings_by_idx: dict[int, dict[str, Any]] = {}
     missing_by_idx: dict[int, list[dict[str, Any]]] = {}
+    vsm_cmp_by_idx: dict[int, list[dict[str, Any]]] = {}
     max_workers = min(len(combos), os.cpu_count() or 1)
 
     if max_workers <= 1:
         for idx, eval_col, filter_name, filter_col in combos:
-            combo_rows, combo_timing, combo_missing_rows = _run_eval_filter_combo(
+            combo_rows, combo_timing, combo_missing_rows, combo_vsm_cmp = _run_eval_filter_combo(
                 args=args,
                 source=source,
                 score_cols=table.score_cols,
@@ -471,6 +516,7 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
             rows_by_idx[idx] = combo_rows
             timings_by_idx[idx] = combo_timing
             missing_by_idx[idx] = combo_missing_rows
+            vsm_cmp_by_idx[idx] = combo_vsm_cmp
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
@@ -490,10 +536,11 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
             }
             for future in as_completed(future_map):
                 idx = future_map[future]
-                combo_rows, combo_timing, combo_missing_rows = future.result()
+                combo_rows, combo_timing, combo_missing_rows, combo_vsm_cmp = future.result()
                 rows_by_idx[idx] = combo_rows
                 timings_by_idx[idx] = combo_timing
                 missing_by_idx[idx] = combo_missing_rows
+                vsm_cmp_by_idx[idx] = combo_vsm_cmp
 
     rows: list[dict[str, Any]] = []
     for idx in sorted(rows_by_idx.keys()):
@@ -502,6 +549,9 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     missing_rows: list[dict[str, Any]] = []
     for idx in sorted(missing_by_idx.keys()):
         missing_rows.extend(missing_by_idx[idx])
+    all_vsm_cmp_rows: list[dict[str, Any]] = []
+    for idx in sorted(vsm_cmp_by_idx.keys()):
+        all_vsm_cmp_rows.extend(vsm_cmp_by_idx[idx])
     if missing_rows:
         missing_df = _sort_missing_df(pl.DataFrame(missing_rows))
     else:
@@ -514,7 +564,21 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                 "missing_score_names": pl.String,
             }
         )
-    return pl.DataFrame(rows), timings, missing_df
+    vsm_comparison_df = pl.DataFrame(all_vsm_cmp_rows) if all_vsm_cmp_rows else pl.DataFrame(
+        schema={
+            "eval_name": pl.String,
+            "filter_name": pl.String,
+            "vsm_i": pl.String,
+            "vsm_j": pl.String,
+            "threshold": pl.Float64,
+            "odds_ratio": pl.Float64,
+            "p_greater": pl.Float64,
+            "p_less": pl.Float64,
+            "rows_used_i": pl.Int64,
+            "rows_used_j": pl.Int64,
+        }
+    )
+    return pl.DataFrame(rows), timings, missing_df, vsm_comparison_df
 
 
 def main() -> None:
@@ -538,10 +602,12 @@ def main() -> None:
     try:
         output_paths = _resolve_output_paths(args.out_fname)
         start = time.perf_counter()
-        out, eval_filter_timings, missing_df = run(args)
+        out, eval_filter_timings, missing_df, vsm_comparison_df = run(args)
         write_tsv(out, output_paths["tsv"])
         if args.write_missing != "none":
             write_tsv(missing_df, output_paths["missing_tsv"])
+        if vsm_comparison_df.height > 0:
+            write_tsv(vsm_comparison_df, output_paths["vsm_comparison_tsv"])
         elapsed_seconds = time.perf_counter() - start
         write_json(
             {

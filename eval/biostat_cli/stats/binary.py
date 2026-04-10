@@ -183,6 +183,41 @@ def rate_ratio_batch(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class VsmComparisonResult:
+    """Result of a Fisher exact test comparing two VSMs' contingency tables."""
+
+    odds_ratio: float
+    p_greater: float
+    p_less: float
+
+
+def vsm_comparison_fisher(cont_a: Contingency, cont_b: Contingency) -> VsmComparisonResult:
+    """Fisher exact test on [[TP_a, TP_b], [FP_a, FP_b]].
+
+    Tests whether the TP/FP odds differ between two VSMs above the same
+    score threshold.  Returns odds_ratio (a vs b), one-sided p-values for
+    'greater' and 'less' alternatives.
+    """
+    tp_a = int(round(cont_a.tp))
+    tp_b = int(round(cont_b.tp))
+    fp_a = int(round(cont_a.fp))
+    fp_b = int(round(cont_b.fp))
+
+    if tp_a + fp_a == 0 or tp_b + fp_b == 0:
+        return VsmComparisonResult(odds_ratio=math.nan, p_greater=math.nan, p_less=math.nan)
+
+    table = [[tp_a, tp_b], [fp_a, fp_b]]
+    odds_ratio, p_greater = fisher_exact(table, alternative="greater")
+    _, p_less = fisher_exact(table, alternative="less")
+
+    return VsmComparisonResult(
+        odds_ratio=float(odds_ratio),
+        p_greater=float(p_greater),
+        p_less=float(p_less),
+    )
+
+
 def _compute_enrichment_value(cont: Contingency) -> float:
     """Compute raw enrichment value from contingency table."""
     case_rate = _safe_div(cont.tp, cont.tp + cont.fn)

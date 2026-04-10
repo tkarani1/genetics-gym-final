@@ -22,6 +22,7 @@ from biostat_cli.stats.binary import (
     pairwise_rate_ratio,
     poisson_p_value,
     rate_ratio,
+    vsm_comparison_fisher,
 )
 from biostat_cli.stats.continuous import compute_auc, compute_auprc
 from biostat_cli.utils import apply_within_gene_percentile
@@ -328,7 +329,7 @@ def test_bootstrap_run_value_and_pvalue_stable(tmp_path):
         out_fname=str(out_prefix),
         write_missing="none",
     )
-    base_df, _, _ = run(base_args)
+    base_df, _, _, _ = run(base_args)
     base_row = base_df.to_dicts()[0]
     assert math.isnan(base_row["std_error"])
 
@@ -348,7 +349,7 @@ def test_bootstrap_run_value_and_pvalue_stable(tmp_path):
         out_fname=str(out_prefix),
         write_missing="none",
     )
-    boot_df, _, _ = run(boot_args)
+    boot_df, _, _, _ = run(boot_args)
     boot_row = boot_df.to_dicts()[0]
     assert boot_row["value"] == pytest.approx(base_row["value"], rel=0, abs=1e-12)
     assert boot_row["p_value"] == pytest.approx(base_row["p_value"], rel=0, abs=1e-12)
@@ -400,7 +401,7 @@ def test_bootstrap_pairwise_std_error(tmp_path):
         out_fname=str(out_prefix),
         write_missing="none",
     )
-    out_df, _, _ = run(args)
+    out_df, _, _, _ = run(args)
     rows = out_df.to_dicts()
     assert rows
     assert all("std_error" in row for row in rows)
@@ -433,3 +434,106 @@ def test_prepare_score_frame_within_gene_percentile():
     sf = ev.prepare_score_frame(prepared, "s", within_gene_percentile=True)
     vals = sf.frame.select("s").collect()["s"].sort().to_list()
     assert vals == pytest.approx([1 / 3, 2 / 3, 1.0])
+
+
+# ---------------------------------------------------------------------------
+# VSM comparison Fisher exact tests
+# ---------------------------------------------------------------------------
+
+
+def test_vsm_comparison_basic():
+    from scipy.stats import fisher_exact as scipy_fisher
+
+    cont_a = Contingency(tp=50, fp=10, tn=0, fn=0)
+    cont_b = Contingency(tp=30, fp=20, tn=0, fn=0)
+    result = vsm_comparison_fisher(cont_a, cont_b)
+
+    table = [[50, 30], [10, 20]]
+    expected_or, expected_p_greater = scipy_fisher(table, alternative="greater")
+    _, expected_p_less = scipy_fisher(table, alternative="less")
+
+    assert result.odds_ratio == pytest.approx(expected_or)
+    assert result.p_greater == pytest.approx(expected_p_greater)
+    assert result.p_less == pytest.approx(expected_p_less)
+
+
+def test_vsm_comparison_zero_cells():
+    cont_a = Contingency(tp=0, fp=0, tn=100, fn=50)
+    cont_b = Contingency(tp=10, fp=5, tn=85, fn=50)
+    result = vsm_comparison_fisher(cont_a, cont_b)
+    assert math.isnan(result.odds_ratio)
+    assert math.isnan(result.p_greater)
+    assert math.isnan(result.p_less)
+
+
+def test_vsm_comparison_symmetry():
+    cont_a = Contingency(tp=40, fp=15, tn=0, fn=0)
+    cont_b = Contingency(tp=25, fp=30, tn=0, fn=0)
+    result_ab = vsm_comparison_fisher(cont_a, cont_b)
+    result_ba = vsm_comparison_fisher(cont_b, cont_a)
+
+    assert result_ab.odds_ratio * result_ba.odds_ratio == pytest.approx(1.0)
+    assert result_ab.p_greater == pytest.approx(result_ba.p_less)
+    assert result_ab.p_less == pytest.approx(result_ba.p_greater)
+
+
+def test_vsm_comparison_integration(tmp_path):
+    """End-to-end: vsm_comparison stat produces a non-empty DataFrame."""
+    df = pl.DataFrame(
+        {
+            "chrom": ["1"] * 8,
+            "pos": list(range(1, 9)),
+            "ref": ["A"] * 8,
+            "alt": ["C"] * 8,
+            "eval_a": [True, False, True, False, True, False, True, False],
+            "score_x": [0.95, 0.85, 0.88, 0.1, 0.99, 0.4, 0.7, 0.3],
+            "score_y": [0.6, 0.92, 0.75, 0.2, 0.88, 0.55, 0.98, 0.1],
+        }
+    )
+    parquet_path = tmp_path / "toy2.parquet"
+    resources_path = tmp_path / "resources2.json"
+    out_prefix = tmp_path / "out2"
+    df.write_parquet(str(parquet_path))
+    resources = {
+        "Table_info": {
+            "toy2": {
+                "Path": str(parquet_path),
+                "Level": "variant",
+                "Score_cols": ["score_x", "score_y"],
+                "evals": ["eval_a"],
+            }
+        }
+    }
+    resources_path.write_text(json.dumps(resources), encoding="utf-8")
+
+    from biostat_cli.cli import RunArgs, run
+
+    args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="toy2",
+        eval_level="variant",
+        stat="vsm_comparison",
+        eval_set=None,
+        filters=None,
+        thresholds="0.8",
+        case_total=None,
+        ctrl_total=None,
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+    )
+    _, _, _, vsm_cmp_df = run(args)
+    assert vsm_cmp_df.height > 0
+    assert set(vsm_cmp_df.columns) == {
+        "eval_name", "filter_name", "vsm_i", "vsm_j",
+        "threshold", "odds_ratio", "p_greater", "p_less",
+        "rows_used_i", "rows_used_j",
+    }
+    row = vsm_cmp_df.to_dicts()[0]
+    assert row["vsm_i"] == "score_x"
+    assert row["vsm_j"] == "score_y"
+    assert row["threshold"] == pytest.approx(0.8)
+    assert row["rows_used_i"] > 0
+    assert row["rows_used_j"] > 0

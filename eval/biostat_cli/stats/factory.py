@@ -6,14 +6,16 @@ from dataclasses import dataclass
 from biostat_cli.evaluators.base import Contingency
 from biostat_cli.stats.binary import (
     DEFAULT_PVALUE_METHOD,
+    VsmComparisonResult,
     enrichment,
     enrichment_batch,
     pairwise_enrichment,
     pairwise_rate_ratio,
     rate_ratio,
     rate_ratio_batch,
+    vsm_comparison_fisher,
 )
-from biostat_cli.stats.continuous import compute_auc, compute_auprc
+from biostat_cli.stats.continuous import compute_auc, compute_auprc, pairwise_continuous_adjust
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,40 @@ class StatFactory:
             stat="pairwise_rate_ratio",
             value=out.value,
             p_value=out.p_value,
+            anchor_value=out.anchor_value,
+            adjustment_ratio=out.adjustment_ratio,
+        )
+
+    @staticmethod
+    def pairwise_auc(
+        anchor_full_auc: float,
+        anchor_pairwise_auc: float,
+        vsm_pairwise_auc: float,
+    ) -> PairwiseStatOutput:
+        out = pairwise_continuous_adjust(anchor_full_auc, anchor_pairwise_auc, vsm_pairwise_auc)
+        return PairwiseStatOutput(
+            stat="pairwise_auc",
+            value=out.value,
+            p_value=math.nan,
+            anchor_value=out.anchor_value,
+            adjustment_ratio=out.adjustment_ratio,
+        )
+
+    @staticmethod
+    def vsm_comparison(cont_a: Contingency, cont_b: Contingency) -> VsmComparisonResult:
+        return vsm_comparison_fisher(cont_a, cont_b)
+
+    @staticmethod
+    def pairwise_auprc(
+        anchor_full_auprc: float,
+        anchor_pairwise_auprc: float,
+        vsm_pairwise_auprc: float,
+    ) -> PairwiseStatOutput:
+        out = pairwise_continuous_adjust(anchor_full_auprc, anchor_pairwise_auprc, vsm_pairwise_auprc)
+        return PairwiseStatOutput(
+            stat="pairwise_auprc",
+            value=out.value,
+            p_value=math.nan,
             anchor_value=out.anchor_value,
             adjustment_ratio=out.adjustment_ratio,
         )

@@ -16,6 +16,9 @@ class StatType(str, Enum):
     RATE_RATIO = "rate_ratio"
     PAIRWISE_ENRICHMENT = "pairwise_enrichment"
     PAIRWISE_RATE_RATIO = "pairwise_rate_ratio"
+    PAIRWISE_AUC = "pairwise_auc"
+    PAIRWISE_AUPRC = "pairwise_auprc"
+    VSM_COMPARISON = "vsm_comparison"
 
     @classmethod
     def all(cls) -> set[str]:
@@ -23,7 +26,10 @@ class StatType(str, Enum):
 
     @classmethod
     def pairwise(cls) -> set[str]:
-        return {cls.PAIRWISE_ENRICHMENT.value, cls.PAIRWISE_RATE_RATIO.value}
+        return {
+            cls.PAIRWISE_ENRICHMENT.value, cls.PAIRWISE_RATE_RATIO.value,
+            cls.PAIRWISE_AUC.value, cls.PAIRWISE_AUPRC.value,
+        }
 
     @classmethod
     def continuous(cls) -> set[str]:
