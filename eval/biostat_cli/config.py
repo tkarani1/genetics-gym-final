@@ -9,8 +9,8 @@ from typing import Any
 
 
 DEFAULT_THRESHOLDS = [0.90, 0.95, 0.98, 0.99]
-ALL_STATS = {"auc", "auprc", "enrichment", "rate_ratio", "pairwise_enrichment", "pairwise_rate_ratio"}
-PAIRWISE_STATS = {"pairwise_enrichment", "pairwise_rate_ratio"}
+ALL_STATS = {"auc", "auprc", "enrichment", "rate_ratio", "pairwise_enrichment", "pairwise_rate_ratio", "pairwise_auc", "pairwise_auprc", "vsm_comparison"}
+PAIRWISE_STATS = {"pairwise_enrichment", "pairwise_rate_ratio", "pairwise_auc", "pairwise_auprc"}
 
 __all__ = [
     "DEFAULT_THRESHOLDS",

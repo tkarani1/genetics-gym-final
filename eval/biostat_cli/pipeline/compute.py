@@ -168,16 +168,22 @@ def run_biostat(
         pvalue_method=pvalue_method,
     )
 
-    out_df, eval_filter_timings, _ = biostat_cli.run(args)
+    out_df, eval_filter_timings, _, vsm_comparison_df = biostat_cli.run(args)
     out_tsv = f"{out_prefix}.tsv"
     log_json = f"{out_prefix}_log.json"
+    vsm_cmp_tsv = f"{out_prefix}_vsm_comparison.tsv"
 
     write_tsv(out_df, out_tsv)
+    output_files: dict[str, str] = {"tsv": out_tsv, "log": log_json}
+    if vsm_comparison_df.height > 0:
+        write_tsv(vsm_comparison_df, vsm_cmp_tsv)
+        output_files["vsm_comparison_tsv"] = vsm_cmp_tsv
+
     write_json(
         {
             "run_args": asdict(args),
             "table_path": get_table_config(load_resources(cfg.resources_json), cfg.table_name).path,
-            "output_files": {"tsv": out_tsv, "log": log_json},
+            "output_files": output_files,
             "elapsed_seconds": sum(float(t["elapsed_seconds"]) for t in eval_filter_timings),
             "eval_filter_elapsed_seconds": eval_filter_timings,
         },
@@ -319,7 +325,7 @@ def _run_combined_compute(
             cfg=raw_run_cfg,
             eval_set=eval_set,
             thresholds=thresholds,
-            stat="enrichment,rate_ratio",
+            stat="enrichment,rate_ratio,vsm_comparison",
             out_prefix=raw_prefix,
             denominators=config.rate_ratio_denominators,
             bootstrap_samples=args.bootstrap,
@@ -334,7 +340,7 @@ def _run_combined_compute(
             cfg=pairwise_run_cfg,
             eval_set=eval_set,
             thresholds=thresholds,
-            stat="pairwise_enrichment,pairwise_rate_ratio",
+            stat="pairwise_enrichment,pairwise_rate_ratio,pairwise_auc,pairwise_auprc",
             out_prefix=pw_prefix,
             denominators=config.rate_ratio_denominators,
             bootstrap_samples=args.bootstrap,
@@ -369,7 +375,7 @@ def _run_per_eval_compute(
                 cfg=raw_run_cfg,
                 eval_set=[eval_name],
                 thresholds=thresholds,
-                stat="enrichment,rate_ratio",
+                stat="enrichment,rate_ratio,vsm_comparison",
                 out_prefix=raw_prefix,
                 denominators=config.rate_ratio_denominators,
                 bootstrap_samples=args.bootstrap,
@@ -384,7 +390,7 @@ def _run_per_eval_compute(
                 cfg=pairwise_run_cfg,
                 eval_set=[eval_name],
                 thresholds=thresholds,
-                stat="pairwise_enrichment,pairwise_rate_ratio",
+                stat="pairwise_enrichment,pairwise_rate_ratio,pairwise_auc,pairwise_auprc",
                 out_prefix=pw_prefix,
                 denominators=config.rate_ratio_denominators,
                 bootstrap_samples=args.bootstrap,
