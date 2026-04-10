@@ -456,6 +456,18 @@ def test_vsm_comparison_basic():
     assert result.p_greater == pytest.approx(expected_p_greater)
     assert result.p_less == pytest.approx(expected_p_less)
 
+    a, b, c, d = 50.5, 30.5, 10.5, 20.5
+    expected_log_or = math.log((a * d) / (b * c))
+    expected_se = math.sqrt((1.0 / a) + (1.0 / b) + (1.0 / c) + (1.0 / d))
+    assert result.log_odds_ratio == pytest.approx(expected_log_or)
+    assert result.standard_error == pytest.approx(expected_se)
+    z = 1.96
+    moe = z * expected_se
+    assert result.log_ci_lower == pytest.approx(expected_log_or - moe)
+    assert result.log_ci_upper == pytest.approx(expected_log_or + moe)
+    assert result.conf_interval_lower == pytest.approx(math.exp(expected_log_or - moe))
+    assert result.conf_interval_upper == pytest.approx(math.exp(expected_log_or + moe))
+
 
 def test_vsm_comparison_zero_cells():
     cont_a = Contingency(tp=0, fp=0, tn=100, fn=50)
@@ -464,6 +476,12 @@ def test_vsm_comparison_zero_cells():
     assert math.isnan(result.odds_ratio)
     assert math.isnan(result.p_greater)
     assert math.isnan(result.p_less)
+    assert math.isnan(result.log_odds_ratio)
+    assert math.isnan(result.standard_error)
+    assert math.isnan(result.log_ci_lower)
+    assert math.isnan(result.log_ci_upper)
+    assert math.isnan(result.conf_interval_lower)
+    assert math.isnan(result.conf_interval_upper)
 
 
 def test_vsm_comparison_symmetry():
@@ -475,6 +493,7 @@ def test_vsm_comparison_symmetry():
     assert result_ab.odds_ratio * result_ba.odds_ratio == pytest.approx(1.0)
     assert result_ab.p_greater == pytest.approx(result_ba.p_less)
     assert result_ab.p_less == pytest.approx(result_ba.p_greater)
+    assert result_ab.log_odds_ratio == pytest.approx(-result_ba.log_odds_ratio)
 
 
 def test_vsm_comparison_integration(tmp_path):
@@ -529,6 +548,9 @@ def test_vsm_comparison_integration(tmp_path):
     assert set(vsm_cmp_df.columns) == {
         "eval_name", "filter_name", "vsm_i", "vsm_j",
         "threshold", "odds_ratio", "p_greater", "p_less",
+        "log_odds_ratio", "standard_error",
+        "log_ci_lower", "log_ci_upper",
+        "conf_interval_lower", "conf_interval_upper",
         "rows_used_i", "rows_used_j",
     }
     row = vsm_cmp_df.to_dicts()[0]

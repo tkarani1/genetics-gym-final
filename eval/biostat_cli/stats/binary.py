@@ -183,6 +183,9 @@ def rate_ratio_batch(
 # ---------------------------------------------------------------------------
 
 
+_LOG_OR_CI_Z = 1.96  # 95% two-sided normal multiplier for log(OR) interval
+
+
 @dataclass(frozen=True)
 class VsmComparisonResult:
     """Result of a Fisher exact test comparing two VSMs' contingency tables."""
@@ -190,6 +193,12 @@ class VsmComparisonResult:
     odds_ratio: float
     p_greater: float
     p_less: float
+    log_odds_ratio: float
+    standard_error: float
+    log_ci_lower: float
+    log_ci_upper: float
+    conf_interval_lower: float
+    conf_interval_upper: float
 
 
 def vsm_comparison_fisher(cont_a: Contingency, cont_b: Contingency) -> VsmComparisonResult:
@@ -198,23 +207,52 @@ def vsm_comparison_fisher(cont_a: Contingency, cont_b: Contingency) -> VsmCompar
     Tests whether the TP/FP odds differ between two VSMs above the same
     score threshold.  Returns odds_ratio (a vs b), one-sided p-values for
     'greater' and 'less' alternatives.
+
+    log_odds_ratio and standard_error use the Haldane–Anscombe +0.5 cell
+    correction on the same integer table; SE is for ln(OR).  95% CIs use
+    log_OR ± 1.96 * SE, then exp for odds-ratio scale.
     """
+    nan_full = VsmComparisonResult(
+        odds_ratio=math.nan,
+        p_greater=math.nan,
+        p_less=math.nan,
+        log_odds_ratio=math.nan,
+        standard_error=math.nan,
+        log_ci_lower=math.nan,
+        log_ci_upper=math.nan,
+        conf_interval_lower=math.nan,
+        conf_interval_upper=math.nan,
+    )
+
     tp_a = int(round(cont_a.tp))
     tp_b = int(round(cont_b.tp))
     fp_a = int(round(cont_a.fp))
     fp_b = int(round(cont_b.fp))
 
     if tp_a + fp_a == 0 or tp_b + fp_b == 0:
-        return VsmComparisonResult(odds_ratio=math.nan, p_greater=math.nan, p_less=math.nan)
+        return nan_full
 
     table = [[tp_a, tp_b], [fp_a, fp_b]]
     odds_ratio, p_greater = fisher_exact(table, alternative="greater")
     _, p_less = fisher_exact(table, alternative="less")
 
+    a, b, c, d = tp_a + 0.5, tp_b + 0.5, fp_a + 0.5, fp_b + 0.5
+    log_odds_ratio = math.log((a * d) / (b * c))
+    standard_error = math.sqrt((1.0 / a) + (1.0 / b) + (1.0 / c) + (1.0 / d))
+    margin = _LOG_OR_CI_Z * standard_error
+    log_ci_lower = log_odds_ratio - margin
+    log_ci_upper = log_odds_ratio + margin
+
     return VsmComparisonResult(
         odds_ratio=float(odds_ratio),
         p_greater=float(p_greater),
         p_less=float(p_less),
+        log_odds_ratio=float(log_odds_ratio),
+        standard_error=float(standard_error),
+        log_ci_lower=float(log_ci_lower),
+        log_ci_upper=float(log_ci_upper),
+        conf_interval_lower=float(math.exp(log_ci_lower)),
+        conf_interval_upper=float(math.exp(log_ci_upper)),
     )
 
 
