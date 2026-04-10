@@ -23,6 +23,7 @@ dev = ["pytest>=8.0.0"]
 [project.scripts]
 biostat-cli = "biostat_cli.cli:main"
 figure1-pipeline = "biostat_cli.pipeline:main"
+figure2-pipeline = "biostat_cli.pipeline.gene_pipeline:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
