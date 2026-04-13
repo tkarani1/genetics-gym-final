@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import sys
 from functools import reduce
+from typing import cast
 
 import polars as pl
+from polars.type_aliases import JoinStrategy
 
 
 JOIN_KEYS = ["chrom", "pos", "ref", "alt"]
@@ -24,11 +26,15 @@ def merge_tables(
     if len(tables) == 1:
         return tables[0]
 
+    polars_how: JoinStrategy = cast(
+        JoinStrategy, "full" if join_type == "outer" else join_type
+    )
+
     def _join_pair(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
         return left.join(
             right,
             on=JOIN_KEYS,
-            how=join_type,
+            how=polars_how,
             coalesce=True,
         )
 

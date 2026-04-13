@@ -1,7 +1,7 @@
 # Merge Pipeline
 
-Command-line tools for building consolidated variant-level (VSM) and
-gene-level (GSM) tables from prediction scores and evaluation labels.
+Installable Python package for building consolidated variant-level (VSM)
+and gene-level (GSM) tables from prediction scores and evaluation labels.
 The resulting Parquet tables are intended for downstream statistical
 analyses that compare prediction score columns against evaluation label
 columns.
@@ -11,20 +11,37 @@ computation, score negation, pairwise anchor comparisons, gene-level
 aggregation, spatial smoothing, filter annotation, and a precomputed
 fast path for iterating quickly on table combinations.
 
+## Installation
+
+```bash
+# Install the package (from the repository root)
+pip install -e ./merge
+
+# Or install with spatial smoothing support
+pip install -e "./merge[smooth]"
+```
+
+This installs three console commands: `merge-vsm`, `merge-add-score`,
+and `merge-apply-filters`. The package can also be imported directly:
+
+```python
+from merge.pipeline import load_inputs, merge_predictions, apply_post_processing, join_and_write
+from merge.types import LoadedInputs, MergedPrediction, PipelineResult
+from merge.paths import parse_uri_list, derive_stem, score_columns
+```
+
 ## Quick start
 
 ```bash
-pip install -r requirements.txt
-
 # Variant-level inner join (simplest case)
-python create_vsm_table.py \
+python -m merge.create_vsm_table \
   --prediction_tables "path/to/scores/" \
   --evaluation_tables "path/to/eval1.parquet,path/to/eval2.parquet" \
   --reference_score none \
   --output "merged.parquet"
 
 # Gene-level collapsed table
-python create_vsm_table.py \
+python -m merge.create_vsm_table \
   --prediction_tables "path/to/scores/" \
   --evaluation_tables "path/to/gene_eval1.parquet,path/to/gene_eval2.parquet" \
   --linker_table "path/to/linker.parquet" \
@@ -32,16 +49,15 @@ python create_vsm_table.py \
   --join_type inner \
   --reference_score none \
   --output "gsm_inner_collapsed.parquet"
+
+# Dry run: preview what the pipeline would produce without writing
+python -m merge.create_vsm_table \
+  --prediction_tables "path/to/scores/" \
+  --evaluation_tables "path/to/eval1.parquet" \
+  --reference_score none \
+  --dry_run \
+  --output "merged.parquet"
 ```
-
-## Requirements
-
-* Python 3.9+
-* Dependencies (install via `pip install -r requirements.txt`):
-  * **polars** -- columnar data processing (Lazy API for streaming)
-  * **gcsfs** -- Google Cloud Storage filesystem access
-  * **fsspec** -- filesystem abstraction used by gcsfs
-  * **pyarrow** -- Parquet metadata inspection and chunked writing
 
 ## Input data
 
@@ -116,7 +132,7 @@ The default mode merges prediction tables, merges evaluation tables,
 joins them together, and writes a single output Parquet.
 
 ```bash
-python create_vsm_table.py \
+python -m merge.create_vsm_table \
   --prediction_tables PRED_DIR_OR_URIS \
   --evaluation_tables EVAL_URIS \
   --output OUTPUT_PATH \
@@ -130,13 +146,13 @@ eval-pred join.
 
 ```bash
 # Evaluation subtable (outer join of eval tables only)
-python create_vsm_table.py \
+python -m merge.create_vsm_table \
   --subtable eval \
   --evaluation_tables EVAL_URIS \
   --output eval_merged.parquet
 
 # Prediction subtable (merge + percentiles, no eval)
-python create_vsm_table.py \
+python -m merge.create_vsm_table \
   --subtable pred \
   --prediction_tables PRED_DIR \
   --join_type inner \
@@ -152,7 +168,7 @@ exist, load them directly, left-join, apply filters, and write output.
 Skips all merging, percentile computation, negation, and aggregation.
 
 ```bash
-python create_vsm_table.py \
+python -m merge.create_vsm_table \
   --precomputed_prediction pred_inner_post.parquet \
   --precomputed_evaluation eval_merged.parquet \
   --filter_tables FILTER_URIS \
@@ -163,7 +179,7 @@ The fast path also supports a runtime linker join (to avoid
 materializing large linked intermediates):
 
 ```bash
-python create_vsm_table.py \
+python -m merge.create_vsm_table \
   --precomputed_prediction pred_inner_post.parquet \
   --precomputed_evaluation eval_merged.parquet \
   --linker_table linker_no_multimapped.parquet \
@@ -177,7 +193,7 @@ Add a new score to an existing merged prediction table without
 re-running the full pipeline:
 
 ```bash
-python add_score.py \
+python -m merge.add_score \
   --base pred_inner_post.parquet \
   --new_table new_score.parquet \
   --join_type inner \
@@ -189,7 +205,7 @@ For pairwise tables, use `--pairwise_anchor` to also create the
 pairwise anchor-masked columns for the new score:
 
 ```bash
-python add_score.py \
+python -m merge.add_score \
   --base pred_pairwise_post.parquet \
   --new_table new_score.parquet \
   --join_type outer \
@@ -269,14 +285,14 @@ per gene via mean and max. Requires an `ensg` column (provided by
 
 ## Spatial smoothing
 
-With `--smooth`, percentile-ranked scores are spatially smoothed using a
-Gaussian kernel over 3D protein structure distances:
+With `--smooth_order`, percentile-ranked scores are spatially smoothed
+using a Gaussian kernel over 3D protein structure distances:
 
 ```bash
-python create_vsm_table.py \
+python -m merge.create_vsm_table \
   --prediction_tables PRED_DIR \
   --evaluation_tables EVAL_URIS \
-  --smooth \
+  --smooth_order post \
   --smooth_reference_dir path/to/sir-reference-data/ \
   --smooth_sigma 10.0 \
   --output smoothed.parquet
@@ -290,13 +306,13 @@ left-joined onto the output. No rows are added or removed.
 Filters can also be applied standalone:
 
 ```bash
-python apply_filters.py \
+python -m merge.apply_filters \
   --reference merged.parquet \
   --filter_tables "variant_filters/,gene_filters/" \
   --output merged_filtered.parquet
 ```
 
-## CLI reference: `create_vsm_table.py`
+## CLI reference: `merge-vsm` / `merge.create_vsm_table`
 
 ### Input arguments
 
@@ -330,10 +346,12 @@ python apply_filters.py \
 | `--keep_raw_scores` | off | Retain raw score columns alongside percentiles |
 | `--aggregate_genes` | off | Aggregate scores to gene level (mean + max) |
 | `--collapse_genes` | on | Collapse to one row per gene (with `--aggregate_genes`) |
-| `--smooth` | off | Apply spatial smoothing |
+| `--smooth_order` | `none` | `pre`, `post`, or `none` -- when to apply spatial smoothing |
 | `--smooth_reference_dir` | *(none)* | Path to sir-reference-data directory |
 | `--smooth_sigma` | `10.0` | Gaussian kernel scale in angstroms |
 | `--percentile_thresholds` | *(none)* | Comma-separated quantiles for sidecar TSV |
+| `--retain_raw_anchor` | off | Keep raw anchor column for pairwise subtables |
+| `--dry_run` | off | Preview pipeline without writing output |
 
 ### Diagnostic arguments
 
@@ -343,7 +361,7 @@ python apply_filters.py \
 | `--use_cache` | off | Reuse cached TSV-to-Parquet conversions |
 | `--store_cache` | off | Persist TSV-to-Parquet conversions for reuse |
 
-## CLI reference: `add_score.py`
+## CLI reference: `merge-add-score` / `merge.add_score`
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -357,7 +375,7 @@ python apply_filters.py \
 | `--use_cache` | No | off | Reuse cached TSV-to-Parquet conversions |
 | `--store_cache` | No | off | Persist TSV-to-Parquet conversions |
 
-## CLI reference: `apply_filters.py`
+## CLI reference: `merge-apply-filters` / `merge.apply_filters`
 
 | Argument | Required | Description |
 |----------|----------|-------------|
@@ -371,18 +389,43 @@ python apply_filters.py \
 
 ```
 merge/
-├── create_vsm_table.py    # Main pipeline CLI and orchestration
-├── add_score.py            # Incremental score addition CLI
-├── apply_filters.py        # Standalone filter annotation CLI
-├── merge.py                # Multi-table join logic (inner/outer/pairwise)
-├── percentile.py           # Null-safe percentile rank calculation
-├── negate.py               # Correlation-based score negation
-├── smooth.py               # Spatial smoothing over 3D protein structures
-├── table_io.py             # Format detection, reading, writing (local + GCS)
-├── row_counts.py           # Pipeline stage row-count diagnostics
-├── requirements.txt        # Python dependencies
-└── README.md               # This file
+├── __init__.py             # Package init, public API exports
+├── pyproject.toml           # Package metadata and entry points
+├── create_vsm_table.py     # CLI entry point and pipeline orchestration
+├── pipeline.py              # Phased pipeline functions (load, merge, aggregate, write)
+├── types.py                 # Structured return types (LoadedInputs, MergedPrediction, etc.)
+├── paths.py                 # Centralized path, URI, and schema utilities
+├── naming.py                # Column naming convention helpers (UI preparation)
+├── add_score.py             # Incremental score addition CLI
+├── apply_filters.py         # Standalone filter annotation CLI
+├── merge.py                 # Multi-table join logic (inner/outer/pairwise)
+├── percentile.py            # Null-safe percentile rank calculation
+├── negate.py                # Correlation-based score negation
+├── smooth.py                # Spatial smoothing over 3D protein structures
+├── table_io.py              # Format detection, reading, writing (local + GCS)
+├── row_counts.py            # Pipeline stage row-count diagnostics
+├── test_smooth.py           # Unit + integration tests for smoothing
+└── README.md                # This file
 ```
+
+## Library usage
+
+The pipeline's phased functions can be imported directly for
+programmatic use:
+
+```python
+from merge.pipeline import load_inputs, merge_predictions, apply_post_processing, join_and_write
+from merge.types import LoadedInputs, MergedPrediction, PipelineResult
+
+inputs = load_inputs(pred_uris, eval_uris)
+pred = merge_predictions(inputs, join_type="inner", reference_score=None)
+pred = apply_post_processing(pred, percentile_order="post")
+result = join_and_write(pred, inputs.merged_eval, "output.parquet")
+```
+
+Progress messages are emitted via the `merge.pipeline` logger at INFO
+level. Library callers can configure logging handlers to capture,
+redirect, or silence output.
 
 ## Performance notes
 
