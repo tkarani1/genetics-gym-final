@@ -16,7 +16,12 @@ from biostat_cli.evaluators.base import BaseEvaluator
 from biostat_cli.evaluators.gene import GeneEvaluator, SUM_VARIANTS_SENTINEL
 from biostat_cli.evaluators.variant import VariantEvaluator
 from biostat_cli.io import scan_table, write_json, write_tsv
-from biostat_cli.stats.binary import DEFAULT_PVALUE_METHOD, PVALUE_METHODS
+from biostat_cli.stats.binary import (
+    DEFAULT_PVALUE_METHOD,
+    DEFAULT_VSM_COMPARISON_METHOD,
+    PVALUE_METHODS,
+    VSM_COMPARISON_METHODS,
+)
 from biostat_cli.stats.factory import StatFactory
 from biostat_cli.utils import WITHIN_GENE_COL
 
@@ -38,6 +43,7 @@ class RunArgs:
     write_missing: str
     within_gene_percentile: bool = False
     pvalue_method: str = DEFAULT_PVALUE_METHOD
+    vsm_comparison_method: str = DEFAULT_VSM_COMPARISON_METHOD
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -62,6 +68,12 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=list(PVALUE_METHODS),
         default=DEFAULT_PVALUE_METHOD,
         help=f"P-value calculation method (default: {DEFAULT_PVALUE_METHOD})",
+    )
+    parser.add_argument(
+        "--vsm-comparison-method",
+        choices=list(VSM_COMPARISON_METHODS),
+        default=DEFAULT_VSM_COMPARISON_METHOD,
+        help="VSM pairwise comparison method for vsm_comparison output (default: fisher)",
     )
     parser.add_argument("--out-fname", required=True)
     parser.add_argument("--write-missing", choices=["none", "all", "any"], default="none")
@@ -113,6 +125,7 @@ def _append_binary_row(
     stat_name: str,
     value: float,
     p_value: float,
+    std_error: float,
     tp: float,
     fp: float,
     tn: float,
@@ -129,6 +142,7 @@ def _append_binary_row(
             "stat": stat_name,
             "value": value,
             "p_value": p_value,
+            "std_error": std_error,
             "tp": tp,
             "fp": fp,
             "tn": tn,
@@ -300,8 +314,9 @@ def _compute_vsm_comparison_parallel(
     eval_col: str,
     filter_name: str,
     thresholds: list[float],
+    method: str = DEFAULT_VSM_COMPARISON_METHOD,
 ) -> list[dict[str, Any]]:
-    """All-pairs Fisher exact test comparing VSMs via their TP/FP counts."""
+    """All-pairs VSM comparison test using TP/FP counts."""
     score_cols = list(conts_by_score.keys())
     rows: list[dict[str, Any]] = []
     for idx_i in range(len(score_cols)):
@@ -310,7 +325,7 @@ def _compute_vsm_comparison_parallel(
             conts_i, rows_used_i = conts_by_score[col_i]
             conts_j, rows_used_j = conts_by_score[col_j]
             for t_idx, threshold in enumerate(thresholds):
-                result = StatFactory.vsm_comparison(conts_i[t_idx], conts_j[t_idx])
+                result = StatFactory.vsm_comparison(conts_i[t_idx], conts_j[t_idx], method=method)
                 rows.append({
                     "eval_name": eval_col,
                     "filter_name": filter_name,
@@ -383,6 +398,7 @@ def _run_eval_filter_combo(
                     stat_name=out.stat,
                     value=out.value,
                     p_value=out.p_value,
+                    std_error=out.std_error,
                     tp=float("nan"),
                     fp=float("nan"),
                     tn=float("nan"),
@@ -401,6 +417,7 @@ def _run_eval_filter_combo(
                     stat_name=out.stat,
                     value=out.value,
                     p_value=out.p_value,
+                    std_error=out.std_error,
                     tp=float("nan"),
                     fp=float("nan"),
                     tn=float("nan"),
@@ -427,6 +444,7 @@ def _run_eval_filter_combo(
                         stat_name=out.stat,
                         value=out.value,
                         p_value=out.p_value,
+                        std_error=out.std_error,
                         tp=cont.tp,
                         fp=cont.fp,
                         tn=cont.tn,
@@ -449,6 +467,7 @@ def _run_eval_filter_combo(
                         stat_name=out.stat,
                         value=out.value,
                         p_value=out.p_value,
+                        std_error=out.std_error,
                         tp=cont.tp,
                         fp=cont.fp,
                         tn=cont.tn,
@@ -460,7 +479,7 @@ def _run_eval_filter_combo(
     vsm_cmp_rows: list[dict[str, Any]] = []
     if need_vsm_comparison and len(conts_by_score) >= 2 and thresholds:
         vsm_cmp_rows = _compute_vsm_comparison_parallel(
-            conts_by_score, eval_col, filter_name, thresholds,
+            conts_by_score, eval_col, filter_name, thresholds, method=args.vsm_comparison_method,
         )
 
     timing = {
@@ -610,6 +629,7 @@ def main() -> None:
         out_fname=ns.out_fname,
         write_missing=ns.write_missing,
         pvalue_method=ns.pvalue_method,
+        vsm_comparison_method=ns.vsm_comparison_method,
     )
     try:
         output_paths = _resolve_output_paths(args.out_fname)

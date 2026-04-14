@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from biostat_cli.evaluators.base import Contingency
 from biostat_cli.stats.binary import (
     DEFAULT_PVALUE_METHOD,
+    DEFAULT_VSM_COMPARISON_METHOD,
     VsmComparisonResult,
     enrichment,
     enrichment_batch,
@@ -13,7 +14,7 @@ from biostat_cli.stats.binary import (
     pairwise_rate_ratio,
     rate_ratio,
     rate_ratio_batch,
-    vsm_comparison_fisher,
+    vsm_comparison,
 )
 from biostat_cli.stats.continuous import compute_auc, compute_auprc, pairwise_continuous_adjust
 
@@ -23,6 +24,7 @@ class StatOutput:
     stat: str
     value: float
     p_value: float
+    std_error: float = math.nan
 
 
 @dataclass(frozen=True)
@@ -40,19 +42,19 @@ class StatFactory:
     @staticmethod
     def auc(labels: list[int] | None, scores: list[float] | None) -> StatOutput:
         if labels is None or scores is None:
-            return StatOutput(stat="auc", value=math.nan, p_value=math.nan)
-        return StatOutput(stat="auc", value=compute_auc(labels, scores), p_value=math.nan)
+            return StatOutput(stat="auc", value=math.nan, p_value=math.nan, std_error=math.nan)
+        return StatOutput(stat="auc", value=compute_auc(labels, scores), p_value=math.nan, std_error=math.nan)
 
     @staticmethod
     def auprc(labels: list[int] | None, scores: list[float] | None) -> StatOutput:
         if labels is None or scores is None:
-            return StatOutput(stat="auprc", value=math.nan, p_value=math.nan)
-        return StatOutput(stat="auprc", value=compute_auprc(labels, scores), p_value=math.nan)
+            return StatOutput(stat="auprc", value=math.nan, p_value=math.nan, std_error=math.nan)
+        return StatOutput(stat="auprc", value=compute_auprc(labels, scores), p_value=math.nan, std_error=math.nan)
 
     @staticmethod
     def enrichment(cont: Contingency, pvalue_method: str = DEFAULT_PVALUE_METHOD) -> StatOutput:
         out = enrichment(cont, pvalue_method=pvalue_method)
-        return StatOutput(stat="enrichment", value=out.value, p_value=out.p_value)
+        return StatOutput(stat="enrichment", value=out.value, p_value=out.p_value, std_error=out.std_error)
 
     @staticmethod
     def rate_ratio(
@@ -60,14 +62,14 @@ class StatFactory:
         pvalue_method: str = DEFAULT_PVALUE_METHOD,
     ) -> StatOutput:
         out = rate_ratio(cont, case_total=case_total, ctrl_total=ctrl_total, pvalue_method=pvalue_method)
-        return StatOutput(stat="rate_ratio", value=out.value, p_value=out.p_value)
+        return StatOutput(stat="rate_ratio", value=out.value, p_value=out.p_value, std_error=out.std_error)
 
     @staticmethod
     def enrichment_batch(
         conts: list[Contingency], pvalue_method: str = DEFAULT_PVALUE_METHOD,
     ) -> list[StatOutput]:
         results = enrichment_batch(conts, pvalue_method=pvalue_method)
-        return [StatOutput(stat="enrichment", value=r.value, p_value=r.p_value) for r in results]
+        return [StatOutput(stat="enrichment", value=r.value, p_value=r.p_value, std_error=r.std_error) for r in results]
 
     @staticmethod
     def rate_ratio_batch(
@@ -75,7 +77,7 @@ class StatFactory:
         pvalue_method: str = DEFAULT_PVALUE_METHOD,
     ) -> list[StatOutput]:
         results = rate_ratio_batch(conts, case_total=case_total, ctrl_total=ctrl_total, pvalue_method=pvalue_method)
-        return [StatOutput(stat="rate_ratio", value=r.value, p_value=r.p_value) for r in results]
+        return [StatOutput(stat="rate_ratio", value=r.value, p_value=r.p_value, std_error=r.std_error) for r in results]
 
     @staticmethod
     def pairwise_enrichment(
@@ -132,8 +134,12 @@ class StatFactory:
         )
 
     @staticmethod
-    def vsm_comparison(cont_a: Contingency, cont_b: Contingency) -> VsmComparisonResult:
-        return vsm_comparison_fisher(cont_a, cont_b)
+    def vsm_comparison(
+        cont_a: Contingency,
+        cont_b: Contingency,
+        method: str = DEFAULT_VSM_COMPARISON_METHOD,
+    ) -> VsmComparisonResult:
+        return vsm_comparison(cont_a, cont_b, method=method)
 
     @staticmethod
     def pairwise_auprc(

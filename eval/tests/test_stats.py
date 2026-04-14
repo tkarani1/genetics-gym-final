@@ -22,7 +22,9 @@ from biostat_cli.stats.binary import (
     pairwise_rate_ratio,
     poisson_p_value,
     rate_ratio,
+    vsm_comparison,
     vsm_comparison_fisher,
+    vsm_comparison_poisson_exact,
 )
 from biostat_cli.stats.continuous import compute_auc, compute_auprc
 from biostat_cli.utils import apply_within_gene_percentile
@@ -41,8 +43,10 @@ def test_binary_stats():
     rr = rate_ratio(cont, case_total=200, ctrl_total=300)
     assert not math.isnan(enr.value)
     assert not math.isnan(enr.p_value)
+    assert not math.isnan(enr.std_error)
     assert not math.isnan(rr.value)
     assert not math.isnan(rr.p_value)
+    assert math.isnan(rr.std_error)
 
 
 def test_fisher_p_value():
@@ -74,6 +78,30 @@ def test_fisher_is_default():
     default_p = enrichment(cont).p_value
     fisher_p = enrichment(cont, pvalue_method="fisher").p_value
     assert default_p == fisher_p
+
+
+def test_enrichment_fisher_std_error_only_for_fisher():
+    cont = Contingency(tp=10, fp=5, tn=20, fn=15)
+    fisher_out = enrichment(cont, pvalue_method="fisher")
+    poisson_out = enrichment(cont, pvalue_method="poisson")
+    assert fisher_out.std_error > 0
+    assert math.isnan(poisson_out.std_error)
+
+
+def test_rate_ratio_poisson_analytic_std_error():
+    cont = Contingency(tp=10, fp=5, tn=20, fn=15)
+    rr = rate_ratio(cont, case_total=200, ctrl_total=300, pvalue_method="poisson")
+    expected_se = rr.value * math.sqrt((1.0 / cont.tp) + (1.0 / cont.fp))
+    assert rr.std_error == pytest.approx(expected_se)
+
+
+def test_rate_ratio_poisson_analytic_std_error_zero_counts_nan():
+    cont_tp_zero = Contingency(tp=0, fp=5, tn=20, fn=15)
+    cont_fp_zero = Contingency(tp=10, fp=0, tn=20, fn=15)
+    rr_tp_zero = rate_ratio(cont_tp_zero, case_total=200, ctrl_total=300, pvalue_method="poisson")
+    rr_fp_zero = rate_ratio(cont_fp_zero, case_total=200, ctrl_total=300, pvalue_method="poisson")
+    assert math.isnan(rr_tp_zero.std_error)
+    assert math.isnan(rr_fp_zero.std_error)
 
 
 def test_pvalue_empty_strata():
@@ -320,7 +348,7 @@ def test_bootstrap_run_value_and_pvalue_stable(tmp_path):
         stat="enrichment",
         eval_set=None,
         filters=None,
-        thresholds="0.8",
+        thresholds="0.5",
         case_total=None,
         ctrl_total=None,
         case_total_by_eval=None,
@@ -331,7 +359,7 @@ def test_bootstrap_run_value_and_pvalue_stable(tmp_path):
     )
     base_df, _, _, _ = run(base_args)
     base_row = base_df.to_dicts()[0]
-    assert math.isnan(base_row["std_error"])
+    assert not math.isnan(base_row["std_error"])
 
     boot_args = RunArgs(
         resources_json=str(resources_path),
@@ -354,6 +382,7 @@ def test_bootstrap_run_value_and_pvalue_stable(tmp_path):
     assert boot_row["value"] == pytest.approx(base_row["value"], rel=0, abs=1e-12)
     assert boot_row["p_value"] == pytest.approx(base_row["p_value"], rel=0, abs=1e-12)
     assert not math.isnan(boot_row["std_error"])
+    assert boot_row["std_error"] != pytest.approx(base_row["std_error"], rel=0, abs=1e-12)
 
 
 def test_bootstrap_pairwise_std_error(tmp_path):
@@ -406,6 +435,127 @@ def test_bootstrap_pairwise_std_error(tmp_path):
     assert rows
     assert all("std_error" in row for row in rows)
     assert any(not math.isnan(row["std_error"]) for row in rows)
+
+
+def test_rate_ratio_poisson_std_error_without_bootstrap(tmp_path):
+    df = pl.DataFrame(
+        {
+            "chrom": ["1", "1", "1", "1", "1", "1"],
+            "pos": [1, 2, 3, 4, 5, 6],
+            "ref": ["A"] * 6,
+            "alt": ["C"] * 6,
+            "eval_a": [True, False, True, False, True, False],
+            "score_x": [0.95, 0.85, 0.88, 0.1, 0.99, 0.4],
+        }
+    )
+    parquet_path = tmp_path / "toy_poisson_rr.parquet"
+    resources_path = tmp_path / "resources_poisson_rr.json"
+    out_prefix = tmp_path / "out_poisson_rr"
+    df.write_parquet(str(parquet_path))
+    resources = {
+        "Table_info": {
+            "toy_poisson_rr": {
+                "Path": str(parquet_path),
+                "Level": "variant",
+                "Score_cols": ["score_x"],
+                "evals": ["eval_a"],
+            }
+        }
+    }
+    resources_path.write_text(json.dumps(resources), encoding="utf-8")
+
+    args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="toy_poisson_rr",
+        eval_level="variant",
+        stat="rate_ratio",
+        eval_set=None,
+        filters=None,
+        thresholds="0.8",
+        case_total=3,
+        ctrl_total=3,
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+        pvalue_method="poisson",
+    )
+    out_df, _, _, _ = run(args)
+    row = out_df.to_dicts()[0]
+    expected = row["value"] * math.sqrt((1.0 / row["tp"]) + (1.0 / row["fp"]))
+    assert row["std_error"] == pytest.approx(expected)
+
+
+def test_rate_ratio_bootstrap_overrides_analytic_poisson_std_error(tmp_path):
+    df = pl.DataFrame(
+        {
+            "chrom": ["1", "1", "1", "1", "1", "1", "1", "1", "1", "1"],
+            "pos": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            "ref": ["A"] * 10,
+            "alt": ["C"] * 10,
+            "eval_a": [True, False, True, False, True, False, True, False, True, False],
+            "score_x": [0.95, 0.85, 0.88, 0.1, 0.99, 0.4, 0.81, 0.79, 0.9, 0.2],
+        }
+    )
+    parquet_path = tmp_path / "toy_poisson_rr_boot.parquet"
+    resources_path = tmp_path / "resources_poisson_rr_boot.json"
+    out_prefix = tmp_path / "out_poisson_rr_boot"
+    df.write_parquet(str(parquet_path))
+    resources = {
+        "Table_info": {
+            "toy_poisson_rr_boot": {
+                "Path": str(parquet_path),
+                "Level": "variant",
+                "Score_cols": ["score_x"],
+                "evals": ["eval_a"],
+            }
+        }
+    }
+    resources_path.write_text(json.dumps(resources), encoding="utf-8")
+
+    base_args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="toy_poisson_rr_boot",
+        eval_level="variant",
+        stat="rate_ratio",
+        eval_set=None,
+        filters=None,
+        thresholds="0.8",
+        case_total=5,
+        ctrl_total=5,
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+        pvalue_method="poisson",
+    )
+    base_df, _, _, _ = run(base_args)
+    base_row = base_df.to_dicts()[0]
+    assert not math.isnan(base_row["std_error"])
+
+    boot_args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="toy_poisson_rr_boot",
+        eval_level="variant",
+        stat="rate_ratio",
+        eval_set=None,
+        filters=None,
+        thresholds="0.8",
+        case_total=5,
+        ctrl_total=5,
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=30,
+        out_fname=str(out_prefix),
+        write_missing="none",
+        pvalue_method="poisson",
+    )
+    boot_df, _, _, _ = run(boot_args)
+    boot_row = boot_df.to_dicts()[0]
+    assert not math.isnan(boot_row["std_error"])
+    assert boot_row["std_error"] != pytest.approx(base_row["std_error"], rel=0, abs=1e-12)
 
 
 def test_apply_within_gene_percentile():
@@ -496,6 +646,47 @@ def test_vsm_comparison_symmetry():
     assert result_ab.log_odds_ratio == pytest.approx(-result_ba.log_odds_ratio)
 
 
+def test_vsm_comparison_poisson_exact_basic():
+    from scipy.stats import binom
+
+    cont_a = Contingency(tp=50, fp=10, tn=0, fn=0)
+    cont_b = Contingency(tp=30, fp=20, tn=0, fn=0)
+    result = vsm_comparison_poisson_exact(cont_a, cont_b)
+
+    total_tp = 80
+    p0 = 10 / 30
+    expected_p_greater = float(binom.sf(50 - 1, total_tp, p0))
+    expected_p_less = float(binom.cdf(50, total_tp, p0))
+
+    assert result.p_greater == pytest.approx(expected_p_greater)
+    assert result.p_less == pytest.approx(expected_p_less)
+    assert 0.0 <= result.p_greater <= 1.0
+    assert 0.0 <= result.p_less <= 1.0
+    assert not math.isnan(result.odds_ratio)
+    assert not math.isnan(result.log_odds_ratio)
+    assert not math.isnan(result.standard_error)
+
+
+def test_vsm_comparison_poisson_symmetry():
+    cont_a = Contingency(tp=40, fp=15, tn=0, fn=0)
+    cont_b = Contingency(tp=25, fp=30, tn=0, fn=0)
+    result_ab = vsm_comparison_poisson_exact(cont_a, cont_b)
+    result_ba = vsm_comparison_poisson_exact(cont_b, cont_a)
+
+    assert result_ab.p_greater == pytest.approx(result_ba.p_less)
+    assert result_ab.p_less == pytest.approx(result_ba.p_greater)
+    assert result_ab.log_odds_ratio == pytest.approx(-result_ba.log_odds_ratio)
+
+
+def test_vsm_comparison_dispatch_methods():
+    cont_a = Contingency(tp=40, fp=15, tn=0, fn=0)
+    cont_b = Contingency(tp=25, fp=30, tn=0, fn=0)
+
+    fisher_result = vsm_comparison(cont_a, cont_b, method="fisher")
+    poisson_result = vsm_comparison(cont_a, cont_b, method="poisson")
+    assert abs(fisher_result.p_greater - poisson_result.p_greater) > 1e-12
+
+
 def test_vsm_comparison_integration(tmp_path):
     """End-to-end: vsm_comparison stat produces a non-empty DataFrame."""
     df = pl.DataFrame(
@@ -559,3 +750,194 @@ def test_vsm_comparison_integration(tmp_path):
     assert row["threshold"] == pytest.approx(0.8)
     assert row["rows_used_i"] > 0
     assert row["rows_used_j"] > 0
+
+
+def test_vsm_comparison_integration_poisson_method(tmp_path):
+    df = pl.DataFrame(
+        {
+            "chrom": ["1"] * 8,
+            "pos": list(range(1, 9)),
+            "ref": ["A"] * 8,
+            "alt": ["C"] * 8,
+            "eval_a": [True, False, True, False, True, False, True, False],
+            "score_x": [0.95, 0.85, 0.88, 0.1, 0.99, 0.4, 0.7, 0.3],
+            "score_y": [0.6, 0.92, 0.75, 0.2, 0.88, 0.55, 0.98, 0.1],
+        }
+    )
+    parquet_path = tmp_path / "toy3.parquet"
+    resources_path = tmp_path / "resources3.json"
+    out_prefix = tmp_path / "out3"
+    df.write_parquet(str(parquet_path))
+    resources = {
+        "Table_info": {
+            "toy3": {
+                "Path": str(parquet_path),
+                "Level": "variant",
+                "Score_cols": ["score_x", "score_y"],
+                "evals": ["eval_a"],
+            }
+        }
+    }
+    resources_path.write_text(json.dumps(resources), encoding="utf-8")
+
+    args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="toy3",
+        eval_level="variant",
+        stat="vsm_comparison",
+        eval_set=None,
+        filters=None,
+        thresholds="0.8",
+        case_total=None,
+        ctrl_total=None,
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+        vsm_comparison_method="poisson",
+    )
+    _, _, _, vsm_cmp_df = run(args)
+    assert vsm_cmp_df.height > 0
+    row = vsm_cmp_df.to_dicts()[0]
+    assert 0.0 <= row["p_greater"] <= 1.0
+    assert 0.0 <= row["p_less"] <= 1.0
+
+
+def test_vsm_comparison_invalid_method_raises():
+    cont_a = Contingency(tp=12, fp=8, tn=0, fn=0)
+    cont_b = Contingency(tp=9, fp=11, tn=0, fn=0)
+    with pytest.raises(ValueError, match="Unknown vsm comparison method"):
+        vsm_comparison(cont_a, cont_b, method="not-a-method")
+
+
+def test_vsm_comparison_missingness_marginal_rowsets(tmp_path):
+    df = pl.DataFrame(
+        {
+            "chrom": ["1"] * 10,
+            "pos": list(range(1, 11)),
+            "ref": ["A"] * 10,
+            "alt": ["C"] * 10,
+            "eval_a": [True, False, True, False, True, False, True, False, True, False],
+            "score_x": [0.99, 0.7, 0.97, 0.1, 0.95, 0.05, 0.9, 0.4, None, None],
+            "score_y": [None, None, 0.96, 0.15, 0.93, 0.08, 0.91, 0.8, None, None],
+        }
+    )
+    parquet_path = tmp_path / "missingness.parquet"
+    resources_path = tmp_path / "resources_missingness.json"
+    out_prefix = tmp_path / "out_missingness"
+    df.write_parquet(str(parquet_path))
+    resources = {
+        "Table_info": {
+            "missingness": {
+                "Path": str(parquet_path),
+                "Level": "variant",
+                "Score_cols": ["score_x", "score_y"],
+                "evals": ["eval_a"],
+            }
+        }
+    }
+    resources_path.write_text(json.dumps(resources), encoding="utf-8")
+
+    args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="missingness",
+        eval_level="variant",
+        stat="vsm_comparison",
+        eval_set=None,
+        filters=None,
+        thresholds="0.5",
+        case_total=None,
+        ctrl_total=None,
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+        vsm_comparison_method="poisson",
+    )
+    _, _, _, vsm_cmp_df = run(args)
+    row = vsm_cmp_df.to_dicts()[0]
+    assert row["rows_used_i"] != row["rows_used_j"]
+    assert 0.0 <= row["p_greater"] <= 1.0
+    assert 0.0 <= row["p_less"] <= 1.0
+
+
+def test_vsm_comparison_parallel_matches_serial_poisson(tmp_path):
+    from biostat_cli.cli_parallel import RunArgs as ParallelRunArgs
+    from biostat_cli.cli_parallel import run as run_parallel
+
+    df = pl.DataFrame(
+        {
+            "chrom": ["1"] * 12,
+            "pos": list(range(1, 13)),
+            "ref": ["A"] * 12,
+            "alt": ["C"] * 12,
+            "eval_a": [True, False, True, False, True, False, True, False, True, False, True, False],
+            "score_x": [0.99, 0.1, 0.96, 0.2, 0.94, 0.4, 0.9, 0.5, 0.88, 0.3, 0.86, 0.6],
+            "score_y": [0.85, 0.92, 0.82, 0.88, 0.8, 0.7, 0.95, 0.2, 0.75, 0.98, 0.73, 0.9],
+        }
+    )
+    parquet_path = tmp_path / "parallel.parquet"
+    resources_path = tmp_path / "resources_parallel.json"
+    out_prefix = tmp_path / "out_parallel"
+    df.write_parquet(str(parquet_path))
+    resources = {
+        "Table_info": {
+            "parallel": {
+                "Path": str(parquet_path),
+                "Level": "variant",
+                "Score_cols": ["score_x", "score_y"],
+                "evals": ["eval_a"],
+            }
+        }
+    }
+    resources_path.write_text(json.dumps(resources), encoding="utf-8")
+
+    serial_args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="parallel",
+        eval_level="variant",
+        stat="vsm_comparison",
+        eval_set=None,
+        filters=None,
+        thresholds="0.8,0.9",
+        case_total=None,
+        ctrl_total=None,
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+        vsm_comparison_method="poisson",
+    )
+    _, _, _, serial_df = run(serial_args)
+
+    parallel_args = ParallelRunArgs(
+        resources_json=str(resources_path),
+        table_name="parallel",
+        eval_level="variant",
+        stat="vsm_comparison",
+        eval_set=None,
+        filters=None,
+        thresholds="0.8,0.9",
+        case_total=None,
+        ctrl_total=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+        vsm_comparison_method="poisson",
+    )
+    _, _, _, parallel_df = run_parallel(parallel_args)
+
+    sort_cols = ["eval_name", "filter_name", "vsm_i", "vsm_j", "threshold"]
+    serial_rows = serial_df.sort(sort_cols).to_dicts()
+    parallel_rows = parallel_df.sort(sort_cols).to_dicts()
+    assert len(serial_rows) == len(parallel_rows)
+    for left, right in zip(serial_rows, parallel_rows):
+        assert left["eval_name"] == right["eval_name"]
+        assert left["filter_name"] == right["filter_name"]
+        assert left["vsm_i"] == right["vsm_i"]
+        assert left["vsm_j"] == right["vsm_j"]
+        assert left["threshold"] == pytest.approx(right["threshold"])
+        assert left["p_greater"] == pytest.approx(right["p_greater"])
+        assert left["p_less"] == pytest.approx(right["p_less"])

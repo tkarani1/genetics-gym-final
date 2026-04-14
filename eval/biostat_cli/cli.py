@@ -22,7 +22,12 @@ from biostat_cli.config import (
     parse_stats,
     parse_thresholds,
 )
-from biostat_cli.stats.binary import DEFAULT_PVALUE_METHOD, PVALUE_METHODS
+from biostat_cli.stats.binary import (
+    DEFAULT_PVALUE_METHOD,
+    DEFAULT_VSM_COMPARISON_METHOD,
+    PVALUE_METHODS,
+    VSM_COMPARISON_METHODS,
+)
 from biostat_cli.stats.continuous import compute_auc, compute_auprc
 from biostat_cli.utils import WITHIN_GENE_COL, missing_category_sort_expr, normalize_chromosome_sort_expr
 from biostat_cli.evaluators.base import BaseEvaluator, Contingency, PreparedFrame
@@ -52,6 +57,7 @@ class RunArgs:
     write_missing: str
     within_gene_percentile: bool = False
     pvalue_method: str = DEFAULT_PVALUE_METHOD
+    vsm_comparison_method: str = DEFAULT_VSM_COMPARISON_METHOD
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -95,6 +101,12 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=list(PVALUE_METHODS),
         default=DEFAULT_PVALUE_METHOD,
         help=f"P-value calculation method (default: {DEFAULT_PVALUE_METHOD})",
+    )
+    parser.add_argument(
+        "--vsm-comparison-method",
+        choices=list(VSM_COMPARISON_METHODS),
+        default=DEFAULT_VSM_COMPARISON_METHOD,
+        help="VSM pairwise comparison method for vsm_comparison output (default: fisher)",
     )
     parser.add_argument("--out-fname", required=True)
     parser.add_argument("--write-missing", choices=["none", "all", "any"], default="none")
@@ -146,6 +158,7 @@ def _append_binary_row(
     stat_name: str,
     value: float,
     p_value: float,
+    std_error: float,
     tp: float,
     fp: float,
     tn: float,
@@ -162,6 +175,7 @@ def _append_binary_row(
             "stat": stat_name,
             "value": value,
             "p_value": p_value,
+            "std_error": std_error,
             "tp": tp,
             "fp": fp,
             "tn": tn,
@@ -416,6 +430,7 @@ def _compute_continuous_stats(
             stat_name=out.stat,
             value=out.value,
             p_value=out.p_value,
+            std_error=out.std_error,
             tp=float("nan"),
             fp=float("nan"),
             tn=float("nan"),
@@ -458,6 +473,7 @@ def _compute_binary_stats(
                 stat_name=out.stat,
                 value=out.value,
                 p_value=out.p_value,
+            std_error=out.std_error,
                 tp=cont.tp,
                 fp=cont.fp,
                 tn=cont.tn,
@@ -480,6 +496,7 @@ def _compute_binary_stats(
                 stat_name=out.stat,
                 value=out.value,
                 p_value=out.p_value,
+                std_error=out.std_error,
                 tp=cont.tp,
                 fp=cont.fp,
                 tn=cont.tn,
@@ -644,8 +661,9 @@ def _compute_vsm_comparison(
     eval_col: str,
     filter_name: str,
     thresholds: list[float],
+    method: str = DEFAULT_VSM_COMPARISON_METHOD,
 ) -> list[dict[str, Any]]:
-    """All-pairs Fisher exact test comparing VSMs via their TP/FP counts."""
+    """All-pairs VSM comparison test using TP/FP counts."""
     score_cols = list(conts_by_score.keys())
     rows: list[dict[str, Any]] = []
     for idx_i in range(len(score_cols)):
@@ -654,7 +672,7 @@ def _compute_vsm_comparison(
             conts_i, rows_used_i = conts_by_score[col_i]
             conts_j, rows_used_j = conts_by_score[col_j]
             for t_idx, threshold in enumerate(thresholds):
-                result = StatFactory.vsm_comparison(conts_i[t_idx], conts_j[t_idx])
+                result = StatFactory.vsm_comparison(conts_i[t_idx], conts_j[t_idx], method=method)
                 rows.append({
                     "eval_name": eval_col,
                     "filter_name": filter_name,
@@ -690,6 +708,7 @@ def _compute_rows_for_prepared(
     *,
     within_gene_percentile: bool = False,
     pvalue_method: str = DEFAULT_PVALUE_METHOD,
+    vsm_comparison_method: str = DEFAULT_VSM_COMPARISON_METHOD,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
     Compute all requested statistics for a prepared frame.
@@ -737,7 +756,7 @@ def _compute_rows_for_prepared(
     vsm_comparison_rows: list[dict[str, Any]] = []
     if need_vsm_comparison and len(conts_by_score) >= 2 and thresholds:
         vsm_comparison_rows = _compute_vsm_comparison(
-            conts_by_score, eval_col, filter_name, thresholds,
+            conts_by_score, eval_col, filter_name, thresholds, method=vsm_comparison_method,
         )
 
     return rows, vsm_comparison_rows
@@ -822,6 +841,7 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                 pairwise_cols=pairwise_cols,
                 within_gene_percentile=args.within_gene_percentile,
                 pvalue_method=args.pvalue_method,
+                vsm_comparison_method=args.vsm_comparison_method,
             )
             all_vsm_comparison_rows.extend(vsm_cmp_rows)
 
@@ -849,6 +869,7 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                             pairwise_cols=pairwise_cols,
                             within_gene_percentile=args.within_gene_percentile,
                             pvalue_method=args.pvalue_method,
+                            vsm_comparison_method=args.vsm_comparison_method,
                         )
                         for row in sample_rows:
                             key = _row_identity_key(row)
@@ -857,7 +878,7 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                     row["std_error"] = _compute_std_error(bootstrap_values_by_key.get(_row_identity_key(row), []))
             else:
                 for row in combo_rows:
-                    row["std_error"] = math.nan
+                    row["std_error"] = float(row.get("std_error", math.nan))
             rows.extend(combo_rows)
 
             eval_filter_timings.append(
@@ -922,6 +943,7 @@ def main() -> None:
         out_fname=ns.out_fname,
         write_missing=ns.write_missing,
         pvalue_method=ns.pvalue_method,
+        vsm_comparison_method=ns.vsm_comparison_method,
     )
     try:
         output_paths = _resolve_output_paths(args.out_fname)

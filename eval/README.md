@@ -61,6 +61,7 @@ pip install -e .
 - `--ctrl-total-by-eval` optional per-eval control totals (`eval_name:value,eval2:value2`)
 - `--bootstrap [N]` enable nonparametric row bootstrap stderr calculation; optional `N` sets sample count (e.g., `--bootstrap 50`, default `100` when `N` omitted)
 - `--pvalue-method` p-value calculation method: `fisher` (default) or `poisson`. Fisher's exact test is recommended for 2×2 contingency tables; Poisson is the legacy approximation
+- `--vsm-comparison-method` method for `vsm_comparison` pairwise VSM table: `fisher` (default) or `poisson`
 - `--out-fname` output naming schema/prefix (**required**)
 - `--write-missing` controls missing-entity report: `none`, `all`, or `any` (default: `none`)
 
@@ -73,7 +74,18 @@ Rate-ratio denominator resolution priority (high to low):
 Bootstrap behavior:
 
 - Point `value` and `p_value` are computed on the original dataset.
-- `std_error` is estimated from bootstrap resamples (rows sampled with replacement within each eval/filter subset).
+- `std_error` precedence:
+  - if `--bootstrap` is enabled: bootstrap SD from resampled `value`s (rows sampled with replacement within each eval/filter subset)
+  - else if `stat=enrichment` and `--pvalue-method fisher`: analytic Fisher stderr proxy on log(OR) scale
+  - else if `stat=rate_ratio` and `--pvalue-method poisson`: analytic Poisson stderr on RR scale
+  - else: `NaN`
+- Analytic Fisher stderr proxy for `enrichment` uses (Haldane-Anscombe corrected):
+  - $\mathrm{SE}[\log(\mathrm{OR})]=\sqrt{1/a+1/b+1/c+1/d}$ for $a,b,c,d=(TP,FP,FN,TN)+0.5$
+  - returns `NaN` when above- or below-threshold strata are empty
+- Analytic Poisson stderr for `rate_ratio` uses:
+  - $\mathrm{SE}[\log(\mathrm{RR})]=\sqrt{1/\mathrm{TP}+1/\mathrm{FP}}$
+  - `std_error = RR * SE(log(RR))`
+  - returns `NaN` when `TP == 0` or `FP == 0` (or RR is undefined)
 - `--bootstrap N` must use `N >= 2` when bootstrap is enabled.
 
 Output paths are derived from `--out-fname`:
@@ -167,6 +179,44 @@ python -m biostat_cli.cli \
   --ctrl-total 5000 \
   --out-fname ../results/VSM_pairwise
 ```
+
+## Pairwise VSM comparison (exact Poisson design options)
+
+When adding Poisson-based pairwise VSM comparison (`p_greater`, `p_less`) for
+`rate_ratio` interpretation, there are multiple valid exact formulations.
+For this project, the default should be `full_2x2_exact_poisson`.
+
+`lock-exact-formula` means selecting exactly one formulation before coding so
+implementation, tests, and interpretation all match.
+
+### Candidate formulas (default first)
+
+- `full_2x2_exact_poisson` (default):
+  - Use all four counts `(TP_i, FP_i, TP_j, FP_j)` in a single exact test
+    targeting the relative rate-ratio contrast.
+- `tp_only_conditional_binomial`:
+  - Use `X = TP_i`, `n = TP_i + TP_j`, null `p0 = 0.5`.
+  - `p_greater = P(X >= TP_i | Binomial(n, p0))`
+  - `p_less = P(X <= TP_i | Binomial(n, p0))`
+- `fp_only_conditional_binomial`:
+  - Analogous conditional-binomial test using FP counts.
+
+### Input-count definitions (used by all options)
+
+- Thresholding uses strict `score > t`.
+- For boolean evals:
+  - `TP = count(above_threshold and eval == True)`
+  - `FP = count(above_threshold and eval == False)`
+- In gene `sum_variants` mode:
+  - `TP = sum(n_case)` above threshold
+  - `FP = sum(n_ctrl)` above threshold
+
+### Important caveat
+
+Current `vsm_comparison` uses per-model score-non-null row sets, so model `i`
+and model `j` counts can come from different subsets when missingness differs.
+This is a marginal comparison of model-level contingency summaries, not a
+strict paired-intersection test.
 
 ## Missing-output TSV (optional)
 
