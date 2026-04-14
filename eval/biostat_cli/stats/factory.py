@@ -16,7 +16,7 @@ from biostat_cli.stats.binary import (
     rate_ratio_batch,
     vsm_comparison,
 )
-from biostat_cli.stats.continuous import compute_auc, compute_auprc, pairwise_continuous_adjust
+from biostat_cli.stats.continuous import compute_auc, compute_auc_p_value, compute_auprc, pairwise_continuous_adjust
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,12 @@ class StatFactory:
     def auc(labels: list[int] | None, scores: list[float] | None) -> StatOutput:
         if labels is None or scores is None:
             return StatOutput(stat="auc", value=math.nan, p_value=math.nan, std_error=math.nan)
-        return StatOutput(stat="auc", value=compute_auc(labels, scores), p_value=math.nan, std_error=math.nan)
+        return StatOutput(
+            stat="auc",
+            value=compute_auc(labels, scores),
+            p_value=compute_auc_p_value(labels, scores),
+            std_error=math.nan,
+        )
 
     @staticmethod
     def auprc(labels: list[int] | None, scores: list[float] | None) -> StatOutput:

@@ -86,6 +86,7 @@ Bootstrap behavior:
   - $\mathrm{SE}[\log(\mathrm{RR})]=\sqrt{1/\mathrm{TP}+1/\mathrm{FP}}$
   - `std_error = RR * SE(log(RR))`
   - returns `NaN` when `TP == 0` or `FP == 0` (or RR is undefined)
+- `auc`: `p_value` is a two-sided test of $H_0:\mathrm{AUC}=0.5$ using the Hanley–McNeil variance for the AUC estimate and a normal approximation (`z=(\mathrm{AUC}-0.5)/\mathrm{SE}`). `auprc` still has `p_value = NaN`.
 - `--bootstrap N` must use `N >= 2` when bootstrap is enabled.
 
 Output paths are derived from `--out-fname`:

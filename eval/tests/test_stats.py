@@ -26,7 +26,7 @@ from biostat_cli.stats.binary import (
     vsm_comparison_fisher,
     vsm_comparison_poisson_exact,
 )
-from biostat_cli.stats.continuous import compute_auc, compute_auprc
+from biostat_cli.stats.continuous import compute_auc, compute_auc_p_value, compute_auprc
 from biostat_cli.utils import apply_within_gene_percentile
 
 
@@ -35,6 +35,26 @@ def test_auc_and_auprc_basic():
     scores = [0.1, 0.2, 0.8, 0.9]
     assert compute_auc(labels, scores) > 0.99
     assert compute_auprc(labels, scores) > 0.99
+
+
+def test_auc_p_value_perfect_separation():
+    labels = [0, 0, 1, 1]
+    scores = [0.1, 0.2, 0.8, 0.9]
+    p = compute_auc_p_value(labels, scores)
+    assert 0.0 <= p <= 1.0
+    assert p < 0.05
+
+
+def test_auc_p_value_no_discrimination():
+    labels = [0, 0, 1, 1]
+    scores = [0.5, 0.5, 0.5, 0.5]
+    assert compute_auc(labels, scores) == 0.5
+    p = compute_auc_p_value(labels, scores)
+    assert p == pytest.approx(1.0)
+
+
+def test_auc_p_value_single_class_nan():
+    assert math.isnan(compute_auc_p_value([1, 1, 1], [0.1, 0.2, 0.3]))
 
 
 def test_binary_stats():
