@@ -36,7 +36,7 @@ def run_pipeline(
     percentile_order: str = "post",
     filter_uris: list[str] | None = None,
     keep_raw_scores: bool = False,
-    reference_score: str | None = "AM",
+    reference_score: str | None = "AM_score",
     output_table_fields: list[str] | None = None,
     anchor: str | None = None,
     linker_uri: str | None = None,
@@ -392,12 +392,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--reference_score",
-        default="AM",
+        default="AM_score",
         help=(
             "Reference score column for directional alignment. Scores with "
             "negative Pearson correlation to this column are negated so all "
             "scores point in the same direction. Set to 'none' to disable "
-            "negation (default: AM)."
+            "negation (default: AM_score)."
         ),
     )
     parser.add_argument(
