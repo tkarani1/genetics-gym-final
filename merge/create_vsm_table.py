@@ -54,6 +54,7 @@ def run_pipeline(
     precomputed_evaluation: str | None = None,
     retain_raw_anchor: bool = False,
     dry_run: bool = False,
+    gene_prediction_uris: list[str] | None = None,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
@@ -103,6 +104,14 @@ def run_pipeline(
             collector.record_config("smooth_order", smooth_order)
         if filter_uris:
             collector.record_config("filter_count", str(len(filter_uris)))
+
+    if gene_prediction_uris and not aggregate_genes:
+        print(
+            "  WARNING: --gene_prediction_tables is ignored when "
+            "--aggregate_genes is not set; gene-level prediction tables "
+            "are only used in the gene aggregation path.",
+            file=sys.stderr,
+        )
 
     if aggregate_genes and percentile_order != "post":
         print(
@@ -173,6 +182,7 @@ def run_pipeline(
     inputs = load_inputs(
         prediction_uris,
         evaluation_uris,
+        gene_prediction_uris=gene_prediction_uris if aggregate_genes else None,
         aggregate_genes=aggregate_genes,
         fields_set=fields_set,
         precomputed_evaluation=precomputed_evaluation,
@@ -186,6 +196,8 @@ def run_pipeline(
     if dry_run:
         print("=== DRY RUN ===", file=sys.stderr)
         print(f"  Prediction score columns: {inputs.all_score_cols}", file=sys.stderr)
+        if inputs.gene_score_cols:
+            print(f"  Gene-level score columns: {inputs.gene_score_cols}", file=sys.stderr)
         if inputs.merged_eval is not None:
             eval_schema = inputs.merged_eval.collect_schema()
             eval_cols = [c for c in eval_schema.names() if c not in inputs.eval_keys]
@@ -233,6 +245,8 @@ def run_pipeline(
             store_cache=store_cache,
             merged_eval=inputs.merged_eval,
             eval_keys=inputs.eval_keys,
+            gene_pred_frames=inputs.gene_pred_frames or None,
+            gene_score_cols=inputs.gene_score_cols or None,
             collector=collector,
         )
     else:
@@ -510,6 +524,21 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--gene_prediction_tables",
+        default=None,
+        help=(
+            "Comma-separated URIs of gene-level (ensg-keyed) prediction "
+            "tables. These tables contain scores already at gene level "
+            "(e.g. LOEUF, PEPPER/OMELET) and are outer-joined onto the "
+            "aggregated gene table after variant-to-gene aggregation but "
+            "before percentile computation, so all scores share the same "
+            "percentile denominator. Only used when --aggregate_genes is "
+            "set; ignored with a warning otherwise. An entry may also be "
+            "a directory path, in which case all files with recognised "
+            "extensions inside it are used."
+        ),
+    )
+    parser.add_argument(
         "--use_cache",
         action="store_true",
         default=False,
@@ -649,6 +678,10 @@ def main() -> None:
         precomputed_evaluation=args.precomputed_evaluation,
         retain_raw_anchor=args.retain_raw_anchor,
         dry_run=args.dry_run,
+        gene_prediction_uris=(
+            parse_uri_list(args.gene_prediction_tables)
+            if args.gene_prediction_tables else None
+        ),
     )
 
 
