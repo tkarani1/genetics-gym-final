@@ -22,19 +22,19 @@ For a given score threshold `t`:
 
 ### Boolean mode
 
-| | score > t | score ≤ t |
+| | score ≥ t | score < t |
 |---|---|---|
-| **eval = True** | TP = count of positive genes above | FN = count of positive genes below |
-| **eval = False** | FP = count of negative genes above | TN = count of negative genes below |
+| **eval = True** | TP = count of positive genes at or above | FN = count of positive genes below |
+| **eval = False** | FP = count of negative genes at or above | TN = count of negative genes below |
 
 Every gene contributes exactly **1** to one cell.
 
 ### `sum_variants` mode
 
-| | score > t | score ≤ t |
+| | score ≥ t | score < t |
 |---|---|---|
-| **case variants** | TP = Σ `n_case` for genes above | FN = Σ `n_case` for genes below |
-| **control variants** | FP = Σ `n_ctrl` for genes above | TN = Σ `n_ctrl` for genes below |
+| **case variants** | TP = Σ `n_case` for genes at or above | FN = Σ `n_case` for genes below |
+| **control variants** | FP = Σ `n_ctrl` for genes at or above | TN = Σ `n_ctrl` for genes below |
 
 A gene with `n_case=50, n_ctrl=200` scoring above threshold contributes **50** to TP and **200** to FP. Cells are variant-weighted.
 

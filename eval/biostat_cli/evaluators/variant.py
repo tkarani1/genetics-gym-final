@@ -18,7 +18,7 @@ class VariantEvaluator(BaseEvaluator):
         is_neg = pl.col(eval_col) == False  # noqa: E712
         exprs: list[pl.Expr] = []
         for i, t in enumerate(thresholds):
-            above = pl.col(score_col) > t
+            above = pl.col(score_col) >= t
             exprs.extend([
                 pl.when(above & is_pos).then(1).otherwise(0).sum().cast(pl.Float64).alias(f"tp_{i}"),
                 pl.when(above & is_neg).then(1).otherwise(0).sum().cast(pl.Float64).alias(f"fp_{i}"),
