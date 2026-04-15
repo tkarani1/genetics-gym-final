@@ -85,6 +85,7 @@ Output paths are derived from `--out-fname`:
 ## Threshold behavior
 
 - Thresholds are percentile-based **fractions in `[0,1]`**
+- A row counts as **above** threshold when `score >= t` (ties at `t` are included).
 - Default thresholds: `0.90,0.95,0.98,0.99`
 - Passing any threshold `> 1.0` exits with error code `22`
 

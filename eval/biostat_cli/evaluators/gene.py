@@ -23,7 +23,7 @@ class GeneEvaluator(BaseEvaluator):
         exprs: list[pl.Expr] = []
         if eval_col == SUM_VARIANTS_SENTINEL:
             for i, t in enumerate(thresholds):
-                above = pl.col(score_col) > t
+                above = pl.col(score_col) >= t
                 exprs.extend([
                     pl.when(above).then(pl.col("n_case")).otherwise(0).sum().cast(pl.Float64).alias(f"tp_{i}"),
                     pl.when(above).then(pl.col("n_ctrl")).otherwise(0).sum().cast(pl.Float64).alias(f"fp_{i}"),
@@ -34,7 +34,7 @@ class GeneEvaluator(BaseEvaluator):
             is_pos = pl.col(eval_col) == True  # noqa: E712
             is_neg = pl.col(eval_col) == False  # noqa: E712
             for i, t in enumerate(thresholds):
-                above = pl.col(score_col) > t
+                above = pl.col(score_col) >= t
                 exprs.extend([
                     pl.when(above & is_pos).then(1).otherwise(0).sum().cast(pl.Float64).alias(f"tp_{i}"),
                     pl.when(above & is_neg).then(1).otherwise(0).sum().cast(pl.Float64).alias(f"fp_{i}"),
