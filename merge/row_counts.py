@@ -6,7 +6,6 @@ writes a markdown report for post-hoc debugging of data coverage issues.
 from __future__ import annotations
 
 import os
-import posixpath
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -14,19 +13,7 @@ from datetime import datetime
 
 import polars as pl
 
-
-_KNOWN_EXTENSIONS = (".tsv.bgz", ".tsv.gz", ".tsv", ".parquet")
-
-
-def _stem(uri: str) -> str:
-    basename = posixpath.basename(uri.rstrip("/"))
-    if not basename:
-        basename = os.path.basename(uri.rstrip(os.sep))
-    lower = basename.lower()
-    for ext in _KNOWN_EXTENSIONS:
-        if lower.endswith(ext):
-            return basename[: len(basename) - len(ext)]
-    return os.path.splitext(basename)[0]
+from .paths import derive_stem as _stem
 
 
 def count_parquet_rows(path: str) -> int:

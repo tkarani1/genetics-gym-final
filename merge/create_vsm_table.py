@@ -9,93 +9,23 @@ for prediction score columns, and writes a single output parquet file.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
-import posixpath
-import re
 import sys
-import tempfile
 import time
-from collections import Counter
-from functools import reduce
 
-import polars as pl
-
-from table_io import ensure_parquet, normalize_chrom_key, write_parquet
-from merge import merge_tables, merge_tables_pairwise, aggregate_by_gene, JOIN_KEYS
-from percentile import add_percentile_columns
-from smooth import add_smoothed_columns
-from apply_filters import apply_filters
-from negate import compute_negations, negate_scores
-from row_counts import RowCountsCollector, count_parquet_rows, count_lazy, write_report
-
-
-_KNOWN_EXTENSIONS = (".tsv.bgz", ".tsv.gz", ".tsv", ".parquet")
-
-
-def _expand_path(entry: str) -> list[str]:
-    """If *entry* is a directory, return all files inside it with a known
-    table extension.  Works for both local paths and GCS URIs (the latter
-    require a trailing ``/`` to signal directory intent)."""
-    if entry.startswith("gs://"):
-        if not entry.endswith("/"):
-            return [entry]
-        import gcsfs
-        fs = gcsfs.GCSFileSystem()
-        blobs = fs.ls(entry, detail=False)
-        found = sorted(
-            f"gs://{b}" for b in blobs
-            if any(b.lower().endswith(ext) for ext in _KNOWN_EXTENSIONS)
-        )
-        if not found:
-            print(
-                f"  WARNING: GCS directory '{entry}' contains no files with "
-                f"recognised extensions {_KNOWN_EXTENSIONS}.",
-                file=sys.stderr,
-            )
-        return found
-
-    if os.path.isdir(entry):
-        found = sorted(
-            os.path.join(entry, name)
-            for name in os.listdir(entry)
-            if any(name.lower().endswith(ext) for ext in _KNOWN_EXTENSIONS)
-        )
-        if not found:
-            print(
-                f"  WARNING: Directory '{entry}' contains no files with "
-                f"recognised extensions {_KNOWN_EXTENSIONS}.",
-                file=sys.stderr,
-            )
-        return found
-
-    return [entry]
-
-
-def _parse_uri_list(raw: str) -> list[str]:
-    entries = [s.strip() for s in raw.split(",") if s.strip()]
-    expanded: list[str] = []
-    for entry in entries:
-        expanded.extend(_expand_path(entry))
-    return expanded
-
-
-def _derive_stem(uri: str) -> str:
-    """Filename without directory or known extensions."""
-    basename = posixpath.basename(uri.rstrip("/"))
-    if not basename:
-        basename = os.path.basename(uri.rstrip(os.sep))
-    lower = basename.lower()
-    for ext in _KNOWN_EXTENSIONS:
-        if lower.endswith(ext):
-            return basename[: len(basename) - len(ext)]
-    return os.path.splitext(basename)[0]
-
-
-def _score_columns(lf: pl.LazyFrame) -> list[str]:
-    """Return Float64 non-key columns in *lf* (the actual numeric scores)."""
-    schema = lf.collect_schema()
-    return [c for c, dtype in schema.items()
-            if c not in JOIN_KEYS and dtype == pl.Float64]
+from .table_io import ensure_parquet, normalize_chrom_key
+from .merge import JOIN_KEYS
+from .apply_filters import apply_filters
+from .row_counts import RowCountsCollector, count_parquet_rows, write_report
+from .paths import CACHE_DIR, parse_uri_list, derive_stem
+from .pipeline import (
+    load_inputs,
+    merge_predictions,
+    apply_gene_aggregation,
+    apply_post_processing,
+    join_and_write,
+)
 
 
 def run_pipeline(
@@ -106,7 +36,7 @@ def run_pipeline(
     percentile_order: str = "post",
     filter_uris: list[str] | None = None,
     keep_raw_scores: bool = False,
-    reference_score: str | None = "AM",
+    reference_score: str | None = "AM_score",
     output_table_fields: list[str] | None = None,
     anchor: str | None = None,
     linker_uri: str | None = None,
@@ -122,13 +52,24 @@ def run_pipeline(
     subtable: str | None = None,
     precomputed_prediction: str | None = None,
     precomputed_evaluation: str | None = None,
+    retain_raw_anchor: bool = False,
+    dry_run: bool = False,
+    gene_prediction_uris: list[str] | None = None,
 ) -> None:
     """
     Core pipeline -- decoupled from CLI for reuse (e.g. future resources.json).
+
+    Orchestrates phased functions from merge.pipeline to load inputs,
+    merge predictions, optionally aggregate to gene level, apply
+    post-processing, and write the final output.
+
+    When *dry_run* is True, loads inputs and resolves schemas/column
+    lists, prints what the output would contain, and returns without
+    materializing or writing anything.
     """
     start = time.perf_counter()
 
-    # --- Validate smooth_order -----------------------------------------------
+    # --- Validate smooth_order -------------------------------------------
     if smooth_order != "none":
         if smooth_reference_dir is None:
             raise ValueError(
@@ -145,6 +86,7 @@ def run_pipeline(
                 "'post' (smoothing operates on percentile-ranked scores)."
             )
 
+    # --- Row-count collector setup ----------------------------------------
     collector: RowCountsCollector | None = None
     if row_counts_output is not None:
         collector = RowCountsCollector()
@@ -154,7 +96,7 @@ def run_pipeline(
         if reference_score is not None:
             collector.record_config("reference_score", reference_score)
         if linker_uri is not None:
-            collector.record_config("linker_table", _derive_stem(linker_uri))
+            collector.record_config("linker_table", derive_stem(linker_uri))
         collector.record_config("aggregate_genes", str(aggregate_genes))
         if aggregate_genes:
             collector.record_config("collapse_genes", str(collapse_genes))
@@ -163,7 +105,13 @@ def run_pipeline(
         if filter_uris:
             collector.record_config("filter_count", str(len(filter_uris)))
 
-    cache_dir = os.path.join(tempfile.gettempdir(), "vsm_table_cache")
+    if gene_prediction_uris and not aggregate_genes:
+        print(
+            "  WARNING: --gene_prediction_tables is ignored when "
+            "--aggregate_genes is not set; gene-level prediction tables "
+            "are only used in the gene aggregation path.",
+            file=sys.stderr,
+        )
 
     if aggregate_genes and percentile_order != "post":
         print(
@@ -190,8 +138,9 @@ def run_pipeline(
                 f"Set --reference_score none to disable negation."
             )
 
-    # --- Fast path: both prediction and eval are precomputed ---------------
+    # --- Fast path: both prediction and eval are precomputed --------------
     if precomputed_prediction is not None and precomputed_evaluation is not None:
+        cache_dir = CACHE_DIR
         eval_keys = ["ensg"] if aggregate_genes else JOIN_KEYS
         pq_eval = ensure_parquet(
             precomputed_evaluation, cache_dir,
@@ -201,6 +150,8 @@ def run_pipeline(
             precomputed_prediction, cache_dir,
             use_cache=use_cache, store_cache=store_cache,
         )
+        import polars as pl
+
         merged_eval = normalize_chrom_key(pl.scan_parquet(pq_eval))
         merged_pred = normalize_chrom_key(pl.scan_parquet(pq_pred))
         if linker_uri:
@@ -226,468 +177,116 @@ def run_pipeline(
         print(f"Done in {elapsed:.1f}s.", file=sys.stderr)
         return
 
-    # --- Load prediction tables -------------------------------------------
-    pred_frames: list[pl.LazyFrame] = []
-    all_score_cols: list[str] = []
+    # === Phased pipeline ==================================================
 
-    for uri in prediction_uris:
-        pq_path = ensure_parquet(uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
-        if collector is not None:
-            collector.record_input("pred", uri, count_parquet_rows(pq_path))
-        lf = normalize_chrom_key(pl.scan_parquet(pq_path))
-        score_cols = _score_columns(lf)
-        if fields_set is not None:
-            score_cols = [c for c in score_cols if c in fields_set]
-        if not score_cols:
-            print(
-                f"  Prediction table {uri}: no matching score columns, skipping.",
-                file=sys.stderr,
-            )
-            continue
-        all_score_cols.extend(score_cols)
-        lf = lf.select(JOIN_KEYS + score_cols)
-        print(
-            f"  Prediction table {uri}: score columns = {score_cols}",
-            file=sys.stderr,
-        )
-        pred_frames.append(lf)
+    inputs = load_inputs(
+        prediction_uris,
+        evaluation_uris,
+        gene_prediction_uris=gene_prediction_uris if aggregate_genes else None,
+        aggregate_genes=aggregate_genes,
+        fields_set=fields_set,
+        precomputed_evaluation=precomputed_evaluation,
+        subtable=subtable,
+        use_cache=use_cache,
+        store_cache=store_cache,
+        collector=collector,
+    )
 
-    if not pred_frames and subtable != "eval":
-        specified = ", ".join(output_table_fields) if output_table_fields else "(none)"
-        raise ValueError(
-            f"None of the --output_table_fields ({specified}) matched any "
-            f"score columns in the prediction tables."
-        )
-
-    # --- Load evaluation tables -------------------------------------------
-    eval_keys = ["ensg"] if aggregate_genes else JOIN_KEYS
-    eval_frames: list[pl.LazyFrame] = []
-
-    for uri in evaluation_uris:
-        pq_path = ensure_parquet(uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
-        if collector is not None:
-            collector.record_input("eval", uri, count_parquet_rows(pq_path))
-        lf = normalize_chrom_key(pl.scan_parquet(pq_path))
-        schema = lf.collect_schema()
-        if aggregate_genes:
-            label_cols = [c for c in schema.names()
-                          if c not in JOIN_KEYS and c != "ensg"]
-            if not label_cols:
-                raise ValueError(
-                    f"Evaluation table {uri} has no non-key label columns."
-                )
-            lf = lf.select(eval_keys + label_cols)
-            print(
-                f"  Evaluation table {uri}: labels = {label_cols}",
-                file=sys.stderr,
-            )
+    # --- Dry-run: print schema summary and exit ---------------------------
+    if dry_run:
+        print("=== DRY RUN ===", file=sys.stderr)
+        print(f"  Prediction score columns: {inputs.all_score_cols}", file=sys.stderr)
+        if inputs.gene_score_cols:
+            print(f"  Gene-level score columns: {inputs.gene_score_cols}", file=sys.stderr)
+        if inputs.merged_eval is not None:
+            eval_schema = inputs.merged_eval.collect_schema()
+            eval_cols = [c for c in eval_schema.names() if c not in inputs.eval_keys]
+            print(f"  Eval label columns: {eval_cols}", file=sys.stderr)
         else:
-            stem = _derive_stem(uri)
-            is_pos_cols = [c for c in schema.names() if "is_pos" in c]
-            if not is_pos_cols:
-                raise ValueError(
-                    f"Evaluation table {uri} has no column containing 'is_pos'."
-                )
-            is_pos_col = "is_pos" if "is_pos" in is_pos_cols else is_pos_cols[0]
-            target_name = f"is_pos_{stem}"
-            lf = lf.select(JOIN_KEYS + [is_pos_col]).rename({is_pos_col: target_name})
-            print(
-                f"  Evaluation table {uri}: {is_pos_col} -> {target_name}",
-                file=sys.stderr,
-            )
-        eval_frames.append(lf)
+            print("  Eval: (none)", file=sys.stderr)
+        print(f"  Join type: {join_type}", file=sys.stderr)
+        print(f"  Percentile order: {percentile_order}", file=sys.stderr)
+        print(f"  Aggregate genes: {aggregate_genes}", file=sys.stderr)
+        print(f"  Output: {output_uri}", file=sys.stderr)
+        return
 
-    # --- Auto-suffix colliding eval label columns -------------------------
-    if aggregate_genes:
-        all_label_names = [
-            c
-            for lf in eval_frames
-            for c in lf.collect_schema().names()
-            if c not in eval_keys
-        ]
-        collisions = {
-            name for name, count in Counter(all_label_names).items() if count > 1
-        }
-        if collisions:
-            print(
-                f"  Renaming colliding label columns: {collisions}",
-                file=sys.stderr,
-            )
-            for i, uri in enumerate(evaluation_uris):
-                stem = _derive_stem(uri)
-                frame_cols = set(eval_frames[i].collect_schema().names())
-                renames = {
-                    col: f"{col}_{stem}"
-                    for col in collisions
-                    if col in frame_cols
-                }
-                if renames:
-                    eval_frames[i] = eval_frames[i].rename(renames)
-
-    # --- Phase 1: Outer-join eval tables ------------------------------------
-    merged_eval: pl.LazyFrame | None = None
-    if eval_frames:
-        print(
-            f"  Merging {len(eval_frames)} eval table(s) (outer join) ...",
-            file=sys.stderr,
-        )
-        if aggregate_genes:
-            def _eval_join(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
-                return left.join(right, on=eval_keys, how="outer", coalesce=True)
-
-            if len(eval_frames) == 1:
-                merged_eval = eval_frames[0]
-            else:
-                merged_eval = reduce(_eval_join, eval_frames)
-        else:
-            merged_eval = merge_tables(eval_frames, join_type="outer")
-
-        if collector is not None:
-            collector.record("eval_merge", "rows", count_lazy(merged_eval))
-
-    if precomputed_evaluation is not None:
-        pq_eval = ensure_parquet(
-            precomputed_evaluation, cache_dir,
-            use_cache=use_cache, store_cache=store_cache,
-        )
-        merged_eval = normalize_chrom_key(pl.scan_parquet(pq_eval))
-
+    # --- Eval-only subtable early exit ------------------------------------
     if subtable == "eval":
-        if merged_eval is None:
+        if inputs.merged_eval is None:
             raise ValueError("No evaluation tables to merge.")
         print(f"  Writing eval sub-table to {output_uri} ...", file=sys.stderr)
-        merged_eval.sink_parquet(output_uri, compression="zstd")
+        inputs.merged_eval.sink_parquet(output_uri, compression="zstd")
         elapsed = time.perf_counter() - start
         print(f"Done in {elapsed:.1f}s.", file=sys.stderr)
         return
 
-    # --- Phase 2: Join pred tables with percentiles -----------------------
-    negate_enabled = reference_score is not None
-
-    if percentile_order == "pre" and (negate_enabled or join_type == "pairwise"):
-        reason = (
-            "score negation (requires merged frame)"
-            if negate_enabled
-            else "pairwise join (restructures columns)"
-        )
-        print(
-            f"  WARNING: --percentile_order 'pre' is incompatible with "
-            f"{reason}; falling back to 'post'.",
-            file=sys.stderr,
-        )
-        percentile_order = "post"
-
-    # --- Pre-merge negation discovery pass --------------------------------
-    if negate_enabled and percentile_order == "pre":
-        if reference_score not in all_score_cols:
-            available = ", ".join(all_score_cols)
-            raise ValueError(
-                f"Reference score column '{reference_score}' not found in "
-                f"prediction tables. Available score columns: {available}"
-            )
-        print(
-            f"  Discovery pass: computing correlations with "
-            f"'{reference_score}' ...",
-            file=sys.stderr,
-        )
-        temp_merged = merge_tables(pred_frames, join_type="inner")
-        cols_to_negate = compute_negations(
-            temp_merged, all_score_cols, reference_score,
-        )
-        if cols_to_negate:
-            print(
-                f"  Negating {len(cols_to_negate)} column(s) on individual "
-                f"frames: {cols_to_negate}",
-                file=sys.stderr,
-            )
-            pred_frames = [
-                negate_scores(
-                    lf,
-                    [c for c in cols_to_negate
-                     if c in lf.collect_schema().names()],
-                )
-                for lf in pred_frames
-            ]
-        else:
-            print("  All scores already aligned; no negation needed.",
-                  file=sys.stderr)
-        negate_enabled = False
-
-    if percentile_order == "pre":
-        print("  Calculating percentiles BEFORE pred merge ...", file=sys.stderr)
-        new_frames = []
-        for lf in pred_frames:
-            score_cols = _score_columns(lf)
-            lf = add_percentile_columns(lf, score_cols)
-            if smooth_order == "pre":
-                pct_cols = [f"{c}_percentile" for c in score_cols]
-                print(
-                    f"  Spatially smoothing {len(pct_cols)} column(s) before "
-                    f"merge (sigma={smooth_sigma} Å) ...",
-                    file=sys.stderr,
-                )
-                lf = add_smoothed_columns(
-                    lf, pct_cols,
-                    reference_dir=smooth_reference_dir,
-                    sigma=smooth_sigma,
-                )
-            new_frames.append(lf)
-        pred_frames = new_frames
-
-    print(
-        f"  Merging {len(pred_frames)} pred table(s) ({join_type} join) ...",
-        file=sys.stderr,
+    # --- Merge predictions ------------------------------------------------
+    pred = merge_predictions(
+        inputs,
+        join_type=join_type,
+        percentile_order=percentile_order,
+        reference_score=reference_score,
+        anchor=anchor,
+        smooth_order=smooth_order,
+        smooth_reference_dir=smooth_reference_dir,
+        smooth_sigma=smooth_sigma,
+        collector=collector,
     )
-    non_anchor_cols: list[str] = []
-    if join_type == "pairwise":
-        if anchor not in all_score_cols:
-            available = ", ".join(all_score_cols)
-            raise ValueError(
-                f"Anchor column '{anchor}' not found in prediction tables. "
-                f"Available score columns: {available}"
-            )
-        non_anchor_cols = [c for c in all_score_cols if c != anchor]
-        merged_pred, all_score_cols = merge_tables_pairwise(
-            pred_frames, all_score_cols, anchor=anchor,
-        )
-    else:
-        merged_pred = merge_tables(pred_frames, join_type=join_type)
 
-    if collector is not None:
-        collector.record("pred_merge", "rows", count_lazy(merged_pred))
-
-    if join_type == "inner" and all_score_cols:
-        print("  Dropping rows with any null score column ...", file=sys.stderr)
-        merged_pred = merged_pred.drop_nulls(subset=all_score_cols)
-        if collector is not None:
-            collector.record("pred_merge", "after_null_drop", count_lazy(merged_pred))
-
-    # --- Negate score columns (if reference provided) ---------------------
-    if negate_enabled:
-        if reference_score not in all_score_cols:
-            available = ", ".join(all_score_cols)
-            raise ValueError(
-                f"Reference score column '{reference_score}' not found in "
-                f"prediction tables. Available score columns: {available}"
-            )
-        print(
-            f"  Computing correlations with reference '{reference_score}' ...",
-            file=sys.stderr,
-        )
-        cols_to_negate = compute_negations(
-            merged_pred, all_score_cols, reference_score,
-        )
-        if cols_to_negate:
-            print(
-                f"  Negating {len(cols_to_negate)} column(s): {cols_to_negate}",
-                file=sys.stderr,
-            )
-            merged_pred = negate_scores(merged_pred, cols_to_negate)
-        else:
-            print("  All scores already aligned; no negation needed.",
-                  file=sys.stderr)
-
-    # --- Linker table: add ensg column to predictions -----------------------
-    linker_lf: pl.LazyFrame | None = None
-    if linker_uri:
-        print(f"  Loading linker table {linker_uri} ...", file=sys.stderr)
-        pq = ensure_parquet(linker_uri, cache_dir, use_cache=use_cache, store_cache=store_cache)
-        linker_lf = (
-            normalize_chrom_key(pl.scan_parquet(pq))
-            .select(JOIN_KEYS + ["ensg"])
-            .unique()
-        )
-
-        if collector is not None:
-            collector.record_input("linker", linker_uri, count_parquet_rows(pq))
-            linker_keys = linker_lf.select(JOIN_KEYS).unique()
-            collector.record("linker", "unique_variants", count_lazy(linker_keys))
-            collector.record(
-                "linker", "unique_ensgs",
-                linker_lf.select("ensg").unique().select(pl.len()).collect().item(),
-            )
-            if merged_eval is not None:
-                eval_not_in_linker = count_lazy(
-                    merged_eval.join(linker_keys, on=eval_keys, how="anti")
-                ) if eval_keys == JOIN_KEYS else count_lazy(
-                    merged_eval.join(
-                        linker_lf.select("ensg").unique(), on=["ensg"], how="anti",
-                    )
-                )
-                collector.record("coverage", "eval_not_in_linker", eval_not_in_linker)
-                eval_total = collector.stages["eval_merge"]["rows"]
-                collector.record("coverage", "eval_in_linker", eval_total - eval_not_in_linker)
-
-        print("  Left-joining linker onto merged predictions ...", file=sys.stderr)
-        merged_pred = merged_pred.join(
-            linker_lf, on=JOIN_KEYS, how="left", coalesce=True,
-        )
-
-        if collector is not None:
-            collector.record("linker", "pred_after_join", count_lazy(merged_pred))
-            pred_no_ensg = merged_pred.filter(pl.col("ensg").is_null()).select(pl.len()).collect().item()
-            collector.record("linker", "pred_no_ensg", pred_no_ensg)
-
-    # --- Gene-level aggregation (if requested) ----------------------------
+    # --- Gene-level aggregation or variant-level post-processing ----------
     if aggregate_genes:
-        pred_schema = merged_pred.collect_schema()
-        if "ensg" not in pred_schema.names():
-            raise ValueError(
-                "Gene-level aggregation requires an 'ensg' column. "
-                "Provide --linker_table or ensure prediction tables "
-                "contain 'ensg'."
-            )
-
-        print("  Aggregating scores by ensg (mean + max) ...", file=sys.stderr)
-        merged_pred, agg_score_cols = aggregate_by_gene(
-            merged_pred, all_score_cols, collapse=collapse_genes,
+        pred = apply_gene_aggregation(
+            pred,
+            linker_uri=linker_uri,
+            anchor=anchor,
+            join_type=join_type,
+            collapse_genes=collapse_genes,
+            use_cache=use_cache,
+            store_cache=store_cache,
+            merged_eval=inputs.merged_eval,
+            eval_keys=inputs.eval_keys,
+            gene_pred_frames=inputs.gene_pred_frames or None,
+            gene_score_cols=inputs.gene_score_cols or None,
+            collector=collector,
         )
-        if collector is not None:
-            collector.record("gene_agg", "rows", count_lazy(merged_pred))
-
-        print(
-            f"  Computing percentiles on {len(agg_score_cols)} aggregated columns ...",
-            file=sys.stderr,
-        )
-        merged_pred = add_percentile_columns(merged_pred, agg_score_cols)
-
-        if join_type == "pairwise" and non_anchor_cols:
-            pct_renames: dict[str, str] = {}
-            for suffix in ("mean", "max"):
-                pct_renames[f"{anchor}_{suffix}_percentile"] = (
-                    f"{anchor}_anchor_{suffix}_percentile"
-                )
-                for c in non_anchor_cols:
-                    pct_renames[f"{c}_{suffix}_percentile"] = (
-                        f"{c}_{suffix}_percentile_with_anchor"
-                    )
-                    pct_renames[f"{anchor}_pairwise_{c}_{suffix}_percentile"] = (
-                        f"{anchor}_anchor_{suffix}_percentile_with_{c}"
-                    )
-            merged_pred = merged_pred.rename(pct_renames)
-
-        drop_cols = agg_score_cols
     else:
-        if percentile_order == "post":
-            print("  Calculating percentiles AFTER pred merge ...", file=sys.stderr)
-            merged_pred = add_percentile_columns(merged_pred, all_score_cols)
-
-        if join_type == "pairwise" and non_anchor_cols and percentile_order != "none":
-            pct_renames = {
-                f"{anchor}_percentile": f"{anchor}_anchor_percentile",
-            }
-            for c in non_anchor_cols:
-                pct_renames[f"{c}_percentile"] = f"{c}_percentile_with_anchor"
-                pct_renames[f"{anchor}_pairwise_{c}_percentile"] = (
-                    f"{anchor}_anchor_percentile_with_{c}"
-                )
-            merged_pred = merged_pred.rename(pct_renames)
-
-        drop_cols = all_score_cols
-
-    # --- Spatial smoothing post-merge (if requested) ----------------------
-    if smooth_order == "post":
-        cols_to_smooth = [f"{c}_percentile" for c in all_score_cols]
-        print(
-            f"  Spatially smoothing {len(cols_to_smooth)} column(s) after "
-            f"merge (sigma={smooth_sigma} Å) ...",
-            file=sys.stderr,
-        )
-        merged_pred = add_smoothed_columns(
-            merged_pred,
-            cols_to_smooth,
-            reference_dir=smooth_reference_dir,
-            sigma=smooth_sigma,
+        pred = apply_post_processing(
+            pred,
+            join_type=join_type,
+            percentile_order=percentile_order,
+            anchor=anchor,
+            aggregate_genes=aggregate_genes,
+            smooth_order=smooth_order,
+            smooth_reference_dir=smooth_reference_dir,
+            smooth_sigma=smooth_sigma,
+            retain_raw_anchor=retain_raw_anchor,
+            linker_uri=linker_uri,
+            use_cache=use_cache,
+            store_cache=store_cache,
+            merged_eval=inputs.merged_eval,
+            eval_keys=inputs.eval_keys,
+            collector=collector,
         )
 
-    # --- Retain raw anchor for future pairwise additions --------------------
-    if join_type == "pairwise" and anchor and not aggregate_genes:
-        raw_anchor_name = f"_raw_anchor_{anchor}"
-        merged_pred = merged_pred.rename({anchor: raw_anchor_name})
-        all_score_cols = [raw_anchor_name if c == anchor else c for c in all_score_cols]
-        drop_cols = [c for c in drop_cols if c != anchor]
-
-    # --- Phase 3: Left-join eval onto pred --------------------------------
-    if subtable == "pred" or merged_eval is None:
-        merged = merged_pred
-    else:
-        if collector is not None:
-            eval_not_in_pred = count_lazy(
-                merged_eval.join(merged_pred, on=eval_keys, how="anti")
-            )
-            eval_total = collector.stages["eval_merge"]["rows"]
-            collector.record("coverage", "eval_not_in_pred", eval_not_in_pred)
-            collector.record("coverage", "eval_in_pred", eval_total - eval_not_in_pred)
-
-        print("  Left-joining eval and pred ...", file=sys.stderr)
-        merged = merged_eval.join(
-            merged_pred, on=eval_keys, how="left", coalesce=True,
-        )
-
-    # --- Per-score null counts (after Phase 3 join) -----------------------
-    if collector is not None:
-        score_cols_to_check = (
-            [f"{c}_percentile" for c in drop_cols]
-            if aggregate_genes
-            else (
-                [f"{c}_percentile" for c in all_score_cols]
-                if percentile_order != "none"
-                else list(all_score_cols)
-            )
-        )
-        present = set(merged.collect_schema().names())
-        score_cols_to_check = [c for c in score_cols_to_check if c in present]
-        if score_cols_to_check:
-            null_counts = (
-                merged.select([
-                    pl.col(c).null_count().alias(c) for c in score_cols_to_check
-                ]).collect().row(0, named=True)
-            )
-            for col, n in null_counts.items():
-                collector.record("per_score_nulls", col, n)
-
-    # --- Drop raw score columns (if requested) -------------------------------
-    has_percentiles = aggregate_genes or percentile_order != "none"
-    if not keep_raw_scores and drop_cols and has_percentiles:
-        print("  Dropping raw score columns ...", file=sys.stderr)
-        merged = merged.drop(drop_cols)
-
-    # --- Apply filter columns (if requested) --------------------------------
-    if filter_uris:
-        print(
-            f"  Applying {len(filter_uris)} filter table(s) ...",
-            file=sys.stderr,
-        )
-        merged = apply_filters(merged, filter_uris, cache_dir, use_cache=use_cache, store_cache=store_cache)
-
-    # --- Percentile thresholds TSV (if requested) ---------------------------
-    if percentile_thresholds:
-        score_cols = drop_cols if aggregate_genes else all_score_cols
-        thresholds_df = merged_pred.select([
-            pl.col(c).quantile(q, interpolation="nearest").alias(f"{c}_p{q}")
-            for c in score_cols
-            for q in percentile_thresholds
-        ]).collect()
-
-        rows: list[dict[str, object]] = []
-        for c in score_cols:
-            row: dict[str, object] = {"score": c}
-            for q in percentile_thresholds:
-                row[f"p{q}"] = thresholds_df[f"{c}_p{q}"][0]
-            rows.append(row)
-        result = pl.DataFrame(rows)
-
-        tsv_path = re.sub(r"\.parquet$", "", output_uri) + ".percentile_thresholds.tsv"
-        result.write_csv(tsv_path, separator="\t")
-        print(f"  Percentile thresholds written to {tsv_path}", file=sys.stderr)
-
-    # --- Write output -----------------------------------------------------
-    print(f"  Writing output to {output_uri} ...", file=sys.stderr)
-    merged.sink_parquet(
+    # --- Final join, filters, and output ----------------------------------
+    result = join_and_write(
+        pred,
+        inputs.merged_eval,
         output_uri,
-        compression="zstd"
+        eval_keys=inputs.eval_keys,
+        subtable=subtable,
+        keep_raw_scores=keep_raw_scores,
+        aggregate_genes=aggregate_genes,
+        percentile_order=percentile_order,
+        join_type=join_type,
+        filter_uris=filter_uris,
+        percentile_thresholds=percentile_thresholds,
+        use_cache=use_cache,
+        store_cache=store_cache,
+        collector=collector,
     )
 
+    # --- Row count report -------------------------------------------------
     if collector is not None and row_counts_output is not None:
         try:
             collector.record("output", "rows", count_parquet_rows(output_uri))
@@ -700,6 +299,12 @@ def run_pipeline(
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="  %(message)s",
+        stream=sys.stderr,
+    )
+
     parser = argparse.ArgumentParser(
         description="Create a consolidated VSM table from prediction and evaluation data.",
     )
@@ -801,12 +406,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--reference_score",
-        default="AM",
+        default="AM_score",
         help=(
             "Reference score column for directional alignment. Scores with "
             "negative Pearson correlation to this column are negated so all "
             "scores point in the same direction. Set to 'none' to disable "
-            "negation (default: AM)."
+            "negation (default: AM_score)."
         ),
     )
     parser.add_argument(
@@ -919,6 +524,21 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--gene_prediction_tables",
+        default=None,
+        help=(
+            "Comma-separated URIs of gene-level (ensg-keyed) prediction "
+            "tables. These tables contain scores already at gene level "
+            "(e.g. LOEUF, PEPPER/OMELET) and are outer-joined onto the "
+            "aggregated gene table after variant-to-gene aggregation but "
+            "before percentile computation, so all scores share the same "
+            "percentile denominator. Only used when --aggregate_genes is "
+            "set; ignored with a warning otherwise. An entry may also be "
+            "a directory path, in which case all files with recognised "
+            "extensions inside it are used."
+        ),
+    )
+    parser.add_argument(
         "--use_cache",
         action="store_true",
         default=False,
@@ -953,6 +573,28 @@ def main() -> None:
             "Comma-separated percentile cutoffs (e.g. 0.85,0.9,0.95,0.995). "
             "Writes a TSV of raw score values at each threshold next to the "
             "output parquet (e.g. output.percentile_thresholds.tsv)."
+        ),
+    )
+    parser.add_argument(
+        "--retain_raw_anchor",
+        action="store_true",
+        default=False,
+        help=(
+            "When --join_type is 'pairwise', retain the original (raw, "
+            "non-percentiled) anchor score column as '_raw_anchor_{name}' "
+            "in the output. This column is required by merge-add-score for "
+            "incremental pairwise score additions. Has no effect when "
+            "--join_type is not 'pairwise'."
+        ),
+    )
+    parser.add_argument(
+        "--dry_run",
+        action="store_true",
+        default=False,
+        help=(
+            "Resolve input schemas and column lists, print what the output "
+            "would contain, then exit without materializing or writing data. "
+            "Useful for validating arguments and previewing the pipeline."
         ),
     )
 
@@ -998,7 +640,7 @@ def main() -> None:
     if args.row_counts is not None:
         rc_path = args.row_counts
         if not rc_path.endswith(".md"):
-            rc_path = os.path.join(rc_path, f"{_derive_stem(args.output)}_counts.md")
+            rc_path = os.path.join(rc_path, f"{derive_stem(args.output)}_counts.md")
         row_counts_output = rc_path
       
     pct_thresholds = None
@@ -1008,12 +650,12 @@ def main() -> None:
         ]
 
     run_pipeline(
-        prediction_uris=_parse_uri_list(args.prediction_tables) if args.prediction_tables else [],
-        evaluation_uris=_parse_uri_list(args.evaluation_tables) if args.evaluation_tables else [],
+        prediction_uris=parse_uri_list(args.prediction_tables) if args.prediction_tables else [],
+        evaluation_uris=parse_uri_list(args.evaluation_tables) if args.evaluation_tables else [],
         output_uri=args.output,
         join_type=args.join_type,
         percentile_order=args.percentile_order,
-        filter_uris=_parse_uri_list(args.filter_tables) if args.filter_tables else None,
+        filter_uris=parse_uri_list(args.filter_tables) if args.filter_tables else None,
         keep_raw_scores=args.keep_raw_scores,
         reference_score=ref,
         output_table_fields=(
@@ -1034,6 +676,12 @@ def main() -> None:
         subtable=args.subtable,
         precomputed_prediction=args.precomputed_prediction,
         precomputed_evaluation=args.precomputed_evaluation,
+        retain_raw_anchor=args.retain_raw_anchor,
+        dry_run=args.dry_run,
+        gene_prediction_uris=(
+            parse_uri_list(args.gene_prediction_tables)
+            if args.gene_prediction_tables else None
+        ),
     )
 
 

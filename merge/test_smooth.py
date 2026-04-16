@@ -21,7 +21,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from smooth import add_smoothed_columns
+from merge.smooth import add_smoothed_columns
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -95,9 +95,9 @@ class TestKernelMath:
             return _mock_ref(lf, uniprot_id)
 
         with (
-            patch("smooth._load_ref_for_chrom", side_effect=fake_ref),
-            patch("smooth._get_distance_matrix_structure", return_value=dist),
-            patch("smooth._get_pae_matrix_structure", return_value=pae),
+            patch("merge.smooth._load_ref_for_chrom", side_effect=fake_ref),
+            patch("merge.smooth._get_distance_matrix_structure", return_value=dist),
+            patch("merge.smooth._get_pae_matrix_structure", return_value=pae),
         ):
             result = add_smoothed_columns(
                 lf.select(["chrom", "pos", "ref", "alt", "score_a", "score_b"]),
@@ -180,9 +180,9 @@ class TestPAEMasking:
             return _mock_ref(lf, uniprot_id)
 
         with (
-            patch("smooth._load_ref_for_chrom", side_effect=fake_ref),
-            patch("smooth._get_distance_matrix_structure", return_value=dist),
-            patch("smooth._get_pae_matrix_structure", return_value=pae),
+            patch("merge.smooth._load_ref_for_chrom", side_effect=fake_ref),
+            patch("merge.smooth._get_distance_matrix_structure", return_value=dist),
+            patch("merge.smooth._get_pae_matrix_structure", return_value=pae),
         ):
             result = add_smoothed_columns(
                 lf.select(["chrom", "pos", "ref", "alt", "score_a", "score_b"]),
@@ -208,9 +208,9 @@ class TestPAEMasking:
             return _mock_ref(lf, uniprot_id)
 
         with (
-            patch("smooth._load_ref_for_chrom", side_effect=fake_ref),
-            patch("smooth._get_distance_matrix_structure", return_value=dist),
-            patch("smooth._get_pae_matrix_structure", return_value=pae),
+            patch("merge.smooth._load_ref_for_chrom", side_effect=fake_ref),
+            patch("merge.smooth._get_distance_matrix_structure", return_value=dist),
+            patch("merge.smooth._get_pae_matrix_structure", return_value=pae),
         ):
             result = add_smoothed_columns(
                 lf.select(["chrom", "pos", "ref", "alt", "score_a", "score_b"]),
@@ -237,9 +237,9 @@ class TestMissingData:
             return _mock_ref(lf, uniprot_id)
 
         with (
-            patch("smooth._load_ref_for_chrom", side_effect=fake_ref),
-            patch("smooth._get_distance_matrix_structure", return_value=dist),
-            patch("smooth._get_pae_matrix_structure", return_value=None),
+            patch("merge.smooth._load_ref_for_chrom", side_effect=fake_ref),
+            patch("merge.smooth._get_distance_matrix_structure", return_value=dist),
+            patch("merge.smooth._get_pae_matrix_structure", return_value=None),
         ):
             result = add_smoothed_columns(
                 lf.select(["chrom", "pos", "ref", "alt", "score_a", "score_b"]),
@@ -260,9 +260,9 @@ class TestMissingData:
             return _mock_ref(lf, uniprot_id)
 
         with (
-            patch("smooth._load_ref_for_chrom", side_effect=fake_ref),
-            patch("smooth._get_distance_matrix_structure", return_value=dist),
-            patch("smooth._get_pae_matrix_structure", return_value=None),
+            patch("merge.smooth._load_ref_for_chrom", side_effect=fake_ref),
+            patch("merge.smooth._get_distance_matrix_structure", return_value=dist),
+            patch("merge.smooth._get_pae_matrix_structure", return_value=None),
         ):
             result = add_smoothed_columns(
                 lf.select(["chrom", "pos", "ref", "alt", "score_a", "score_b"]),
@@ -287,9 +287,9 @@ class TestOutputShape:
 
         input_lf = lf.select(["chrom", "pos", "ref", "alt", "score_a", "score_b"])
         with (
-            patch("smooth._load_ref_for_chrom", side_effect=fake_ref),
-            patch("smooth._get_distance_matrix_structure", return_value=dist),
-            patch("smooth._get_pae_matrix_structure", return_value=None),
+            patch("merge.smooth._load_ref_for_chrom", side_effect=fake_ref),
+            patch("merge.smooth._get_distance_matrix_structure", return_value=dist),
+            patch("merge.smooth._get_pae_matrix_structure", return_value=None),
         ):
             result = add_smoothed_columns(
                 input_lf, SCORE_COLS, reference_dir="/fake",
@@ -316,7 +316,7 @@ class TestOutputShape:
         def fake_ref(h5_path, chrom, pos_filter):
             return None  # no mapping found
 
-        with patch("smooth._load_ref_for_chrom", side_effect=fake_ref):
+        with patch("merge.smooth._load_ref_for_chrom", side_effect=fake_ref):
             result = add_smoothed_columns(
                 lf, SCORE_COLS, reference_dir="/fake",
             ).collect().to_pandas()

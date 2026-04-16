@@ -13,49 +13,14 @@ the reference table: True where the key exists in the filter table, False
 otherwise.
 """
 import argparse
-import os
-import posixpath
 import sys
-import tempfile
 import time
 
 import polars as pl
 
-from table_io import ensure_parquet, normalize_chrom_key, write_parquet
-from merge import JOIN_KEYS
-
-
-_KNOWN_EXTENSIONS = (".tsv.bgz", ".tsv.gz", ".tsv", ".parquet")
-
-
-def derive_filter_name(uri: str) -> str:
-    """
-    Extract a filter column stem from a URI or file path.
-
-    Uses ``{parent_dir}_{filename_stem}`` to avoid collisions when
-    different filter directories contain identically named files
-    (e.g. ``constraint_filters/Q1_low.tsv`` vs ``neff_filters/Q1_low.tsv``).
-    """
-    stripped = uri.rstrip("/").rstrip(os.sep)
-    basename = posixpath.basename(stripped)
-    if not basename:
-        basename = os.path.basename(stripped)
-
-    parent = posixpath.basename(posixpath.dirname(stripped))
-    if not parent:
-        parent = os.path.basename(os.path.dirname(stripped))
-
-    lower = basename.lower()
-    for ext in _KNOWN_EXTENSIONS:
-        if lower.endswith(ext):
-            stem = basename[: len(basename) - len(ext)]
-            break
-    else:
-        stem = os.path.splitext(basename)[0]
-
-    if parent:
-        return f"{parent}_{stem}"
-    return stem
+from .table_io import ensure_parquet, normalize_chrom_key, write_parquet
+from .merge import JOIN_KEYS
+from .paths import CACHE_DIR, derive_filter_name, parse_uri_list
 
 
 def _detect_filter_keys(
@@ -132,53 +97,6 @@ def apply_filters(
     return lf
 
 
-def _expand_path(entry: str) -> list[str]:
-    """If *entry* is a directory, return all files inside it with a known
-    table extension.  Works for both local paths and GCS URIs (the latter
-    require a trailing ``/`` to signal directory intent)."""
-    if entry.startswith("gs://"):
-        if not entry.endswith("/"):
-            return [entry]
-        import gcsfs
-        fs = gcsfs.GCSFileSystem()
-        blobs = fs.ls(entry, detail=False)
-        found = sorted(
-            f"gs://{b}" for b in blobs
-            if any(b.lower().endswith(ext) for ext in _KNOWN_EXTENSIONS)
-        )
-        if not found:
-            print(
-                f"  WARNING: GCS directory '{entry}' contains no files with "
-                f"recognised extensions {_KNOWN_EXTENSIONS}.",
-                file=sys.stderr,
-            )
-        return found
-
-    if os.path.isdir(entry):
-        found = sorted(
-            os.path.join(entry, name)
-            for name in os.listdir(entry)
-            if any(name.lower().endswith(ext) for ext in _KNOWN_EXTENSIONS)
-        )
-        if not found:
-            print(
-                f"  WARNING: Directory '{entry}' contains no files with "
-                f"recognised extensions {_KNOWN_EXTENSIONS}.",
-                file=sys.stderr,
-            )
-        return found
-
-    return [entry]
-
-
-def _parse_uri_list(raw: str) -> list[str]:
-    entries = [s.strip() for s in raw.split(",") if s.strip()]
-    expanded: list[str] = []
-    for entry in entries:
-        expanded.extend(_expand_path(entry))
-    return expanded
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -228,12 +146,10 @@ def main() -> None:
     args = parser.parse_args()
     start = time.perf_counter()
 
-    cache_dir = os.path.join(tempfile.gettempdir(), "vsm_table_cache")
-
-    pq_path = ensure_parquet(args.reference, cache_dir, use_cache=args.use_cache, store_cache=args.store_cache)
+    pq_path = ensure_parquet(args.reference, CACHE_DIR, use_cache=args.use_cache, store_cache=args.store_cache)
     lf = normalize_chrom_key(pl.scan_parquet(pq_path))
 
-    lf = apply_filters(lf, _parse_uri_list(args.filter_tables), cache_dir, use_cache=args.use_cache, store_cache=args.store_cache)
+    lf = apply_filters(lf, parse_uri_list(args.filter_tables), CACHE_DIR, use_cache=args.use_cache, store_cache=args.store_cache)
 
     write_parquet(lf, args.output)
 

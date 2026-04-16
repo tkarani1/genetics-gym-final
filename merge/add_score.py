@@ -13,22 +13,15 @@ behaviour of merge_tables_pairwise in the full pipeline.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
-import tempfile
 import time
 
 import polars as pl
 
-from table_io import ensure_parquet, normalize_chrom_key
-from merge import JOIN_KEYS
-from percentile import add_percentile_columns
-
-
-def _score_columns(lf: pl.LazyFrame) -> list[str]:
-    schema = lf.collect_schema()
-    return [c for c, dtype in schema.items()
-            if c not in JOIN_KEYS and dtype == pl.Float64]
+from .table_io import ensure_parquet, normalize_chrom_key
+from .merge import JOIN_KEYS
+from .percentile import add_percentile_columns
+from .paths import CACHE_DIR, score_columns
 
 
 def main() -> None:
@@ -110,7 +103,7 @@ def main() -> None:
     args = parser.parse_args()
     start = time.perf_counter()
 
-    cache_dir = os.path.join(tempfile.gettempdir(), "vsm_table_cache")
+    cache_dir = CACHE_DIR
 
     print(f"  Loading base table: {args.base}", file=sys.stderr)
     base_lf = normalize_chrom_key(pl.scan_parquet(args.base))
@@ -136,7 +129,7 @@ def main() -> None:
     if args.score_columns:
         score_cols = [c.strip() for c in args.score_columns.split(",") if c.strip()]
     else:
-        score_cols = _score_columns(new_lf)
+        score_cols = score_columns(new_lf)
 
     if not score_cols:
         raise ValueError(
@@ -156,8 +149,9 @@ def main() -> None:
         f"({len(base_lf.collect_schema().names())} cols) ...",
         file=sys.stderr,
     )
+    polars_how = "full" if args.join_type == "outer" else args.join_type
     result = base_lf.join(
-        new_lf, on=JOIN_KEYS, how=args.join_type, coalesce=True,
+        new_lf, on=JOIN_KEYS, how=polars_how, coalesce=True,
     )
 
     # --- Pairwise column creation -----------------------------------------
