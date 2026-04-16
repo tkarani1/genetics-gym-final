@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "genetics-gym-ui"
+version = "0.1.0"
+description = "Session-based exploratory UI for Genetics Gym"
+requires-python = ">=3.10"
+dependencies = [
+    "duckdb>=1.0",
+    "polars>=1.0",
+    "streamlit>=1.30",
+    "plotly>=5.18",
+    "pyarrow>=14.0",
+    "biostat-merge",
+    "biostat-cli",
+]
+
+[project.optional-dependencies]
+gcs = ["duckdb[httpfs]"]
+
+[tool.setuptools.packages.find]
+where = ["."]

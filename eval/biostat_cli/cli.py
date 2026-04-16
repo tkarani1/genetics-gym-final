@@ -737,6 +737,206 @@ def _compute_rows_for_prepared(
     return rows, vsm_comparison_rows
 
 
+def run_from_frame(
+    source: pl.LazyFrame,
+    *,
+    eval_level: str,
+    score_cols: list[str],
+    stat: str = "all",
+    eval_set: list[str] | None = None,
+    filters: dict[str, str] | None = None,
+    thresholds: list[float] | None = None,
+    case_total: float | None = None,
+    ctrl_total: float | None = None,
+    case_total_by_eval: dict[str, float] | None = None,
+    ctrl_total_by_eval: dict[str, float] | None = None,
+    bootstrap_samples: int | None = None,
+    pvalue_method: str = DEFAULT_PVALUE_METHOD,
+    within_gene_percentile: bool = False,
+) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame]:
+    """Run eval on an in-memory LazyFrame without disk I/O.
+
+    This is the programmatic equivalent of ``run(RunArgs(...))`` but accepts
+    the source frame directly instead of reading from a file path via
+    ``resources.json``.
+
+    Parameters
+    ----------
+    source : pl.LazyFrame
+        The merged table to evaluate.
+    eval_level : str
+        ``"variant"`` or ``"gene"``.
+    score_cols : list[str]
+        Score columns to compute statistics for.
+    stat : str
+        Comma-separated stat names or ``"all"``.
+    eval_set : list[str] | None
+        Eval column names (e.g. ``["is_pos_dd"]``).  If *None*, auto-detected
+        from columns matching ``is_pos_*``.
+    filters : dict[str, str] | None
+        Mapping of logical filter name to column name.  A ``"none"`` baseline
+        (no filter) is always included.
+    thresholds : list[float] | None
+        Percentile thresholds.  Defaults to ``DEFAULT_THRESHOLDS``.
+    case_total, ctrl_total : float | None
+        Global rate-ratio denominators.
+    case_total_by_eval, ctrl_total_by_eval : dict[str, float] | None
+        Per-eval rate-ratio denominators.
+    bootstrap_samples : int | None
+        If set (>= 2), compute bootstrap standard errors.
+    pvalue_method : str
+        P-value method for binary stats.
+    within_gene_percentile : bool
+        Transform scores to within-gene percentile rank.
+
+    Returns
+    -------
+    tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame]
+        ``(results_df, eval_filter_timings, vsm_comparison_df)``
+    """
+    if bootstrap_samples is not None and bootstrap_samples < 2:
+        raise ValueError("bootstrap_samples must be >= 2 when enabled.")
+
+    requested_stats = parse_stats(stat)
+    resolved_thresholds = list(thresholds) if thresholds is not None else list(DEFAULT_THRESHOLDS)
+
+    if any(t > 1.0 for t in resolved_thresholds):
+        raise ValueError(
+            f"Invalid threshold(s): {resolved_thresholds}. "
+            "Thresholds are percentile-based fractions in [0, 1]."
+        )
+
+    if within_gene_percentile:
+        if eval_level == "gene":
+            raise ValueError("within_gene_percentile is not compatible with eval_level='gene'.")
+        if WITHIN_GENE_COL not in source.collect_schema().names():
+            raise ValueError(
+                f"within_gene_percentile requires column '{WITHIN_GENE_COL}' "
+                "but it is not present in the source frame."
+            )
+
+    evaluator = _choose_evaluator(eval_level, source)
+
+    if eval_set is not None:
+        eval_cols = list(eval_set)
+    else:
+        schema_names = source.collect_schema().names()
+        eval_cols = [c for c in schema_names if c.startswith("is_pos_")]
+        if not eval_cols:
+            if eval_level == "gene":
+                eval_cols = [SUM_VARIANTS_SENTINEL]
+            else:
+                raise ValueError(
+                    "No eval columns provided and none auto-detected "
+                    "(expected columns matching 'is_pos_*')."
+                )
+
+    filter_pairs: list[tuple[str, str | None]] = [("none", None)]
+    if filters:
+        filter_pairs.extend(filters.items())
+
+    cli_case_totals = case_total_by_eval or {}
+    cli_ctrl_totals = ctrl_total_by_eval or {}
+
+    need_pairwise = bool(requested_stats & PAIRWISE_STATS)
+    pairwise_cols: PairwiseColumns | None = None
+    if need_pairwise:
+        table_columns = source.collect_schema().names()
+        pairwise_cols = detect_pairwise_columns(table_columns)
+        if pairwise_cols is None:
+            raise ValueError(
+                "Pairwise stats requested but pairwise column structure not detected."
+            )
+
+    rows: list[dict[str, Any]] = []
+    all_vsm_comparison_rows: list[dict[str, Any]] = []
+    eval_filter_timings: list[dict[str, Any]] = []
+
+    for eval_col in eval_cols:
+        eval_case_total = cli_case_totals.get(eval_col, case_total)
+        eval_ctrl_total = cli_ctrl_totals.get(eval_col, ctrl_total)
+
+        for filter_name, filter_col in filter_pairs:
+            combo_start = time.perf_counter()
+            prepared = evaluator.prepare_eval_frame(eval_col=eval_col, filter_col=filter_col)
+
+            combo_rows, vsm_cmp_rows = _compute_rows_for_prepared(
+                evaluator=evaluator,
+                prepared=prepared,
+                eval_col=eval_col,
+                filter_name=filter_name,
+                score_cols=score_cols,
+                requested_stats=requested_stats,
+                thresholds=resolved_thresholds,
+                eval_case_total=eval_case_total,
+                eval_ctrl_total=eval_ctrl_total,
+                pairwise_cols=pairwise_cols,
+                within_gene_percentile=within_gene_percentile,
+                pvalue_method=pvalue_method,
+            )
+            all_vsm_comparison_rows.extend(vsm_cmp_rows)
+
+            if bootstrap_samples is not None and combo_rows:
+                base_df = prepared.frame.collect(streaming=True)
+                n_rows = base_df.height
+                bootstrap_values_by_key: dict[tuple[str, str, str, str, str], list[float]] = {}
+                if n_rows > 0:
+                    rng = np.random.default_rng(42)
+                    for _ in range(bootstrap_samples):
+                        sampled_df = base_df.sample(
+                            n=n_rows, with_replacement=True, shuffle=False,
+                            seed=int(rng.integers(0, 2**31 - 1)),
+                        )
+                        sample_prepared = PreparedFrame(
+                            frame=sampled_df.lazy(), total_eval_rows=sampled_df.height,
+                        )
+                        sample_evaluator = _choose_evaluator(eval_level, sample_prepared.frame)
+                        sample_rows, _ = _compute_rows_for_prepared(
+                            evaluator=sample_evaluator,
+                            prepared=sample_prepared,
+                            eval_col=eval_col,
+                            filter_name=filter_name,
+                            score_cols=score_cols,
+                            requested_stats=requested_stats,
+                            thresholds=resolved_thresholds,
+                            eval_case_total=eval_case_total,
+                            eval_ctrl_total=eval_ctrl_total,
+                            pairwise_cols=pairwise_cols,
+                            within_gene_percentile=within_gene_percentile,
+                            pvalue_method=pvalue_method,
+                        )
+                        for row in sample_rows:
+                            key = _row_identity_key(row)
+                            bootstrap_values_by_key.setdefault(key, []).append(float(row["value"]))
+                for row in combo_rows:
+                    row["std_error"] = _compute_std_error(
+                        bootstrap_values_by_key.get(_row_identity_key(row), [])
+                    )
+            else:
+                for row in combo_rows:
+                    row["std_error"] = math.nan
+            rows.extend(combo_rows)
+
+            eval_filter_timings.append({
+                "eval_name": eval_col,
+                "filter_name": filter_name,
+                "elapsed_seconds": time.perf_counter() - combo_start,
+            })
+
+    vsm_comparison_df = (
+        pl.DataFrame(all_vsm_comparison_rows)
+        if all_vsm_comparison_rows
+        else pl.DataFrame(schema={
+            "eval_name": pl.String, "filter_name": pl.String,
+            "vsm_i": pl.String, "vsm_j": pl.String,
+            "threshold": pl.Float64, "odds_ratio": pl.Float64,
+            "p_greater": pl.Float64, "p_less": pl.Float64,
+            "rows_used_i": pl.Int64, "rows_used_j": pl.Int64,
+        })
+    )
+    return pl.DataFrame(rows), eval_filter_timings, vsm_comparison_df
+
+
 def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame, pl.DataFrame]:
     _validate_bootstrap_args(args)
     resources = load_resources(args.resources_json)

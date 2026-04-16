@@ -1,0 +1,144 @@
+{
+  "prediction_tables": [
+    {
+      "path": ".test_data/final_data/score/coalesced_snp_AM_AM_score.parquet",
+      "score_columns": ["AM_score"],
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/final_data/score/coalesced_snp_esm1b_esm1b.parquet",
+      "score_columns": ["esm1b"],
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/final_data/score/coalesced_snp_cadd.parquet",
+      "score_columns": ["cadd_score"],
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/final_data/score/coalesced_snp_polyphen.parquet",
+      "score_columns": ["polyphen_score"],
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/final_data/score/coalesced_snp_gpn_msa.parquet",
+      "score_columns": ["gpn_msa_score"],
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/final_data/score/coalesced_snp_cpt_cpt_score.parquet",
+      "score_columns": ["cpt_score"],
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/final_data/score/coalesced_snp_popeve_popEVE.parquet",
+      "score_columns": ["popEVE_score"],
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/final_data/score/coalesced_snp_popeve_ESM_1v.parquet",
+      "score_columns": ["ESM_1v_score"],
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/final_data/score/coalesced_snp_popeve_EVE.parquet",
+      "score_columns": ["EVE_score"],
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/gg-final-bucket-tables/pred/coalesced_snp_AM.parquet",
+      "score_columns": ["AM_score"],
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/gg-final-bucket-tables/pred/coalesced_snp_mpc.parquet",
+      "score_columns": ["mpc_score"],
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/gg-final-bucket-tables/pred/coalesced_snp_PAI3D.parquet",
+      "score_columns": ["PAI3D_score"],
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/gg-final-bucket-tables/pred/coalesced_snp_misfit.parquet",
+      "score_columns": ["misfit_score"],
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/final_data/score/gene_level/native_gsm_pepper_omelet_scores.tsv",
+      "score_columns": ["PEPPER_score", "OMELET_XGB_score", "OMELET_LLM_score"],
+      "level": "gene"
+    }
+  ],
+
+  "evaluation_tables": [
+    {
+      "path": ".test_data/gg-final-bucket-tables/eval/dd-with-combined-controls-distinct.parquet",
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/gg-final-bucket-tables/eval/schema.parquet",
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/gg-final-bucket-tables/eval/asc.parquet",
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/gg-final-bucket-tables/eval/clinvar.tsv.bgz",
+      "level": "variant"
+    },
+    {
+      "path": ".test_data/final_data/eval/gene_level/dd-lof-vep-case-ctrl-counts-ensg.tsv",
+      "level": "gene"
+    },
+    {
+      "path": ".test_data/final_data/eval/gene_level/schema_ensg_eval.tsv",
+      "level": "gene"
+    },
+    {
+      "path": ".test_data/final_data/eval/gene_level/asc_ensg_eval.tsv",
+      "level": "gene"
+    },
+    {
+      "path": ".test_data/final_data/eval/gene_level/clinvar_ensg_is_case.tsv",
+      "level": "gene"
+    },
+    {
+      "path": ".test_data/final_data/eval/gene_level/epi25_ensg_eval.tsv",
+      "level": "gene"
+    }
+  ],
+
+  "filter_tables": [
+    ".test_data/filter_tables_final/by_gene/constraint_filters/Q1_low.tsv",
+    ".test_data/filter_tables_final/by_gene/constraint_filters/Q2.tsv",
+    ".test_data/filter_tables_final/by_gene/constraint_filters/Q3.tsv",
+    ".test_data/filter_tables_final/by_gene/constraint_filters/Q4_high.tsv",
+    ".test_data/filter_tables_final/by_gene/dominant_recessive_filters/dominant.tsv",
+    ".test_data/filter_tables_final/by_gene/dominant_recessive_filters/recessive.tsv",
+    ".test_data/filter_tables_final/by_gene/kinase_filter/kinases.tsv",
+    ".test_data/filter_tables_final/by_gene/gcpr_filter/gcprs.tsv"
+  ],
+
+  "linker_table": ".test_data/gg-final-bucket-tables/linker/linker_all.parquet",
+
+  "output": ".test_data/final_data/output/session_export.parquet",
+
+  "pipeline": {
+    "join_type": "inner",
+    "percentile_order": "post",
+    "reference_score": "AM_score",
+    "anchor": null,
+    "aggregate_genes": false,
+    "collapse_genes": true,
+    "keep_raw_scores": false,
+    "retain_raw_anchor": false,
+    "percentile_thresholds": [0.85, 0.9, 0.95, 0.995]
+  },
+
+  "smoothing": {
+    "order": "none"
+  }
+}
