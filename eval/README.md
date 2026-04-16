@@ -88,10 +88,9 @@ Bootstrap behavior:
   - If that expression is undefined on raw counts (e.g. $\mathrm{TP}=0$ or $\mathrm{FP}=0$), apply **+0.5 to all four cells** once and recompute $\mathrm{SE}$ and CI from the corrected table (stderr/CI only; `value` remains from raw counts).
   - **95% CI on the `value` (LR+) scale:** $\exp\left(\ln(\mathrm{LR}^{+})\pm 1.96\cdot \mathrm{SE}(\ln \mathrm{LR}^{+})\right)$ using the same cell table as for $\mathrm{SE}$.
   - Main TSV columns `enrichment_ci_lower` / `enrichment_ci_upper` store these bounds; they are set to `NaN` when `--bootstrap` is used (analytic CI not reported alongside bootstrap `std_error`).
-- Analytic Poisson stderr for `rate_ratio` uses:
-  - $\mathrm{SE}[\log(\mathrm{RR})]=\sqrt{1/\mathrm{TP}+1/\mathrm{FP}}$
-  - `std_error = RR * SE(log(RR))`
-  - returns `NaN` when `TP == 0` or `FP == 0` (or RR is undefined)
+- **Rate ratio** `value` is $\mathrm{TP}/\mathrm{case\_total}$ divided by $\mathrm{FP}/\mathrm{ctrl\_total}$ (when totals are set).
+  - Analytic Poisson `std_error` (RR scale) when `--pvalue-method poisson`: $\mathrm{SE}[\log(\mathrm{RR})]=\sqrt{1/\mathrm{TP}+1/\mathrm{FP}}$, `std_error = RR \cdot \mathrm{SE}[\log(\mathrm{RR})]`, `NaN` when `TP == 0` or `FP == 0` (or RR undefined). With `fisher`, that analytic `std_error` is `NaN` but **p-value** is still Fisher.
+  - **95% Wald CI on the RR scale** (same $\mathrm{SE}[\log(\mathrm{RR})]$ as above): $\exp(\log(\mathrm{RR})\pm 1.96\cdot \mathrm{SE}[\log(\mathrm{RR})])$ when $\mathrm{TP}>0$, $\mathrm{FP}>0$, and $\mathrm{RR}>0$; stored as `rate_ratio_ci_lower` / `rate_ratio_ci_upper`. These are cleared to `NaN` under `--bootstrap` (same as enrichment CIs).
 - `auc`: `p_value` is a two-sided test of $H_0:\mathrm{AUC}=0.5$ using the Hanley–McNeil variance for the AUC estimate and a normal approximation (`z=(\mathrm{AUC}-0.5)/\mathrm{SE}`). `auprc` still has `p_value = NaN`.
 - `--bootstrap N` must use `N >= 2` when bootstrap is enabled.
 
@@ -127,6 +126,7 @@ Columns:
 - `value`
 - `std_error`
 - `enrichment_ci_lower`, `enrichment_ci_upper` (95% CI on enrichment ratio; `NaN` except for `stat=enrichment` without `--bootstrap`, and always `NaN` for other stats)
+- `rate_ratio_ci_lower`, `rate_ratio_ci_upper` (95% Wald CI on rate ratio; `NaN` except for `stat=rate_ratio` when analytic CI is defined and without `--bootstrap`, and always `NaN` for other stats)
 - `p_value`
 - `tp`, `fp`, `tn`, `fn`
 - `rows_used`

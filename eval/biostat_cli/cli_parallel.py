@@ -135,6 +135,8 @@ def _append_binary_row(
     *,
     enrichment_ci_lower: float = float("nan"),
     enrichment_ci_upper: float = float("nan"),
+    rate_ratio_ci_lower: float = float("nan"),
+    rate_ratio_ci_upper: float = float("nan"),
 ) -> None:
     rows.append(
         {
@@ -148,6 +150,8 @@ def _append_binary_row(
             "std_error": std_error,
             "enrichment_ci_lower": enrichment_ci_lower,
             "enrichment_ci_upper": enrichment_ci_upper,
+            "rate_ratio_ci_lower": rate_ratio_ci_lower,
+            "rate_ratio_ci_upper": rate_ratio_ci_upper,
             "tp": tp,
             "fp": fp,
             "tn": tn,
@@ -412,6 +416,8 @@ def _run_eval_filter_combo(
                     total_eval_rows=prepared.total_eval_rows,
                     enrichment_ci_lower=float("nan"),
                     enrichment_ci_upper=float("nan"),
+                    rate_ratio_ci_lower=float("nan"),
+                    rate_ratio_ci_upper=float("nan"),
                 )
             if "auprc" in requested_stats:
                 out = StatFactory.auprc(labels, scores)
@@ -433,6 +439,8 @@ def _run_eval_filter_combo(
                     total_eval_rows=prepared.total_eval_rows,
                     enrichment_ci_lower=float("nan"),
                     enrichment_ci_upper=float("nan"),
+                    rate_ratio_ci_lower=float("nan"),
+                    rate_ratio_ci_upper=float("nan"),
                 )
 
         if (need_cont or need_vsm_comparison) and thresholds:
@@ -462,6 +470,8 @@ def _run_eval_filter_combo(
                         total_eval_rows=prepared.total_eval_rows,
                         enrichment_ci_lower=out.enrichment_ci_lower,
                         enrichment_ci_upper=out.enrichment_ci_upper,
+                        rate_ratio_ci_lower=float("nan"),
+                        rate_ratio_ci_upper=float("nan"),
                     )
             if "rate_ratio" in requested_stats:
                 rr_results = StatFactory.rate_ratio_batch(
@@ -487,6 +497,8 @@ def _run_eval_filter_combo(
                         total_eval_rows=prepared.total_eval_rows,
                         enrichment_ci_lower=float("nan"),
                         enrichment_ci_upper=float("nan"),
+                        rate_ratio_ci_lower=out.rate_ratio_ci_lower,
+                        rate_ratio_ci_upper=out.rate_ratio_ci_upper,
                     )
 
     vsm_cmp_rows: list[dict[str, Any]] = []

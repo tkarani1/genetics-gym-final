@@ -34,6 +34,8 @@ class StatOutput:
     std_error: float = math.nan
     enrichment_ci_lower: float = math.nan
     enrichment_ci_upper: float = math.nan
+    rate_ratio_ci_lower: float = math.nan
+    rate_ratio_ci_upper: float = math.nan
 
 
 @dataclass(frozen=True)
@@ -93,7 +95,14 @@ class StatFactory:
         pvalue_method: str = DEFAULT_PVALUE_METHOD,
     ) -> StatOutput:
         out = rate_ratio(cont, case_total=case_total, ctrl_total=ctrl_total, pvalue_method=pvalue_method)
-        return StatOutput(stat="rate_ratio", value=out.value, p_value=out.p_value, std_error=out.std_error)
+        return StatOutput(
+            stat="rate_ratio",
+            value=out.value,
+            p_value=out.p_value,
+            std_error=out.std_error,
+            rate_ratio_ci_lower=out.rate_ratio_ci_lower,
+            rate_ratio_ci_upper=out.rate_ratio_ci_upper,
+        )
 
     @staticmethod
     def enrichment_batch(
@@ -118,7 +127,17 @@ class StatFactory:
         pvalue_method: str = DEFAULT_PVALUE_METHOD,
     ) -> list[StatOutput]:
         results = rate_ratio_batch(conts, case_total=case_total, ctrl_total=ctrl_total, pvalue_method=pvalue_method)
-        return [StatOutput(stat="rate_ratio", value=r.value, p_value=r.p_value, std_error=r.std_error) for r in results]
+        return [
+            StatOutput(
+                stat="rate_ratio",
+                value=r.value,
+                p_value=r.p_value,
+                std_error=r.std_error,
+                rate_ratio_ci_lower=r.rate_ratio_ci_lower,
+                rate_ratio_ci_upper=r.rate_ratio_ci_upper,
+            )
+            for r in results
+        ]
 
     @staticmethod
     def pairwise_enrichment(

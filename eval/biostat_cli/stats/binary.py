@@ -13,8 +13,8 @@ DEFAULT_PVALUE_METHOD = "fisher"
 VSM_COMPARISON_METHODS = ("fisher", "poisson")
 DEFAULT_VSM_COMPARISON_METHOD = "fisher"
 
-# 95% CI on enrichment (LR+) scale: exp(ln(LR+) ± z * SE(ln LR+)).
-_ENRICHMENT_LOG_LR_CI_Z = 1.96
+# 95% Wald intervals: exp(log(metric) ± z * SE(log metric)).
+_LOG_RATIO_CI_Z = 1.96
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,8 @@ class BinaryStatResult:
     std_error: float = math.nan
     enrichment_ci_lower: float = math.nan
     enrichment_ci_upper: float = math.nan
+    rate_ratio_ci_lower: float = math.nan
+    rate_ratio_ci_upper: float = math.nan
 
 
 @dataclass(frozen=True)
@@ -69,7 +71,7 @@ def _enrichment_stderr_ci_from_cells(tp: float, fp: float, fn: float, tn: float)
     if lr <= 0 or math.isnan(lr):
         return math.nan, math.nan, math.nan
     log_lr = math.log(lr)
-    margin = _ENRICHMENT_LOG_LR_CI_Z * se
+    margin = _LOG_RATIO_CI_Z * se
     return se, math.exp(log_lr - margin), math.exp(log_lr + margin)
 
 
@@ -130,7 +132,14 @@ def rate_ratio(
     ctrl_rate = _safe_div(cont.fp, ctrl_total)
     value = _safe_div(case_rate, ctrl_rate) if not math.isnan(case_rate) and not math.isnan(ctrl_rate) else math.nan
     std_error = rate_ratio_poisson_std_error(cont, value) if pvalue_method == "poisson" else math.nan
-    return BinaryStatResult(value=value, p_value=compute_p_value(cont, pvalue_method), std_error=std_error)
+    rr_lo, rr_hi = rate_ratio_log_rr_ci_bounds(cont, value)
+    return BinaryStatResult(
+        value=value,
+        p_value=compute_p_value(cont, pvalue_method),
+        std_error=std_error,
+        rate_ratio_ci_lower=rr_lo,
+        rate_ratio_ci_upper=rr_hi,
+    )
 
 
 def rate_ratio_poisson_std_error(cont: Contingency, value: float) -> float:
@@ -145,6 +154,18 @@ def rate_ratio_poisson_std_error(cont: Contingency, value: float) -> float:
         return math.nan
     se_log_rr = math.sqrt((1.0 / tp) + (1.0 / fp))
     return value * se_log_rr
+
+
+def rate_ratio_log_rr_ci_bounds(cont: Contingency, value: float) -> tuple[float, float]:
+    """95% Wald CI on the RR scale: exp(log(RR) ± z * SE(log RR)) with SE = sqrt(1/TP + 1/FP)."""
+    tp = float(cont.tp)
+    fp = float(cont.fp)
+    if tp <= 0 or fp <= 0 or math.isnan(value) or value <= 0:
+        return math.nan, math.nan
+    se_log_rr = math.sqrt((1.0 / tp) + (1.0 / fp))
+    log_rr = math.log(value)
+    margin = _LOG_RATIO_CI_Z * se_log_rr
+    return math.exp(log_rr - margin), math.exp(log_rr + margin)
 
 
 def poisson_p_value(cont: Contingency) -> float:
@@ -279,9 +300,20 @@ def rate_ratio_batch(
         )
         se_log_rr = np.sqrt((1.0 / tp) + (1.0 / fp))
         poisson_std_errors = np.where((tp > 0) & (fp > 0) & ~np.isnan(values), values * se_log_rr, np.nan)
+        valid_ci = (tp > 0) & (fp > 0) & ~np.isnan(values) & (values > 0)
+        log_rr = np.log(np.where(valid_ci, values, np.nan))
+        margin = _LOG_RATIO_CI_Z * se_log_rr
+        rr_ci_lo = np.exp(np.where(valid_ci, log_rr - margin, np.nan))
+        rr_ci_hi = np.exp(np.where(valid_ci, log_rr + margin, np.nan))
     std_errors = poisson_std_errors if pvalue_method == "poisson" else np.full(len(conts), np.nan)
     return [
-        BinaryStatResult(value=float(values[i]), p_value=float(p_values[i]), std_error=float(std_errors[i]))
+        BinaryStatResult(
+            value=float(values[i]),
+            p_value=float(p_values[i]),
+            std_error=float(std_errors[i]),
+            rate_ratio_ci_lower=float(rr_ci_lo[i]),
+            rate_ratio_ci_upper=float(rr_ci_hi[i]),
+        )
         for i in range(len(conts))
     ]
 

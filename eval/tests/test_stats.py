@@ -82,6 +82,8 @@ def test_binary_stats():
     assert not math.isnan(rr.value)
     assert not math.isnan(rr.p_value)
     assert math.isnan(rr.std_error)
+    assert not math.isnan(rr.rate_ratio_ci_lower)
+    assert not math.isnan(rr.rate_ratio_ci_upper)
 
 
 def test_fisher_p_value():
@@ -147,6 +149,20 @@ def test_rate_ratio_poisson_analytic_std_error():
     rr = rate_ratio(cont, case_total=200, ctrl_total=300, pvalue_method="poisson")
     expected_se = rr.value * math.sqrt((1.0 / cont.tp) + (1.0 / cont.fp))
     assert rr.std_error == pytest.approx(expected_se)
+    se_log = math.sqrt((1.0 / cont.tp) + (1.0 / cont.fp))
+    margin = 1.96 * se_log
+    assert rr.rate_ratio_ci_lower == pytest.approx(math.exp(math.log(rr.value) - margin))
+    assert rr.rate_ratio_ci_upper == pytest.approx(math.exp(math.log(rr.value) + margin))
+
+
+def test_rate_ratio_ci_matches_for_fisher_and_poisson_pvalue_method():
+    cont = Contingency(tp=10, fp=5, tn=20, fn=15)
+    rr_f = rate_ratio(cont, case_total=200, ctrl_total=300, pvalue_method="fisher")
+    rr_p = rate_ratio(cont, case_total=200, ctrl_total=300, pvalue_method="poisson")
+    assert math.isnan(rr_f.std_error)
+    assert not math.isnan(rr_p.std_error)
+    assert rr_f.rate_ratio_ci_lower == pytest.approx(rr_p.rate_ratio_ci_lower)
+    assert rr_f.rate_ratio_ci_upper == pytest.approx(rr_p.rate_ratio_ci_upper)
 
 
 def test_rate_ratio_poisson_analytic_std_error_zero_counts_nan():
@@ -543,6 +559,9 @@ def test_rate_ratio_poisson_std_error_without_bootstrap(tmp_path):
     row = out_df.to_dicts()[0]
     expected = row["value"] * math.sqrt((1.0 / row["tp"]) + (1.0 / row["fp"]))
     assert row["std_error"] == pytest.approx(expected)
+    se_log = math.sqrt((1.0 / row["tp"]) + (1.0 / row["fp"]))
+    assert row["rate_ratio_ci_lower"] == pytest.approx(row["value"] * math.exp(-1.96 * se_log))
+    assert row["rate_ratio_ci_upper"] == pytest.approx(row["value"] * math.exp(1.96 * se_log))
 
 
 def test_rate_ratio_bootstrap_overrides_analytic_poisson_std_error(tmp_path):
@@ -592,6 +611,8 @@ def test_rate_ratio_bootstrap_overrides_analytic_poisson_std_error(tmp_path):
     base_df, _, _, _, _ = run(base_args)
     base_row = base_df.to_dicts()[0]
     assert not math.isnan(base_row["std_error"])
+    assert not math.isnan(base_row["rate_ratio_ci_lower"])
+    assert not math.isnan(base_row["rate_ratio_ci_upper"])
 
     boot_args = RunArgs(
         resources_json=str(resources_path),
@@ -614,6 +635,8 @@ def test_rate_ratio_bootstrap_overrides_analytic_poisson_std_error(tmp_path):
     boot_row = boot_df.to_dicts()[0]
     assert not math.isnan(boot_row["std_error"])
     assert boot_row["std_error"] != pytest.approx(base_row["std_error"], rel=0, abs=1e-12)
+    assert math.isnan(boot_row["rate_ratio_ci_lower"])
+    assert math.isnan(boot_row["rate_ratio_ci_upper"])
 
 
 def test_apply_within_gene_percentile():

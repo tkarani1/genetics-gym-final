@@ -19,7 +19,7 @@ def _finite_num(x: object) -> bool:
     return x is not None and isinstance(x, (int, float)) and not (isinstance(x, float) and math.isnan(x))
 
 
-def _enrichment_yerr_arrays(
+def _value_ci_yerr_arrays(
     values: list[float],
     lows: list[float] | None,
     highs: list[float] | None,
@@ -113,15 +113,26 @@ def render_mode_figure(
 
         x = list(range(len(methods)))
         cols = set(sub.columns)
+        use_ci = False
         if panel_stat == "enrichment" and "enrichment_ci_lower" in cols and "enrichment_ci_upper" in cols:
-            ylo, yhi = _enrichment_yerr_arrays(
+            ylo, yhi = _value_ci_yerr_arrays(
                 values,
                 sub["enrichment_ci_lower"].to_list(),
                 sub["enrichment_ci_upper"].to_list(),
                 stderrs,
             )
             yerr = [ylo, yhi]
-        else:
+            use_ci = True
+        elif panel_stat == "rate_ratio" and "rate_ratio_ci_lower" in cols and "rate_ratio_ci_upper" in cols:
+            ylo, yhi = _value_ci_yerr_arrays(
+                values,
+                sub["rate_ratio_ci_lower"].to_list(),
+                sub["rate_ratio_ci_upper"].to_list(),
+                stderrs,
+            )
+            yerr = [ylo, yhi]
+            use_ci = True
+        if not use_ci:
             yerr = [float("nan") if (v is None or (isinstance(v, float) and math.isnan(v))) else v for v in stderrs]
 
         ax.errorbar(x, values, yerr=yerr, fmt="o", capsize=3)

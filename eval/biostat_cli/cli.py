@@ -184,6 +184,8 @@ def _append_binary_row(
     *,
     enrichment_ci_lower: float = float("nan"),
     enrichment_ci_upper: float = float("nan"),
+    rate_ratio_ci_lower: float = float("nan"),
+    rate_ratio_ci_upper: float = float("nan"),
 ) -> None:
     rows.append(
         {
@@ -197,6 +199,8 @@ def _append_binary_row(
             "std_error": std_error,
             "enrichment_ci_lower": enrichment_ci_lower,
             "enrichment_ci_upper": enrichment_ci_upper,
+            "rate_ratio_ci_lower": rate_ratio_ci_lower,
+            "rate_ratio_ci_upper": rate_ratio_ci_upper,
             "tp": tp,
             "fp": fp,
             "tn": tn,
@@ -231,6 +235,8 @@ def _append_pairwise_row(
             "adjustment_ratio": out.adjustment_ratio,
             "enrichment_ci_lower": float("nan"),
             "enrichment_ci_upper": float("nan"),
+            "rate_ratio_ci_lower": float("nan"),
+            "rate_ratio_ci_upper": float("nan"),
             "tp": cont.tp,
             "fp": cont.fp,
             "tn": cont.tn,
@@ -463,6 +469,8 @@ def _compute_continuous_stats(
             total_eval_rows=total_eval_rows,
             enrichment_ci_lower=float("nan"),
             enrichment_ci_upper=float("nan"),
+            rate_ratio_ci_lower=float("nan"),
+            rate_ratio_ci_upper=float("nan"),
         )
 
 
@@ -508,6 +516,8 @@ def _compute_binary_stats(
                 total_eval_rows=total_eval_rows,
                 enrichment_ci_lower=out.enrichment_ci_lower,
                 enrichment_ci_upper=out.enrichment_ci_upper,
+                rate_ratio_ci_lower=float("nan"),
+                rate_ratio_ci_upper=float("nan"),
             )
 
     if "rate_ratio" in requested_stats:
@@ -533,6 +543,8 @@ def _compute_binary_stats(
                 total_eval_rows=total_eval_rows,
                 enrichment_ci_lower=float("nan"),
                 enrichment_ci_upper=float("nan"),
+                rate_ratio_ci_lower=out.rate_ratio_ci_lower,
+                rate_ratio_ci_upper=out.rate_ratio_ci_upper,
             )
 
     return conts
@@ -560,6 +572,8 @@ def _append_gene_avg_row(
             "std_error": out.std_error,
             "enrichment_ci_lower": float("nan"),
             "enrichment_ci_upper": float("nan"),
+            "rate_ratio_ci_lower": float("nan"),
+            "rate_ratio_ci_upper": float("nan"),
             "tp": float("nan"),
             "fp": float("nan"),
             "tn": float("nan"),
@@ -1071,6 +1085,9 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                     if row.get("stat") == "enrichment":
                         row["enrichment_ci_lower"] = float("nan")
                         row["enrichment_ci_upper"] = float("nan")
+                    if row.get("stat") == "rate_ratio":
+                        row["rate_ratio_ci_lower"] = float("nan")
+                        row["rate_ratio_ci_upper"] = float("nan")
             else:
                 for row in combo_rows:
                     row["std_error"] = float(row.get("std_error", math.nan))
