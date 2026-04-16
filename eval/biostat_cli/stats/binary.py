@@ -13,12 +13,17 @@ DEFAULT_PVALUE_METHOD = "fisher"
 VSM_COMPARISON_METHODS = ("fisher", "poisson")
 DEFAULT_VSM_COMPARISON_METHOD = "fisher"
 
+# 95% CI on enrichment (LR+) scale: exp(ln(LR+) ± z * SE(ln LR+)).
+_ENRICHMENT_LOG_LR_CI_Z = 1.96
+
 
 @dataclass(frozen=True)
 class BinaryStatResult:
     value: float
     p_value: float
     std_error: float = math.nan
+    enrichment_ci_lower: float = math.nan
+    enrichment_ci_upper: float = math.nan
 
 
 @dataclass(frozen=True)
@@ -37,6 +42,47 @@ def _safe_div(num: float, den: float) -> float:
     return num / den
 
 
+def _enrichment_stderr_ci_from_cells(tp: float, fp: float, fn: float, tn: float) -> tuple[float, float, float]:
+    """SE(ln LR+) and 95% CI bounds on LR+ scale for one 2×2 table.
+
+    LR+ = (TP/(TP+FN)) / (FP/(FP+TN));
+    SE(ln LR+) = sqrt((1/TP - 1/(TP+FN)) + (1/FP - 1/(FP+TN))).
+    Returns (nan, nan, nan) if undefined.
+    """
+    pos_d = tp + fn
+    neg_d = fp + tn
+    if tp <= 0 or fp <= 0 or pos_d <= 0 or neg_d <= 0:
+        return math.nan, math.nan, math.nan
+    term_pos = (1.0 / tp) - (1.0 / pos_d)
+    term_neg = (1.0 / fp) - (1.0 / neg_d)
+    if term_pos < 0 or term_neg < 0:
+        return math.nan, math.nan, math.nan
+    rad = term_pos + term_neg
+    if rad < 0:
+        return math.nan, math.nan, math.nan
+    se = math.sqrt(rad)
+    case_r = tp / pos_d
+    ctrl_r = fp / neg_d
+    if ctrl_r <= 0:
+        return math.nan, math.nan, math.nan
+    lr = case_r / ctrl_r
+    if lr <= 0 or math.isnan(lr):
+        return math.nan, math.nan, math.nan
+    log_lr = math.log(lr)
+    margin = _ENRICHMENT_LOG_LR_CI_Z * se
+    return se, math.exp(log_lr - margin), math.exp(log_lr + margin)
+
+
+def enrichment_log_lr_stderr_ci(cont: Contingency) -> tuple[float, float, float]:
+    """Analytic SE(ln LR+) and 95% CI on LR+; raw cells first, else +0.5 to all four cells."""
+    se, lo, hi = _enrichment_stderr_ci_from_cells(cont.tp, cont.fp, cont.fn, cont.tn)
+    if not math.isnan(se):
+        return se, lo, hi
+    return _enrichment_stderr_ci_from_cells(
+        cont.tp + 0.5, cont.fp + 0.5, cont.fn + 0.5, cont.tn + 0.5,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Single-contingency helpers (kept for backward compatibility)
 # ---------------------------------------------------------------------------
@@ -45,8 +91,14 @@ def enrichment(cont: Contingency, pvalue_method: str = DEFAULT_PVALUE_METHOD) ->
     case_rate = _safe_div(cont.tp, cont.tp + cont.fn)
     ctrl_rate = _safe_div(cont.fp, cont.fp + cont.tn)
     value = _safe_div(case_rate, ctrl_rate) if not math.isnan(case_rate) and not math.isnan(ctrl_rate) else math.nan
-    std_error = enrichment_fisher_std_error(cont) if pvalue_method == "fisher" else math.nan
-    return BinaryStatResult(value=value, p_value=compute_p_value(cont, pvalue_method), std_error=std_error)
+    se, ci_lo, ci_hi = enrichment_log_lr_stderr_ci(cont)
+    return BinaryStatResult(
+        value=value,
+        p_value=compute_p_value(cont, pvalue_method),
+        std_error=se,
+        enrichment_ci_lower=ci_lo,
+        enrichment_ci_upper=ci_hi,
+    )
 
 
 def enrichment_fisher_std_error(cont: Contingency) -> float:
@@ -191,14 +243,15 @@ def enrichment_batch(
             case_rate / ctrl_rate,
         )
     p_values = compute_p_values_batch(conts, pvalue_method)
-    std_errors = (
-        np.array([enrichment_fisher_std_error(c) for c in conts])
-        if pvalue_method == "fisher"
-        else np.full(len(conts), np.nan)
-    )
     return [
-        BinaryStatResult(value=float(values[i]), p_value=float(p_values[i]), std_error=float(std_errors[i]))
-        for i in range(len(conts))
+        BinaryStatResult(
+            value=float(values[i]),
+            p_value=float(p_values[i]),
+            std_error=se,
+            enrichment_ci_lower=lo,
+            enrichment_ci_upper=hi,
+        )
+        for i, (se, lo, hi) in enumerate(enrichment_log_lr_stderr_ci(c) for c in conts)
     ]
 
 

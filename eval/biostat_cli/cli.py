@@ -12,6 +12,7 @@ import numpy as np
 import polars as pl
 
 from biostat_cli.config import (
+    GENE_AVG_STATS,
     PAIRWISE_STATS,
     PairwiseColumns,
     detect_pairwise_columns,
@@ -28,13 +29,15 @@ from biostat_cli.stats.binary import (
     PVALUE_METHODS,
     VSM_COMPARISON_METHODS,
 )
-from biostat_cli.stats.continuous import compute_auc, compute_auprc
+from biostat_cli.stats.continuous import compute_auc, compute_auprc, delong_two_auc_p_value
 from biostat_cli.utils import WITHIN_GENE_COL, missing_category_sort_expr, normalize_chromosome_sort_expr
 from biostat_cli.evaluators.base import BaseEvaluator, Contingency, PreparedFrame
 from biostat_cli.evaluators.gene import GeneEvaluator, SUM_VARIANTS_SENTINEL
 from biostat_cli.evaluators.variant import VariantEvaluator
 from biostat_cli.io import scan_table, write_json, write_tsv
-from biostat_cli.stats.factory import PairwiseStatOutput, StatFactory
+from biostat_cli.stats.binary import _compute_enrichment_value, _compute_rate_ratio_value
+from biostat_cli.stats.continuous import compute_auc as _raw_auc, compute_auprc as _raw_auprc
+from biostat_cli.stats.factory import GeneAvgStatOutput, PairwiseStatOutput, StatFactory
 
 ERROR_INVALID_THRESHOLD = 22
 
@@ -58,6 +61,8 @@ class RunArgs:
     within_gene_percentile: bool = False
     pvalue_method: str = DEFAULT_PVALUE_METHOD
     vsm_comparison_method: str = DEFAULT_VSM_COMPARISON_METHOD
+    gene_col: str = "ensg"
+    write_gene_variant_coverage: bool = False
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -107,6 +112,17 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=list(VSM_COMPARISON_METHODS),
         default=DEFAULT_VSM_COMPARISON_METHOD,
         help="VSM pairwise comparison method for vsm_comparison output (default: fisher)",
+    )
+    parser.add_argument(
+        "--gene-col",
+        default="ensg",
+        help="Gene identifier column for gene-averaged stats (default: ensg)",
+    )
+    parser.add_argument(
+        "--write-gene-variant-coverage",
+        action="store_true",
+        default=False,
+        help="Write per-gene variant coverage report as a separate TSV",
     )
     parser.add_argument("--out-fname", required=True)
     parser.add_argument("--write-missing", choices=["none", "all", "any"], default="none")
@@ -165,6 +181,9 @@ def _append_binary_row(
     fn: float,
     rows_used: int,
     total_eval_rows: int,
+    *,
+    enrichment_ci_lower: float = float("nan"),
+    enrichment_ci_upper: float = float("nan"),
 ) -> None:
     rows.append(
         {
@@ -176,6 +195,8 @@ def _append_binary_row(
             "value": value,
             "p_value": p_value,
             "std_error": std_error,
+            "enrichment_ci_lower": enrichment_ci_lower,
+            "enrichment_ci_upper": enrichment_ci_upper,
             "tp": tp,
             "fp": fp,
             "tn": tn,
@@ -208,6 +229,8 @@ def _append_pairwise_row(
             "p_value": out.p_value,
             "anchor_value": out.anchor_value,
             "adjustment_ratio": out.adjustment_ratio,
+            "enrichment_ci_lower": float("nan"),
+            "enrichment_ci_upper": float("nan"),
             "tp": cont.tp,
             "fp": cont.fp,
             "tn": cont.tn,
@@ -278,6 +301,7 @@ def _resolve_output_paths(out_fname: str) -> dict[str, str]:
         "log": f"{prefix}_log.json",
         "missing_tsv": f"{prefix}_missing.tsv",
         "vsm_comparison_tsv": f"{prefix}_vsm_comparison.tsv",
+        "gene_variant_coverage_tsv": f"{prefix}_gene_variant_coverage.tsv",
     }
 
 
@@ -437,6 +461,8 @@ def _compute_continuous_stats(
             fn=float("nan"),
             rows_used=score_frame.rows_used,
             total_eval_rows=total_eval_rows,
+            enrichment_ci_lower=float("nan"),
+            enrichment_ci_upper=float("nan"),
         )
 
 
@@ -473,13 +499,15 @@ def _compute_binary_stats(
                 stat_name=out.stat,
                 value=out.value,
                 p_value=out.p_value,
-            std_error=out.std_error,
+                std_error=out.std_error,
                 tp=cont.tp,
                 fp=cont.fp,
                 tn=cont.tn,
                 fn=cont.fn,
                 rows_used=score_frame.rows_used,
                 total_eval_rows=total_eval_rows,
+                enrichment_ci_lower=out.enrichment_ci_lower,
+                enrichment_ci_upper=out.enrichment_ci_upper,
             )
 
     if "rate_ratio" in requested_stats:
@@ -503,9 +531,111 @@ def _compute_binary_stats(
                 fn=cont.fn,
                 rows_used=score_frame.rows_used,
                 total_eval_rows=total_eval_rows,
+                enrichment_ci_lower=float("nan"),
+                enrichment_ci_upper=float("nan"),
             )
 
     return conts
+
+
+def _append_gene_avg_row(
+    rows: list[dict[str, Any]],
+    eval_name: str,
+    filter_name: str,
+    score_name: str,
+    threshold: float,
+    out: GeneAvgStatOutput,
+    rows_used: int,
+    total_eval_rows: int,
+) -> None:
+    rows.append(
+        {
+            "eval_name": eval_name,
+            "filter_name": filter_name,
+            "score_name": score_name,
+            "threshold": threshold,
+            "stat": out.stat,
+            "value": out.value,
+            "p_value": out.p_value,
+            "std_error": out.std_error,
+            "enrichment_ci_lower": float("nan"),
+            "enrichment_ci_upper": float("nan"),
+            "tp": float("nan"),
+            "fp": float("nan"),
+            "tn": float("nan"),
+            "fn": float("nan"),
+            "rows_used": rows_used,
+            "total_eval_rows": total_eval_rows,
+            "n_genes_used": out.n_genes_used,
+            "n_genes_excluded": out.n_genes_excluded,
+        }
+    )
+
+
+def _compute_gene_averaged_stats(
+    rows: list[dict[str, Any]],
+    evaluator: BaseEvaluator,
+    score_frame: Any,
+    eval_col: str,
+    filter_name: str,
+    score_col: str,
+    requested_stats: set[str],
+    thresholds: list[float],
+    eval_case_total: float | None,
+    eval_ctrl_total: float | None,
+    total_eval_rows: int,
+    gene_col: str,
+) -> None:
+    need_binary_ga = "gene_avg_enrichment" in requested_stats or "gene_avg_rate_ratio" in requested_stats
+    need_continuous_ga = "gene_avg_auc" in requested_stats or "gene_avg_auprc" in requested_stats
+
+    if need_binary_ga and thresholds:
+        gene_conts = evaluator.contingency_by_gene_batch(
+            score_frame, eval_col=eval_col, score_col=score_col,
+            thresholds=thresholds, gene_col=gene_col,
+        )
+        n_total_genes = len(gene_conts)
+        for t_idx, threshold in enumerate(thresholds):
+            if "gene_avg_enrichment" in requested_stats:
+                per_gene = [_compute_enrichment_value(conts[t_idx]) for conts in gene_conts.values()]
+                out = StatFactory.gene_avg_enrichment_stat(per_gene, n_total_genes)
+                _append_gene_avg_row(
+                    rows, eval_col, filter_name, score_col, threshold, out,
+                    score_frame.rows_used, total_eval_rows,
+                )
+            if "gene_avg_rate_ratio" in requested_stats:
+                if eval_case_total is not None and eval_ctrl_total is not None:
+                    per_gene = [
+                        _compute_rate_ratio_value(conts[t_idx], eval_case_total, eval_ctrl_total)
+                        for conts in gene_conts.values()
+                    ]
+                else:
+                    per_gene = [math.nan for _ in gene_conts]
+                out = StatFactory.gene_avg_rate_ratio_stat(per_gene, n_total_genes)
+                _append_gene_avg_row(
+                    rows, eval_col, filter_name, score_col, threshold, out,
+                    score_frame.rows_used, total_eval_rows,
+                )
+
+    if need_continuous_ga:
+        gene_ls = evaluator.labels_and_scores_by_gene(
+            score_frame, eval_col=eval_col, score_col=score_col, gene_col=gene_col,
+        )
+        n_total_genes = len(gene_ls)
+        if "gene_avg_auc" in requested_stats:
+            per_gene = [_raw_auc(labels, scores) for labels, scores in gene_ls.values()]
+            out = StatFactory.gene_avg_auc_stat(per_gene, n_total_genes)
+            _append_gene_avg_row(
+                rows, eval_col, filter_name, score_col, float("nan"), out,
+                score_frame.rows_used, total_eval_rows,
+            )
+        if "gene_avg_auprc" in requested_stats:
+            per_gene = [_raw_auprc(labels, scores) for labels, scores in gene_ls.values()]
+            out = StatFactory.gene_avg_auprc_stat(per_gene, n_total_genes)
+            _append_gene_avg_row(
+                rows, eval_col, filter_name, score_col, float("nan"), out,
+                score_frame.rows_used, total_eval_rows,
+            )
 
 
 _NAN_CONTINGENCY = Contingency(tp=float("nan"), fp=float("nan"), tn=float("nan"), fn=float("nan"))
@@ -603,15 +733,28 @@ def _compute_pairwise_stats(
             vsm_pw_ls = evaluator.labels_and_scores(vsm_pw_sf, eval_col=eval_col, score_col=vsm_col)
             anchor_pw_ls = evaluator.labels_and_scores(anchor_pw_sf, eval_col=eval_col, score_col=anchor_pairwise_col)
 
-            for stat_name, anchor_full_val, metric_fn, factory_fn in [
-                ("pairwise_auc", anchor_full_auc, compute_auc, StatFactory.pairwise_auc),
-                ("pairwise_auprc", anchor_full_auprc, compute_auprc, StatFactory.pairwise_auprc),
-            ]:
-                if stat_name not in requested_stats:
-                    continue
-                vsm_pw_val = metric_fn(vsm_pw_ls[0], vsm_pw_ls[1]) if vsm_pw_ls else math.nan
-                anchor_pw_val = metric_fn(anchor_pw_ls[0], anchor_pw_ls[1]) if anchor_pw_ls else math.nan
-                out = factory_fn(anchor_full_val, anchor_pw_val, vsm_pw_val)
+            if "pairwise_auc" in requested_stats:
+                vsm_pw_val = compute_auc(vsm_pw_ls[0], vsm_pw_ls[1]) if vsm_pw_ls else math.nan
+                anchor_pw_val = compute_auc(anchor_pw_ls[0], anchor_pw_ls[1]) if anchor_pw_ls else math.nan
+                p_delong = math.nan
+                if anchor_pw_ls and vsm_pw_ls:
+                    la, sa = anchor_pw_ls
+                    lb, sb = vsm_pw_ls
+                    if len(la) == len(lb) and all(int(a) == int(b) for a, b in zip(la, lb)):
+                        p_delong = delong_two_auc_p_value(la, sa, sb)
+                out = StatFactory.pairwise_auc(
+                    anchor_full_auc, anchor_pw_val, vsm_pw_val, delong_p_value=p_delong,
+                )
+                _append_pairwise_row(
+                    rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=vsm_base,
+                    threshold=float("nan"), out=out, cont=_NAN_CONTINGENCY,
+                    rows_used=pairwise_rows_used, total_eval_rows=prepared.total_eval_rows,
+                )
+
+            if "pairwise_auprc" in requested_stats:
+                vsm_pw_val = compute_auprc(vsm_pw_ls[0], vsm_pw_ls[1]) if vsm_pw_ls else math.nan
+                anchor_pw_val = compute_auprc(anchor_pw_ls[0], anchor_pw_ls[1]) if anchor_pw_ls else math.nan
+                out = StatFactory.pairwise_auprc(anchor_full_auprc, anchor_pw_val, vsm_pw_val)
                 _append_pairwise_row(
                     rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=vsm_base,
                     threshold=float("nan"), out=out, cont=_NAN_CONTINGENCY,
@@ -709,11 +852,13 @@ def _compute_rows_for_prepared(
     within_gene_percentile: bool = False,
     pvalue_method: str = DEFAULT_PVALUE_METHOD,
     vsm_comparison_method: str = DEFAULT_VSM_COMPARISON_METHOD,
+    gene_col: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
     Compute all requested statistics for a prepared frame.
 
-    Delegates to specialized functions for continuous, binary, and pairwise stats.
+    Delegates to specialized functions for continuous, binary, pairwise, and
+    gene-averaged stats.
 
     Returns (rows, vsm_comparison_rows).
     """
@@ -722,6 +867,7 @@ def _compute_rows_for_prepared(
     need_binary = "enrichment" in requested_stats or "rate_ratio" in requested_stats
     need_pairwise = bool(requested_stats & PAIRWISE_STATS)
     need_vsm_comparison = "vsm_comparison" in requested_stats
+    need_gene_avg = bool(requested_stats & GENE_AVG_STATS)
 
     conts_by_score: dict[str, tuple[list[Contingency], int]] = {}
 
@@ -745,6 +891,13 @@ def _compute_rows_for_prepared(
             if need_vsm_comparison:
                 conts_by_score[score_col] = (conts, score_frame.rows_used)
 
+        if need_gene_avg and gene_col is not None:
+            _compute_gene_averaged_stats(
+                rows, evaluator, score_frame, eval_col, filter_name, score_col,
+                requested_stats, thresholds, eval_case_total, eval_ctrl_total,
+                prepared.total_eval_rows, gene_col=gene_col,
+            )
+
     if need_pairwise and pairwise_cols is not None:
         _compute_pairwise_stats(
             rows, evaluator, prepared, eval_col, filter_name,
@@ -762,7 +915,7 @@ def _compute_rows_for_prepared(
     return rows, vsm_comparison_rows
 
 
-def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame, pl.DataFrame]:
+def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     _validate_bootstrap_args(args)
     resources = load_resources(args.resources_json)
     table = get_table_config(resources, args.table_name)
@@ -787,6 +940,20 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     case_totals_by_eval = parse_eval_totals(args.case_total_by_eval, "--case-total-by-eval")
     ctrl_totals_by_eval = parse_eval_totals(args.ctrl_total_by_eval, "--ctrl-total-by-eval")
 
+    # Validate gene-averaged stats
+    need_gene_avg = bool(requested_stats & GENE_AVG_STATS)
+    gene_col: str | None = None
+    if need_gene_avg:
+        if args.eval_level == "gene":
+            raise ValueError("Gene-averaged stats are not compatible with --eval-level gene.")
+        if args.gene_col not in source.collect_schema().names():
+            raise ValueError(
+                f"Gene-averaged stats require column '{args.gene_col}' "
+                f"but it is not present in {table.path}. "
+                f"Use --gene-col to specify the gene identifier column."
+            )
+        gene_col = args.gene_col
+
     # Detect pairwise columns if pairwise stats are requested
     need_pairwise = bool(requested_stats & PAIRWISE_STATS)
     pairwise_cols: PairwiseColumns | None = None
@@ -804,6 +971,7 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     all_vsm_comparison_rows: list[dict[str, Any]] = []
     eval_filter_timings: list[dict[str, Any]] = []
     missing_rows: list[dict[str, Any]] = []
+    coverage_rows: list[dict[str, Any]] = []
 
     for eval_col in eval_cols:
         eval_case_total, eval_ctrl_total = _resolve_eval_totals(
@@ -828,6 +996,28 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                         mode=args.write_missing,
                     )
                 )
+            if args.write_gene_variant_coverage and gene_col is not None:
+                for sc in table.score_cols:
+                    cov = (
+                        prepared.frame
+                        .group_by(gene_col)
+                        .agg([
+                            pl.col(sc).is_not_null().sum().cast(pl.Int64).alias("n_variants_used"),
+                            pl.col(sc).is_null().sum().cast(pl.Int64).alias("n_variants_excluded"),
+                            pl.len().cast(pl.Int64).alias("n_variants_total"),
+                        ])
+                        .collect(streaming=True)
+                        .with_columns([
+                            pl.lit(eval_col).alias("eval_name"),
+                            pl.lit(filter_name).alias("filter_name"),
+                            pl.lit(sc).alias("score_name"),
+                        ])
+                        .rename({gene_col: "gene"})
+                        .select(["eval_name", "filter_name", "score_name", "gene",
+                                 "n_variants_used", "n_variants_excluded", "n_variants_total"])
+                    )
+                    coverage_rows.extend(cov.to_dicts())
+
             combo_rows, vsm_cmp_rows = _compute_rows_for_prepared(
                 evaluator=evaluator,
                 prepared=prepared,
@@ -842,6 +1032,7 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                 within_gene_percentile=args.within_gene_percentile,
                 pvalue_method=args.pvalue_method,
                 vsm_comparison_method=args.vsm_comparison_method,
+                gene_col=gene_col,
             )
             all_vsm_comparison_rows.extend(vsm_cmp_rows)
 
@@ -870,12 +1061,16 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                             within_gene_percentile=args.within_gene_percentile,
                             pvalue_method=args.pvalue_method,
                             vsm_comparison_method=args.vsm_comparison_method,
+                            gene_col=gene_col,
                         )
                         for row in sample_rows:
                             key = _row_identity_key(row)
                             bootstrap_values_by_key.setdefault(key, []).append(float(row["value"]))
                 for row in combo_rows:
                     row["std_error"] = _compute_std_error(bootstrap_values_by_key.get(_row_identity_key(row), []))
+                    if row.get("stat") == "enrichment":
+                        row["enrichment_ci_lower"] = float("nan")
+                        row["enrichment_ci_upper"] = float("nan")
             else:
                 for row in combo_rows:
                     row["std_error"] = float(row.get("std_error", math.nan))
@@ -920,7 +1115,18 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
             "rows_used_j": pl.Int64,
         }
     )
-    return pl.DataFrame(rows), eval_filter_timings, missing_df, vsm_comparison_df
+    coverage_df = pl.DataFrame(coverage_rows) if coverage_rows else pl.DataFrame(
+        schema={
+            "eval_name": pl.String,
+            "filter_name": pl.String,
+            "score_name": pl.String,
+            "gene": pl.String,
+            "n_variants_used": pl.Int64,
+            "n_variants_excluded": pl.Int64,
+            "n_variants_total": pl.Int64,
+        }
+    )
+    return pl.DataFrame(rows), eval_filter_timings, missing_df, vsm_comparison_df, coverage_df
 
 
 def main() -> None:
@@ -944,16 +1150,20 @@ def main() -> None:
         write_missing=ns.write_missing,
         pvalue_method=ns.pvalue_method,
         vsm_comparison_method=ns.vsm_comparison_method,
+        gene_col=ns.gene_col,
+        write_gene_variant_coverage=ns.write_gene_variant_coverage,
     )
     try:
         output_paths = _resolve_output_paths(args.out_fname)
         start = time.perf_counter()
-        out, eval_filter_timings, missing_df, vsm_comparison_df = run(args)
+        out, eval_filter_timings, missing_df, vsm_comparison_df, coverage_df = run(args)
         write_tsv(out, output_paths["tsv"])
         if args.write_missing != "none":
             write_tsv(missing_df, output_paths["missing_tsv"])
         if vsm_comparison_df.height > 0:
             write_tsv(vsm_comparison_df, output_paths["vsm_comparison_tsv"])
+        if coverage_df.height > 0:
+            write_tsv(coverage_df, output_paths["gene_variant_coverage_tsv"])
         elapsed_seconds = time.perf_counter() - start
         write_json(
             {

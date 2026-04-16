@@ -17,6 +17,13 @@ from biostat_cli.stats.binary import (
     vsm_comparison,
 )
 from biostat_cli.stats.continuous import compute_auc, compute_auc_p_value, compute_auprc, pairwise_continuous_adjust
+from biostat_cli.stats.gene_averaged import (
+    GeneAvgResult,
+    gene_avg_auc,
+    gene_avg_auprc,
+    gene_avg_enrichment,
+    gene_avg_rate_ratio,
+)
 
 
 @dataclass(frozen=True)
@@ -25,6 +32,8 @@ class StatOutput:
     value: float
     p_value: float
     std_error: float = math.nan
+    enrichment_ci_lower: float = math.nan
+    enrichment_ci_upper: float = math.nan
 
 
 @dataclass(frozen=True)
@@ -36,6 +45,16 @@ class PairwiseStatOutput:
     p_value: float
     anchor_value: float
     adjustment_ratio: float
+
+
+@dataclass(frozen=True)
+class GeneAvgStatOutput:
+    stat: str
+    value: float
+    p_value: float
+    std_error: float
+    n_genes_used: int
+    n_genes_excluded: int
 
 
 class StatFactory:
@@ -59,7 +78,14 @@ class StatFactory:
     @staticmethod
     def enrichment(cont: Contingency, pvalue_method: str = DEFAULT_PVALUE_METHOD) -> StatOutput:
         out = enrichment(cont, pvalue_method=pvalue_method)
-        return StatOutput(stat="enrichment", value=out.value, p_value=out.p_value, std_error=out.std_error)
+        return StatOutput(
+            stat="enrichment",
+            value=out.value,
+            p_value=out.p_value,
+            std_error=out.std_error,
+            enrichment_ci_lower=out.enrichment_ci_lower,
+            enrichment_ci_upper=out.enrichment_ci_upper,
+        )
 
     @staticmethod
     def rate_ratio(
@@ -74,7 +100,17 @@ class StatFactory:
         conts: list[Contingency], pvalue_method: str = DEFAULT_PVALUE_METHOD,
     ) -> list[StatOutput]:
         results = enrichment_batch(conts, pvalue_method=pvalue_method)
-        return [StatOutput(stat="enrichment", value=r.value, p_value=r.p_value, std_error=r.std_error) for r in results]
+        return [
+            StatOutput(
+                stat="enrichment",
+                value=r.value,
+                p_value=r.p_value,
+                std_error=r.std_error,
+                enrichment_ci_lower=r.enrichment_ci_lower,
+                enrichment_ci_upper=r.enrichment_ci_upper,
+            )
+            for r in results
+        ]
 
     @staticmethod
     def rate_ratio_batch(
@@ -128,12 +164,14 @@ class StatFactory:
         anchor_full_auc: float,
         anchor_pairwise_auc: float,
         vsm_pairwise_auc: float,
+        *,
+        delong_p_value: float = math.nan,
     ) -> PairwiseStatOutput:
         out = pairwise_continuous_adjust(anchor_full_auc, anchor_pairwise_auc, vsm_pairwise_auc)
         return PairwiseStatOutput(
             stat="pairwise_auc",
             value=out.value,
-            p_value=math.nan,
+            p_value=delong_p_value,
             anchor_value=out.anchor_value,
             adjustment_ratio=out.adjustment_ratio,
         )
@@ -145,6 +183,38 @@ class StatFactory:
         method: str = DEFAULT_VSM_COMPARISON_METHOD,
     ) -> VsmComparisonResult:
         return vsm_comparison(cont_a, cont_b, method=method)
+
+    @staticmethod
+    def gene_avg_enrichment_stat(per_gene_values: list[float], n_total_genes: int) -> GeneAvgStatOutput:
+        r = gene_avg_enrichment(per_gene_values, n_total_genes)
+        return GeneAvgStatOutput(
+            stat="gene_avg_enrichment", value=r.value, p_value=r.p_value,
+            std_error=r.std_error, n_genes_used=r.n_genes_used, n_genes_excluded=r.n_genes_excluded,
+        )
+
+    @staticmethod
+    def gene_avg_rate_ratio_stat(per_gene_values: list[float], n_total_genes: int) -> GeneAvgStatOutput:
+        r = gene_avg_rate_ratio(per_gene_values, n_total_genes)
+        return GeneAvgStatOutput(
+            stat="gene_avg_rate_ratio", value=r.value, p_value=r.p_value,
+            std_error=r.std_error, n_genes_used=r.n_genes_used, n_genes_excluded=r.n_genes_excluded,
+        )
+
+    @staticmethod
+    def gene_avg_auc_stat(per_gene_values: list[float], n_total_genes: int) -> GeneAvgStatOutput:
+        r = gene_avg_auc(per_gene_values, n_total_genes)
+        return GeneAvgStatOutput(
+            stat="gene_avg_auc", value=r.value, p_value=r.p_value,
+            std_error=r.std_error, n_genes_used=r.n_genes_used, n_genes_excluded=r.n_genes_excluded,
+        )
+
+    @staticmethod
+    def gene_avg_auprc_stat(per_gene_values: list[float], n_total_genes: int) -> GeneAvgStatOutput:
+        r = gene_avg_auprc(per_gene_values, n_total_genes)
+        return GeneAvgStatOutput(
+            stat="gene_avg_auprc", value=r.value, p_value=r.p_value,
+            std_error=r.std_error, n_genes_used=r.n_genes_used, n_genes_excluded=r.n_genes_excluded,
+        )
 
     @staticmethod
     def pairwise_auprc(

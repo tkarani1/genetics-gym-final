@@ -132,6 +132,9 @@ def _append_binary_row(
     fn: float,
     rows_used: int,
     total_eval_rows: int,
+    *,
+    enrichment_ci_lower: float = float("nan"),
+    enrichment_ci_upper: float = float("nan"),
 ) -> None:
     rows.append(
         {
@@ -143,6 +146,8 @@ def _append_binary_row(
             "value": value,
             "p_value": p_value,
             "std_error": std_error,
+            "enrichment_ci_lower": enrichment_ci_lower,
+            "enrichment_ci_upper": enrichment_ci_upper,
             "tp": tp,
             "fp": fp,
             "tn": tn,
@@ -405,6 +410,8 @@ def _run_eval_filter_combo(
                     fn=float("nan"),
                     rows_used=score_frame.rows_used,
                     total_eval_rows=prepared.total_eval_rows,
+                    enrichment_ci_lower=float("nan"),
+                    enrichment_ci_upper=float("nan"),
                 )
             if "auprc" in requested_stats:
                 out = StatFactory.auprc(labels, scores)
@@ -424,6 +431,8 @@ def _run_eval_filter_combo(
                     fn=float("nan"),
                     rows_used=score_frame.rows_used,
                     total_eval_rows=prepared.total_eval_rows,
+                    enrichment_ci_lower=float("nan"),
+                    enrichment_ci_upper=float("nan"),
                 )
 
         if (need_cont or need_vsm_comparison) and thresholds:
@@ -451,6 +460,8 @@ def _run_eval_filter_combo(
                         fn=cont.fn,
                         rows_used=score_frame.rows_used,
                         total_eval_rows=prepared.total_eval_rows,
+                        enrichment_ci_lower=out.enrichment_ci_lower,
+                        enrichment_ci_upper=out.enrichment_ci_upper,
                     )
             if "rate_ratio" in requested_stats:
                 rr_results = StatFactory.rate_ratio_batch(
@@ -474,6 +485,8 @@ def _run_eval_filter_combo(
                         fn=cont.fn,
                         rows_used=score_frame.rows_used,
                         total_eval_rows=prepared.total_eval_rows,
+                        enrichment_ci_lower=float("nan"),
+                        enrichment_ci_upper=float("nan"),
                     )
 
     vsm_cmp_rows: list[dict[str, Any]] = []
@@ -490,7 +503,7 @@ def _run_eval_filter_combo(
     return combo_rows, timing, combo_missing_rows, vsm_cmp_rows
 
 
-def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame, pl.DataFrame]:
+def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     resources = load_resources(args.resources_json)
     table = get_table_config(resources, args.table_name)
     thresholds = parse_thresholds(args.thresholds)
@@ -609,7 +622,18 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
             "rows_used_j": pl.Int64,
         }
     )
-    return pl.DataFrame(rows), timings, missing_df, vsm_comparison_df
+    empty_coverage_df = pl.DataFrame(
+        schema={
+            "eval_name": pl.String,
+            "filter_name": pl.String,
+            "score_name": pl.String,
+            "gene": pl.String,
+            "n_variants_used": pl.Int64,
+            "n_variants_excluded": pl.Int64,
+            "n_variants_total": pl.Int64,
+        }
+    )
+    return pl.DataFrame(rows), timings, missing_df, vsm_comparison_df, empty_coverage_df
 
 
 def main() -> None:
@@ -634,7 +658,7 @@ def main() -> None:
     try:
         output_paths = _resolve_output_paths(args.out_fname)
         start = time.perf_counter()
-        out, eval_filter_timings, missing_df, vsm_comparison_df = run(args)
+        out, eval_filter_timings, missing_df, vsm_comparison_df, _ = run(args)
         write_tsv(out, output_paths["tsv"])
         if args.write_missing != "none":
             write_tsv(missing_df, output_paths["missing_tsv"])
