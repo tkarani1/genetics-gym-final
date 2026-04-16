@@ -13,3 +13,6 @@ merge/tp53_am_smoothing.pse
 *.parquet
 local_vsm_outputs/
 
+# Editor/IDE configs with machine-specific paths
+pyrightconfig.json
+

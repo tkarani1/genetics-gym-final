@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "biostat-merge"
+version = "0.1.0"
+description = "Merge pipeline for creating consolidated VSM tables"
+requires-python = ">=3.10"
+dependencies = [
+    "polars",
+    "gcsfs",
+    "fsspec",
+]
+
+[project.optional-dependencies]
+smooth = [
+    "h5py",
+    "hdf5plugin",
+    "numpy",
+    "pandas",
+    "scipy",
+    "biopython",
+]
+
+[project.scripts]
+merge-vsm = "merge.create_vsm_table:main"
+merge-add-score = "merge.add_score:main"
+merge-apply-filters = "merge.apply_filters:main"
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["merge*"]
+exclude = ["merge.ui*"]
