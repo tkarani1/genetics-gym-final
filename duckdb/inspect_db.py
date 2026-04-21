@@ -33,7 +33,8 @@ def _print_sample(con: duckdb.DuckDBPyConnection, quoted: str,
 
 def _print_score_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
                      table_name: str, source_column: str, source_path: str,
-                     deduped: bool, fmt, sample_rows: int | None) -> None:
+                     analysis_level: str, deduped: bool, fmt,
+                     sample_rows: int | None) -> None:
     if table_name not in existing_tables:
         print(f"{table_name:<25} {'MISSING TABLE':}")
         return
@@ -53,7 +54,7 @@ def _print_score_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
     total, scored, nulls, unique_keys, mn, mx, mean, median = stats
     dedup_flag = "yes" if deduped else "no"
     print(
-        f"{table_name:<25} {source_column:<25} {dedup_flag:>8} {total:>12,} "
+        f"{table_name:<25} {source_column:<25} {analysis_level:>8} {dedup_flag:>8} {total:>12,} "
         f"{scored:>12,} {nulls:>12,} {unique_keys:>12,} "
         f"{fmt(mn)} {fmt(mx)} {fmt(mean)} {fmt(median)}"
     )
@@ -65,7 +66,8 @@ def _print_score_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
 
 def _print_eval_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
                     table_name: str, source_column: str, source_path: str,
-                    deduped: bool, sample_rows: int | None) -> None:
+                    analysis_level: str, deduped: bool,
+                    sample_rows: int | None) -> None:
     if table_name not in existing_tables:
         print(f"{table_name:<25} {'MISSING TABLE':}")
         return
@@ -82,7 +84,7 @@ def _print_eval_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
     total, positives, negatives, nulls, unique_keys = stats
     dedup_flag = "yes" if deduped else "no"
     print(
-        f"{table_name:<25} {source_column:<25} {dedup_flag:>8} {total:>12,} "
+        f"{table_name:<25} {source_column:<25} {analysis_level:>8} {dedup_flag:>8} {total:>12,} "
         f"{positives:>12,} {negatives:>12,} {nulls:>12,} "
         f"{unique_keys:>12,}"
     )
@@ -94,7 +96,7 @@ def _print_eval_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
 
 def _print_merged_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
                       table_name: str, source_column: str, source_path: str,
-                      sample_rows: int | None) -> None:
+                      analysis_level: str, sample_rows: int | None) -> None:
     if table_name not in existing_tables:
         print(f"{table_name:<25} {'MISSING TABLE':}")
         return
@@ -109,7 +111,7 @@ def _print_merged_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
     key_names = {"chrom", "pos", "ref", "alt", "ensg", "key"}
     data_cols = [c for c in columns if c not in key_names]
     print(
-        f"{table_name:<25} {source_path:<15} {row_count:>12,} "
+        f"{table_name:<25} {source_path:<15} {analysis_level:>8} {row_count:>12,} "
         f"{len(columns):>8} {len(data_cols):>12}"
     )
     print(f"  sources: {source_column}")
@@ -144,7 +146,8 @@ def inspect_db(db_path: str, sample_rows: int | None = None) -> None:
             return
 
         rows = con.execute(
-            "SELECT source_column, source_path, table_name, table_type, deduped "
+            "SELECT source_column, source_path, table_name, table_type, "
+            "analysis_level, deduped "
             "FROM metadata ORDER BY table_type, table_name"
         ).fetchall()
 
@@ -161,36 +164,36 @@ def inspect_db(db_path: str, sample_rows: int | None = None) -> None:
 
         if score_rows:
             print("SCORE TABLES")
-            print(f"{'Table':<25} {'Column':<25} {'Deduped':>8} {'Rows':>12} "
+            print(f"{'Table':<25} {'Column':<25} {'Key':>8} {'Deduped':>8} {'Rows':>12} "
                   f"{'Scored':>12} {'Nulls':>12} {'Unique Keys':>12} "
                   f"{'Min':>12} {'Max':>12} {'Mean':>12} {'Median':>12}")
-            print("-" * 170)
-            for source_column, source_path, table_name, _, deduped in score_rows:
+            print("-" * 182)
+            for source_column, source_path, table_name, _, analysis_level, deduped in score_rows:
                 _print_score_row(con, existing_tables, table_name,
-                                 source_column, source_path, deduped, fmt,
-                                 sample_rows)
+                                 source_column, source_path, analysis_level,
+                                 deduped, fmt, sample_rows)
             print()
 
         if eval_rows:
             print("EVAL TABLES")
-            print(f"{'Table':<25} {'Column':<25} {'Deduped':>8} {'Rows':>12} "
+            print(f"{'Table':<25} {'Column':<25} {'Key':>8} {'Deduped':>8} {'Rows':>12} "
                   f"{'Positive':>12} {'Negative':>12} {'Nulls':>12} "
                   f"{'Unique Keys':>12}")
-            print("-" * 132)
-            for source_column, source_path, table_name, _, deduped in eval_rows:
+            print("-" * 144)
+            for source_column, source_path, table_name, _, analysis_level, deduped in eval_rows:
                 _print_eval_row(con, existing_tables, table_name,
-                                source_column, source_path, deduped,
-                                sample_rows)
+                                source_column, source_path, analysis_level,
+                                deduped, sample_rows)
             print()
 
         if merged_rows:
             print("MERGED TABLES")
-            print(f"{'Table':<25} {'Operation':<15} {'Rows':>12} "
+            print(f"{'Table':<25} {'Operation':<15} {'Key':>8} {'Rows':>12} "
                   f"{'Columns':>8} {'Data Cols':>12}")
-            print("-" * 75)
-            for source_column, source_path, table_name, _, _ in merged_rows:
+            print("-" * 83)
+            for source_column, source_path, table_name, _, analysis_level, _ in merged_rows:
                 _print_merged_row(con, existing_tables, table_name,
-                                  source_column, source_path,
+                                  source_column, source_path, analysis_level,
                                   sample_rows)
             print()
 

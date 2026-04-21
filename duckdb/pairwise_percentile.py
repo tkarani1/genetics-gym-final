@@ -39,12 +39,13 @@ def pairwise_percentile(
     try:
         for tbl in (anchor_table, table_name):
             meta = con.execute(
-                "SELECT table_type, deduped FROM metadata WHERE table_name = ?",
+                "SELECT table_type, deduped, analysis_level "
+                "FROM metadata WHERE table_name = ?",
                 [tbl],
             ).fetchone()
             if meta is None:
                 raise ValueError(f"Table {tbl!r} not found in metadata.")
-            ttype, deduped = meta
+            ttype, deduped, analysis_level = meta
             if ttype != "score":
                 raise ValueError(
                     f"Table {tbl!r} is type {ttype!r}, not 'score'."
@@ -53,6 +54,12 @@ def pairwise_percentile(
                 raise ValueError(
                     f"Table {tbl!r} has not been deduped. "
                     f"Run remove_duplicates first."
+                )
+            if analysis_level != "variant":
+                raise ValueError(
+                    f"Table {tbl!r} has analysis_level {analysis_level!r}. "
+                    f"Pairwise operations require all tables to be "
+                    f"analysis_level 'variant'."
                 )
 
         quoted_anchor = f'"{anchor_table}"'

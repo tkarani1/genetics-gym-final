@@ -21,6 +21,7 @@ KEY_COLS = ("chrom", "pos", "ref", "alt", "ensg", '"key"')
 class _ScoreInfo(NamedTuple):
     table_name: str
     score_name: str
+    analysis_level: str
 
 
 def _percentile_expr(col: str, alias: str) -> str:
@@ -38,18 +39,19 @@ def _percentile_expr(col: str, alias: str) -> str:
 def _validate_inputs(
     con: duckdb.DuckDBPyConnection,
     table_names: list[str],
+    require_variant: bool = False,
 ) -> list[_ScoreInfo]:
     """Check every table exists, is a deduped score, and return metadata."""
     infos: list[_ScoreInfo] = []
     for tbl in table_names:
         row = con.execute(
-            "SELECT table_type, deduped, source_column FROM metadata "
-            "WHERE table_name = ?",
+            "SELECT table_type, deduped, source_column, analysis_level "
+            "FROM metadata WHERE table_name = ?",
             [tbl],
         ).fetchone()
         if row is None:
             raise ValueError(f"Table {tbl!r} not found in metadata.")
-        ttype, deduped, score_name = row
+        ttype, deduped, score_name, analysis_level = row
         if ttype != "score":
             raise ValueError(f"Table {tbl!r} is type {ttype!r}, not 'score'.")
         if not deduped:
@@ -57,7 +59,13 @@ def _validate_inputs(
                 f"Table {tbl!r} has not been deduped. "
                 f"Run remove_duplicates first."
             )
-        infos.append(_ScoreInfo(tbl, score_name))
+        if require_variant and analysis_level != "variant":
+            raise ValueError(
+                f"Table {tbl!r} has analysis_level {analysis_level!r}. "
+                f"Pairwise operations require all tables to be "
+                f"analysis_level 'variant'."
+            )
+        infos.append(_ScoreInfo(tbl, score_name, analysis_level))
     return infos
 
 
@@ -343,7 +351,10 @@ def merge_scores(
                 f"Output table {output_table!r} already exists."
             )
 
-        infos = _validate_inputs(con, table_names)
+        infos = _validate_inputs(
+            con, table_names,
+            require_variant=(set_operation == "pairwise"),
+        )
 
         if set_operation in ("intersection", "union"):
             _merge_intersection_union(
@@ -363,11 +374,13 @@ def merge_scores(
         )
 
         source_names = ", ".join(i.score_name for i in infos)
+        analysis_levels = {i.analysis_level for i in infos}
+        merged_analysis_level = analysis_levels.pop() if len(analysis_levels) == 1 else "variant"
         con.execute(
             "INSERT INTO metadata "
-            "(source_column, source_path, table_name, table_type, deduped) "
-            "VALUES (?, ?, ?, 'merged_scores', TRUE)",
-            [source_names, set_operation, output_table],
+            "(source_column, source_path, table_name, table_type, analysis_level, deduped) "
+            "VALUES (?, ?, ?, 'merged_scores', ?, TRUE)",
+            [source_names, set_operation, output_table, merged_analysis_level],
         )
 
         print(

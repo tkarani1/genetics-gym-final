@@ -17,6 +17,7 @@ KEY_COLS = ("chrom", "pos", "ref", "alt", "ensg", '"key"')
 class _EvalInfo(NamedTuple):
     table_name: str
     source_column: str
+    analysis_level: str
 
 
 def _validate_inputs(
@@ -27,13 +28,13 @@ def _validate_inputs(
     infos: list[_EvalInfo] = []
     for tbl in table_names:
         row = con.execute(
-            "SELECT table_type, deduped, source_column FROM metadata "
-            "WHERE table_name = ?",
+            "SELECT table_type, deduped, source_column, analysis_level "
+            "FROM metadata WHERE table_name = ?",
             [tbl],
         ).fetchone()
         if row is None:
             raise ValueError(f"Table {tbl!r} not found in metadata.")
-        ttype, deduped, source_column = row
+        ttype, deduped, source_column, analysis_level = row
         if ttype != "eval":
             raise ValueError(f"Table {tbl!r} is type {ttype!r}, not 'eval'.")
         if not deduped:
@@ -41,7 +42,7 @@ def _validate_inputs(
                 f"Table {tbl!r} has not been deduped. "
                 f"Run remove_duplicates first."
             )
-        infos.append(_EvalInfo(tbl, source_column))
+        infos.append(_EvalInfo(tbl, source_column, analysis_level))
     return infos
 
 
@@ -124,11 +125,13 @@ def merge_evals(
         )
 
         source_names = ", ".join(i.source_column for i in infos)
+        analysis_levels = {i.analysis_level for i in infos}
+        merged_analysis_level = analysis_levels.pop() if len(analysis_levels) == 1 else "variant"
         con.execute(
             "INSERT INTO metadata "
-            "(source_column, source_path, table_name, table_type, deduped) "
-            "VALUES (?, 'union', ?, 'merged_evals', TRUE)",
-            [source_names, output_table],
+            "(source_column, source_path, table_name, table_type, analysis_level, deduped) "
+            "VALUES (?, 'union', ?, 'merged_evals', ?, TRUE)",
+            [source_names, output_table, merged_analysis_level],
         )
 
         print(

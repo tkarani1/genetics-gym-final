@@ -24,6 +24,7 @@ The metadata table schema:
 | `source_path`   | VARCHAR | Absolute path to the source Parquet file for score/eval tables, or the set operation name (e.g. `intersection`) for merged tables |
 | `table_name`    | VARCHAR | Internal DuckDB table name (primary key)                 |
 | `table_type`    | VARCHAR | One of `'score'`, `'eval'`, `'merged_scores'`, `'merged_evals'` |
+| `analysis_level`    | VARCHAR | Key type: `'variant'` (chrom/pos/ref/alt) or `'gene'` (ensg) |
 | `deduped`       | BOOLEAN | Whether duplicate keys have been resolved                |
 
 ```bash
@@ -57,7 +58,7 @@ python duckdb/ingest_score.py \
   --score_name revel \
   --score_path data/gnomad_chr22.parquet \
   --table_name revel_chr22 \
-  --score_type variant
+  --analysis_level variant
 ```
 
 After ingestion the script checks for duplicate keys and sets `metadata.deduped` accordingly. A warning is printed if duplicates are detected.
@@ -74,7 +75,7 @@ python duckdb/ingest_eval.py \
   --eval_name is_pathogenic \
   --eval_path data/clinvar_labels.parquet \
   --table_name clinvar_eval \
-  --score_type variant
+  --analysis_level variant
 ```
 
 ---
@@ -243,15 +244,15 @@ python duckdb/initialize_db.py --db my_scores.duckdb
 # 2. Ingest scores from Parquet files
 python duckdb/ingest_score.py --db my_scores.duckdb \
   --score_name revel --score_path data/revel_chr22.parquet \
-  --table_name revel_chr22 --score_type variant
+  --table_name revel_chr22 --analysis_level variant
 
 python duckdb/ingest_score.py --db my_scores.duckdb \
   --score_name AM --score_path data/alphamissense_chr22.parquet \
-  --table_name am_chr22 --score_type variant
+  --table_name am_chr22 --analysis_level variant
 
 python duckdb/ingest_score.py --db my_scores.duckdb \
   --score_name cadd_score --score_path data/cadd_chr22.parquet \
-  --table_name cadd_chr22 --score_type variant
+  --table_name cadd_chr22 --analysis_level variant
 
 # 3. Deduplicate all score tables
 python duckdb/remove_duplicates.py --db my_scores.duckdb \
@@ -286,7 +287,7 @@ python duckdb/eject_table.py --db my_scores.duckdb --table_name merged_all
 # 2. Re-ingest from the corrected Parquet
 python duckdb/ingest_score.py --db my_scores.duckdb \
   --score_name revel --score_path data/revel_chr22_v2.parquet \
-  --table_name revel_chr22 --score_type variant
+  --table_name revel_chr22 --analysis_level variant
 
 # 3. Deduplicate
 python duckdb/remove_duplicates.py --db my_scores.duckdb \
@@ -338,7 +339,7 @@ python duckdb/inspect_db.py --db my_scores.duckdb --sample 5
 # Ingest a boolean label column
 python duckdb/ingest_eval.py --db my_scores.duckdb \
   --eval_name is_pathogenic --eval_path data/clinvar_labels.parquet \
-  --table_name clinvar_eval --score_type variant
+  --table_name clinvar_eval --analysis_level variant
 
 # Deduplicate if needed
 python duckdb/remove_duplicates.py --db my_scores.duckdb \

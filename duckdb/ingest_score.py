@@ -17,7 +17,7 @@ def ingest_score(
     score_name: str,
     score_path: str,
     table_name: str,
-    score_type: str,
+    analysis_level: str,
 ) -> None:
     """Read one score column from a parquet file and materialise it as a
     DuckDB table with canonical key columns, a hash key, and a dense rank.
@@ -32,7 +32,7 @@ def ingest_score(
         Path to the source parquet file.
     table_name : str
         Name for the new table inside the database.
-    score_type : str
+    analysis_level : str
         ``"variant"`` — key columns are ``chrom/pos/ref/alt``.
         ``"gene"`` — key column is ``ensg``.
     """
@@ -42,8 +42,8 @@ def ingest_score(
         raise FileNotFoundError(f"Database not found: {db_path}")
     if not os.path.isfile(score_path):
         raise FileNotFoundError(f"Parquet file not found: {score_path}")
-    if score_type not in ("variant", "gene"):
-        raise ValueError(f"score_type must be 'variant' or 'gene', got {score_type!r}")
+    if analysis_level not in ("variant", "gene"):
+        raise ValueError(f"analysis_level must be 'variant' or 'gene', got {analysis_level!r}")
 
     con = duckdb.connect(db_path)
     try:
@@ -75,7 +75,7 @@ def ingest_score(
                 f"Available: {sorted(parquet_columns)}"
             )
 
-        if score_type == "variant":
+        if analysis_level == "variant":
             missing = [k for k in ("chrom", "pos", "ref", "alt") if k not in parquet_columns]
             if missing:
                 raise ValueError(
@@ -136,9 +136,9 @@ def ingest_score(
         has_dupes = unique_keys < row_count
 
         con.execute(
-            "INSERT INTO metadata (source_column, source_path, table_name, table_type, deduped) "
-            "VALUES (?, ?, ?, 'score', ?)",
-            [score_name, score_path, table_name, not has_dupes],
+            "INSERT INTO metadata (source_column, source_path, table_name, table_type, analysis_level, deduped) "
+            "VALUES (?, ?, ?, 'score', ?, ?)",
+            [score_name, score_path, table_name, analysis_level, not has_dupes],
         )
 
         print(
@@ -178,12 +178,12 @@ def main() -> None:
         help="Name for the DuckDB table.",
     )
     parser.add_argument(
-        "--score_type", required=True, choices=["variant", "gene"],
+        "--analysis_level", required=True, choices=["variant", "gene"],
         help="Key type: 'variant' (chrom/pos/ref/alt) or 'gene' (ensg).",
     )
     args = parser.parse_args()
     ingest_score(args.db, args.score_name, args.score_path,
-                 args.table_name, args.score_type)
+                 args.table_name, args.analysis_level)
 
 
 if __name__ == "__main__":

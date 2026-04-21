@@ -17,7 +17,7 @@ def ingest_eval(
     eval_name: str,
     eval_path: str,
     table_name: str,
-    score_type: str,
+    analysis_level: str,
 ) -> None:
     """Read one boolean label column from a parquet file and materialise it
     as a DuckDB table with canonical key columns and a hash key.
@@ -36,7 +36,7 @@ def ingest_eval(
         Path to the source parquet file.
     table_name : str
         Name for the new table inside the database.
-    score_type : str
+    analysis_level : str
         ``"variant"`` — key columns are ``chrom/pos/ref/alt``.
         ``"gene"`` — key column is ``ensg``.
     """
@@ -46,8 +46,8 @@ def ingest_eval(
         raise FileNotFoundError(f"Database not found: {db_path}")
     if not os.path.isfile(eval_path):
         raise FileNotFoundError(f"Parquet file not found: {eval_path}")
-    if score_type not in ("variant", "gene"):
-        raise ValueError(f"score_type must be 'variant' or 'gene', got {score_type!r}")
+    if analysis_level not in ("variant", "gene"):
+        raise ValueError(f"analysis_level must be 'variant' or 'gene', got {analysis_level!r}")
 
     con = duckdb.connect(db_path)
     try:
@@ -79,7 +79,7 @@ def ingest_eval(
                 f"Available: {sorted(parquet_columns)}"
             )
 
-        if score_type == "variant":
+        if analysis_level == "variant":
             missing = [k for k in ("chrom", "pos", "ref", "alt") if k not in parquet_columns]
             if missing:
                 raise ValueError(
@@ -130,9 +130,9 @@ def ingest_eval(
         has_dupes = unique_keys < row_count
 
         con.execute(
-            "INSERT INTO metadata (source_column, source_path, table_name, table_type, deduped) "
-            "VALUES (?, ?, ?, 'eval', ?)",
-            [eval_name, eval_path, table_name, not has_dupes],
+            "INSERT INTO metadata (source_column, source_path, table_name, table_type, analysis_level, deduped) "
+            "VALUES (?, ?, ?, 'eval', ?, ?)",
+            [eval_name, eval_path, table_name, analysis_level, not has_dupes],
         )
 
         pos_count = con.execute(
@@ -179,12 +179,12 @@ def main() -> None:
         help="Name for the DuckDB table.",
     )
     parser.add_argument(
-        "--score_type", required=True, choices=["variant", "gene"],
+        "--analysis_level", required=True, choices=["variant", "gene"],
         help="Key type: 'variant' (chrom/pos/ref/alt) or 'gene' (ensg).",
     )
     args = parser.parse_args()
     ingest_eval(args.db, args.eval_name, args.eval_path,
-                args.table_name, args.score_type)
+                args.table_name, args.analysis_level)
 
 
 if __name__ == "__main__":
