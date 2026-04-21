@@ -16,7 +16,7 @@ CREATE TABLE metadata (
     source_column  VARCHAR NOT NULL,
     source_path    VARCHAR NOT NULL,
     table_name     VARCHAR NOT NULL PRIMARY KEY,
-    table_type     VARCHAR NOT NULL CHECK (table_type IN ('score', 'eval', 'merged_scores')),
+    table_type     VARCHAR NOT NULL CHECK (table_type IN ('score', 'eval', 'merged_scores', 'merged_evals')),
     deduped        BOOLEAN NOT NULL DEFAULT FALSE
 );
 """

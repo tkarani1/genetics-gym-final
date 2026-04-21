@@ -157,7 +157,7 @@ def inspect_db(db_path: str, sample_rows: int | None = None) -> None:
 
         score_rows = [r for r in rows if r[3] == "score"]
         eval_rows = [r for r in rows if r[3] == "eval"]
-        merged_rows = [r for r in rows if r[3] == "merged_scores"]
+        merged_rows = [r for r in rows if r[3] in ("merged_scores", "merged_evals")]
 
         if score_rows:
             print("SCORE TABLES")

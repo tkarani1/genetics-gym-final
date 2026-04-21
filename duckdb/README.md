@@ -23,7 +23,7 @@ The metadata table schema:
 | `source_column` | VARCHAR | Source column name from the Parquet file — the score column name for score tables, the eval column name for eval tables, or a comma-separated list of source names for merged tables |
 | `source_path`   | VARCHAR | Absolute path to the source Parquet file for score/eval tables, or the set operation name (e.g. `intersection`) for merged tables |
 | `table_name`    | VARCHAR | Internal DuckDB table name (primary key)                 |
-| `table_type`    | VARCHAR | One of `'score'`, `'eval'`, `'merged_scores'`            |
+| `table_type`    | VARCHAR | One of `'score'`, `'eval'`, `'merged_scores'`, `'merged_evals'` |
 | `deduped`       | BOOLEAN | Whether duplicate keys have been resolved                |
 
 ```bash
@@ -207,6 +207,28 @@ python duckdb/merge_scores.py \
 - **intersection/union, `none`**: key columns + one raw score column per input (`{score_name}`)
 - **intersection/union, `pre` or `post`**: key columns + raw score + percentile per input (`{score_name}`, `{score_name}_percentile`)
 - **pairwise**: key columns + per non-anchor pair: anchor raw score, non-anchor raw score, anchor pairwise percentile (`{anchor}_pairwise_{C}`), non-anchor pairwise percentile (`{C}_pairwise_{anchor}`)
+
+---
+
+### `merge_evals.py` — Combine multiple eval tables
+
+Merges two or more deduped eval tables into a single wide table via `FULL OUTER JOIN` on `key`. Each input eval table's `is_pos` column is renamed to the table's `source_column` name so they are distinct in the output.
+
+The output table is registered in metadata as `table_type='merged_evals'`.
+
+Constraints:
+- All input tables must be deduped eval tables
+- `--output_table` must not already exist
+- At least two input tables are required
+
+```bash
+python duckdb/merge_evals.py \
+  --db scores.duckdb \
+  --tables clinvar_eval omim_eval \
+  --output_table merged_labels
+```
+
+**Output column structure:** key columns (`chrom`, `pos`, `ref`, `alt`, `ensg`, `key`) + one boolean column per input eval, named after the eval's `source_column`.
 
 ---
 
