@@ -83,13 +83,13 @@ def pairwise_percentile(
                 SELECT
                     "key",
                     CASE WHEN anchor_score IS NOT NULL
-                         THEN PERCENT_RANK() OVER (
+                         THEN CUME_DIST() OVER (
                              PARTITION BY (anchor_score IS NOT NULL)
                              ORDER BY anchor_score
                          )
                     END AS temp_1,
                     CASE WHEN nonanchor_score IS NOT NULL
-                         THEN PERCENT_RANK() OVER (
+                         THEN CUME_DIST() OVER (
                              PARTITION BY (nonanchor_score IS NOT NULL)
                              ORDER BY nonanchor_score
                          )

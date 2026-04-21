@@ -25,10 +25,10 @@ class _ScoreInfo(NamedTuple):
 
 
 def _percentile_expr(col: str, alias: str) -> str:
-    """SQL expression for null-safe PERCENT_RANK over *col*."""
+    """SQL expression for null-safe CUME_DIST over *col*."""
     return (
         f'CASE WHEN "{col}" IS NOT NULL '
-        f"THEN PERCENT_RANK() OVER ("
+        f"THEN CUME_DIST() OVER ("
         f'PARTITION BY ("{col}" IS NOT NULL) '
         f'ORDER BY "{col}"'
         f") END "
@@ -210,13 +210,13 @@ def _merge_pairwise(
                 anchor_score AS "{raw_anchor_col}",
                 nonanchor_score AS "{na_name}",
                 CASE WHEN anchor_score IS NOT NULL
-                     THEN PERCENT_RANK() OVER (
+                     THEN CUME_DIST() OVER (
                          PARTITION BY (anchor_score IS NOT NULL)
                          ORDER BY anchor_score
                      )
                 END AS "{pw_anchor_col}",
                 CASE WHEN nonanchor_score IS NOT NULL
-                     THEN PERCENT_RANK() OVER (
+                     THEN CUME_DIST() OVER (
                          PARTITION BY (nonanchor_score IS NOT NULL)
                          ORDER BY nonanchor_score
                      )
