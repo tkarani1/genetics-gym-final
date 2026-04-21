@@ -9,7 +9,7 @@ import sys
 import duckdb
 
 
-DEFAULT_DB_PATH = "scores.duckdb"
+DEFAULT_DB_PATH = "gg_data.duckdb"
 
 METADATA_DDL = """\
 CREATE TABLE metadata (
