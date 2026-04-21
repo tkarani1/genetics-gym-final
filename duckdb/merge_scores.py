@@ -43,7 +43,7 @@ def _validate_inputs(
     infos: list[_ScoreInfo] = []
     for tbl in table_names:
         row = con.execute(
-            "SELECT table_type, deduped, score_name FROM metadata "
+            "SELECT table_type, deduped, source_column FROM metadata "
             "WHERE table_name = ?",
             [tbl],
         ).fetchone()
@@ -365,7 +365,7 @@ def merge_scores(
         source_names = ", ".join(i.score_name for i in infos)
         con.execute(
             "INSERT INTO metadata "
-            "(score_name, score_path, table_name, table_type, deduped) "
+            "(source_column, source_path, table_name, table_type, deduped) "
             "VALUES (?, ?, ?, 'merged_scores', TRUE)",
             [source_names, set_operation, output_table],
         )

@@ -13,11 +13,11 @@ DEFAULT_DB_PATH = "scores.duckdb"
 
 METADATA_DDL = """\
 CREATE TABLE metadata (
-    score_name  VARCHAR NOT NULL,
-    score_path  VARCHAR NOT NULL,
-    table_name  VARCHAR NOT NULL PRIMARY KEY,
-    table_type  VARCHAR NOT NULL CHECK (table_type IN ('score', 'eval', 'merged_scores')),
-    deduped     BOOLEAN NOT NULL DEFAULT FALSE
+    source_column  VARCHAR NOT NULL,
+    source_path    VARCHAR NOT NULL,
+    table_name     VARCHAR NOT NULL PRIMARY KEY,
+    table_type     VARCHAR NOT NULL CHECK (table_type IN ('score', 'eval', 'merged_scores')),
+    deduped        BOOLEAN NOT NULL DEFAULT FALSE
 );
 """
 

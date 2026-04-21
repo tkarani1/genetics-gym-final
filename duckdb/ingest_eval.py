@@ -130,7 +130,7 @@ def ingest_eval(
         has_dupes = unique_keys < row_count
 
         con.execute(
-            "INSERT INTO metadata (score_name, score_path, table_name, table_type, deduped) "
+            "INSERT INTO metadata (source_column, source_path, table_name, table_type, deduped) "
             "VALUES (?, ?, ?, 'eval', ?)",
             [eval_name, eval_path, table_name, not has_dupes],
         )

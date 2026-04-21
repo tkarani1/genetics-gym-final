@@ -32,7 +32,7 @@ def _print_sample(con: duckdb.DuckDBPyConnection, quoted: str,
 
 
 def _print_score_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
-                     table_name: str, score_name: str, score_path: str,
+                     table_name: str, source_column: str, source_path: str,
                      deduped: bool, fmt, sample_rows: int | None) -> None:
     if table_name not in existing_tables:
         print(f"{table_name:<25} {'MISSING TABLE':}")
@@ -53,18 +53,18 @@ def _print_score_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
     total, scored, nulls, unique_keys, mn, mx, mean, median = stats
     dedup_flag = "yes" if deduped else "no"
     print(
-        f"{table_name:<25} {score_name:<25} {dedup_flag:>8} {total:>12,} "
+        f"{table_name:<25} {source_column:<25} {dedup_flag:>8} {total:>12,} "
         f"{scored:>12,} {nulls:>12,} {unique_keys:>12,} "
         f"{fmt(mn)} {fmt(mx)} {fmt(mean)} {fmt(median)}"
     )
-    print(f"  path: {score_path}")
+    print(f"  path: {source_path}")
     if unique_keys < total:
         print(f"  *** {total - unique_keys:,} duplicate key(s) detected ***")
     _print_sample(con, quoted, sample_rows)
 
 
 def _print_eval_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
-                    table_name: str, eval_name: str, eval_path: str,
+                    table_name: str, source_column: str, source_path: str,
                     deduped: bool, sample_rows: int | None) -> None:
     if table_name not in existing_tables:
         print(f"{table_name:<25} {'MISSING TABLE':}")
@@ -82,18 +82,18 @@ def _print_eval_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
     total, positives, negatives, nulls, unique_keys = stats
     dedup_flag = "yes" if deduped else "no"
     print(
-        f"{table_name:<25} {eval_name:<25} {dedup_flag:>8} {total:>12,} "
+        f"{table_name:<25} {source_column:<25} {dedup_flag:>8} {total:>12,} "
         f"{positives:>12,} {negatives:>12,} {nulls:>12,} "
         f"{unique_keys:>12,}"
     )
-    print(f"  path: {eval_path}")
+    print(f"  path: {source_path}")
     if unique_keys < total:
         print(f"  *** {total - unique_keys:,} duplicate key(s) detected ***")
     _print_sample(con, quoted, sample_rows)
 
 
 def _print_merged_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
-                      table_name: str, score_name: str, score_path: str,
+                      table_name: str, source_column: str, source_path: str,
                       sample_rows: int | None) -> None:
     if table_name not in existing_tables:
         print(f"{table_name:<25} {'MISSING TABLE':}")
@@ -109,10 +109,10 @@ def _print_merged_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
     key_names = {"chrom", "pos", "ref", "alt", "ensg", "key"}
     data_cols = [c for c in columns if c not in key_names]
     print(
-        f"{table_name:<25} {score_path:<15} {row_count:>12,} "
+        f"{table_name:<25} {source_path:<15} {row_count:>12,} "
         f"{len(columns):>8} {len(data_cols):>12}"
     )
-    print(f"  sources: {score_name}")
+    print(f"  sources: {source_column}")
     print(f"  columns: {', '.join(data_cols)}")
     _print_sample(con, quoted, sample_rows)
 
@@ -144,7 +144,7 @@ def inspect_db(db_path: str, sample_rows: int | None = None) -> None:
             return
 
         rows = con.execute(
-            "SELECT score_name, score_path, table_name, table_type, deduped "
+            "SELECT source_column, source_path, table_name, table_type, deduped "
             "FROM metadata ORDER BY table_type, table_name"
         ).fetchall()
 
@@ -165,9 +165,9 @@ def inspect_db(db_path: str, sample_rows: int | None = None) -> None:
                   f"{'Scored':>12} {'Nulls':>12} {'Unique Keys':>12} "
                   f"{'Min':>12} {'Max':>12} {'Mean':>12} {'Median':>12}")
             print("-" * 170)
-            for score_name, score_path, table_name, _, deduped in score_rows:
+            for source_column, source_path, table_name, _, deduped in score_rows:
                 _print_score_row(con, existing_tables, table_name,
-                                 score_name, score_path, deduped, fmt,
+                                 source_column, source_path, deduped, fmt,
                                  sample_rows)
             print()
 
@@ -177,9 +177,9 @@ def inspect_db(db_path: str, sample_rows: int | None = None) -> None:
                   f"{'Positive':>12} {'Negative':>12} {'Nulls':>12} "
                   f"{'Unique Keys':>12}")
             print("-" * 132)
-            for eval_name, eval_path, table_name, _, deduped in eval_rows:
+            for source_column, source_path, table_name, _, deduped in eval_rows:
                 _print_eval_row(con, existing_tables, table_name,
-                                eval_name, eval_path, deduped,
+                                source_column, source_path, deduped,
                                 sample_rows)
             print()
 
@@ -188,9 +188,9 @@ def inspect_db(db_path: str, sample_rows: int | None = None) -> None:
             print(f"{'Table':<25} {'Operation':<15} {'Rows':>12} "
                   f"{'Columns':>8} {'Data Cols':>12}")
             print("-" * 75)
-            for score_name, score_path, table_name, _, _ in merged_rows:
+            for source_column, source_path, table_name, _, _ in merged_rows:
                 _print_merged_row(con, existing_tables, table_name,
-                                  score_name, score_path,
+                                  source_column, source_path,
                                   sample_rows)
             print()
 
