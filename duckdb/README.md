@@ -23,7 +23,7 @@ The metadata table schema:
 | `source_column` | VARCHAR | Source column name from the Parquet file — the score column name for score tables, the eval column name for eval tables, or a comma-separated list of source names for merged tables |
 | `source_path`   | VARCHAR | Absolute path to the source Parquet file for score/eval tables, or the set operation name (e.g. `intersection`) for merged tables |
 | `table_name`    | VARCHAR | Internal DuckDB table name (primary key)                 |
-| `table_type`    | VARCHAR | One of `'score'`, `'eval'`, `'merged_scores'`, `'merged_evals'` |
+| `table_type`    | VARCHAR | One of `'score'`, `'eval'`, `'merged_scores'`, `'merged_evals'`, `'merged_analysis'` |
 | `analysis_level`    | VARCHAR | Key type: `'variant'` (chrom/pos/ref/alt) or `'gene'` (ensg) |
 | `deduped`       | BOOLEAN | Whether duplicate keys have been resolved                |
 
@@ -233,6 +233,43 @@ python duckdb/merge_evals.py \
 
 ---
 
+### `create_analysis_table.py` — Join merged scores and merged evals
+
+Combines a `merged_scores` table and a `merged_evals` table into a single `merged_analysis` table via a `FULL OUTER JOIN`. This is the final assembly step that brings score data and evaluation labels together into one wide table for downstream analysis.
+
+**Same-key join** (default): When both input tables share the same `analysis_level` (both `variant` or both `gene`), the join is a straightforward `FULL OUTER JOIN` on `"key"`, coalescing key columns. The output `analysis_level` matches the shared level.
+
+**Cross-key join** (`--linker_path`): When the two input tables have different `analysis_level` values (one `variant`, one `gene`), a linker Parquet file is required. The linker must contain `chrom`, `pos`, `ref`, `alt`, and `ensg` columns, establishing the many-to-one mapping from variant keys to gene keys. The output `analysis_level` is `variant`.
+
+The output table is registered in metadata as `table_type='merged_analysis'`.
+
+Constraints:
+- `--scores_table` must be `table_type='merged_scores'` in metadata
+- `--evals_table` must be `table_type='merged_evals'` in metadata
+- `--output_table` must not already exist
+- `--linker_path` is required when `analysis_level` differs between the two inputs, and forbidden when it matches
+
+```bash
+# Same-key join (both tables are variant-level)
+python duckdb/create_analysis_table.py \
+  --db scores.duckdb \
+  --scores_table merged_scores_tbl \
+  --evals_table merged_evals_tbl \
+  --output_table my_analysis
+
+# Cross-key join (variant scores + gene evals via linker)
+python duckdb/create_analysis_table.py \
+  --db scores.duckdb \
+  --scores_table merged_variant_scores \
+  --evals_table merged_gene_evals \
+  --output_table cross_analysis \
+  --linker_path data/variant_gene_linker.parquet
+```
+
+**Output column structure:** key columns (`chrom`, `pos`, `ref`, `alt`, `ensg`, `key`) + all data columns from the scores table (raw scores, percentiles, pairwise columns) + all data columns from the evals table (boolean label columns).
+
+---
+
 ## Typical Workflows
 
 ### Basic: Ingest, inspect, and merge scores
@@ -332,6 +369,61 @@ python duckdb/pairwise_percentile.py --db my_scores.duckdb \
 # Inspect the temp columns
 python duckdb/inspect_db.py --db my_scores.duckdb --sample 5
 ```
+
+### Full analysis: scores + evals → analysis table
+
+A complete workflow from raw Parquet files to a unified analysis table:
+
+```bash
+# 1. Create the database
+python duckdb/initialize_db.py --db my_analysis.duckdb
+
+# 2. Ingest scores
+python duckdb/ingest_score.py --db my_analysis.duckdb \
+  --score_name revel --score_path data/revel_chr22.parquet \
+  --table_name revel_chr22 --analysis_level variant
+python duckdb/ingest_score.py --db my_analysis.duckdb \
+  --score_name AM --score_path data/am_chr22.parquet \
+  --table_name am_chr22 --analysis_level variant
+
+# 3. Ingest evals
+python duckdb/ingest_eval.py --db my_analysis.duckdb \
+  --eval_name is_pathogenic --eval_path data/clinvar.parquet \
+  --table_name clinvar_eval --analysis_level variant
+python duckdb/ingest_eval.py --db my_analysis.duckdb \
+  --eval_name is_lof --eval_path data/lof_labels.parquet \
+  --table_name lof_eval --analysis_level variant
+
+# 4. Deduplicate everything
+python duckdb/remove_duplicates.py --db my_analysis.duckdb \
+  --table_name revel_chr22 --strategy prefer_scored
+python duckdb/remove_duplicates.py --db my_analysis.duckdb \
+  --table_name am_chr22 --strategy prefer_scored
+python duckdb/remove_duplicates.py --db my_analysis.duckdb \
+  --table_name clinvar_eval --strategy keep_random
+python duckdb/remove_duplicates.py --db my_analysis.duckdb \
+  --table_name lof_eval --strategy keep_random
+
+# 5. Merge scores and evals separately
+python duckdb/merge_scores.py --db my_analysis.duckdb \
+  --tables revel_chr22 am_chr22 \
+  --output_table merged_scores \
+  --set_operation intersection --percentile post
+python duckdb/merge_evals.py --db my_analysis.duckdb \
+  --tables clinvar_eval lof_eval \
+  --output_table merged_evals
+
+# 6. Create the final analysis table
+python duckdb/create_analysis_table.py --db my_analysis.duckdb \
+  --scores_table merged_scores \
+  --evals_table merged_evals \
+  --output_table final_analysis
+
+# 7. Inspect
+python duckdb/inspect_db.py --db my_analysis.duckdb --sample 3
+```
+
+---
 
 ### Adding evaluation labels alongside scores
 
