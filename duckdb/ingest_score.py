@@ -102,7 +102,7 @@ def ingest_score(
                 "NULL::VARCHAR AS alt, "
                 "ensg"
             )
-            hash_expr = "NULL::UBIGINT"
+            hash_expr = "hash(ensg)"
 
         quoted_table = f'"{table_name}"'
         quoted_score = f'"{score_name}"'
