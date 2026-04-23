@@ -13,11 +13,13 @@ import polars as pl
 
 from biostat_cli.config import (
     GENE_AVG_STATS,
+    OE_STATS,
     PAIRWISE_STATS,
     PairwiseColumns,
     detect_pairwise_columns,
     get_table_config,
     load_resources,
+    obs_exp_column_names,
     parse_csv_arg,
     parse_eval_totals,
     parse_stats,
@@ -31,13 +33,14 @@ from biostat_cli.stats.binary import (
 )
 from biostat_cli.stats.continuous import compute_auc, compute_auprc, delong_two_auc_p_value
 from biostat_cli.utils import WITHIN_GENE_COL, missing_category_sort_expr, normalize_chromosome_sort_expr
-from biostat_cli.evaluators.base import BaseEvaluator, Contingency, PreparedFrame
+from biostat_cli.evaluators.base import BaseEvaluator, Contingency, PreparedFrame, slice_prepared_for_score
 from biostat_cli.evaluators.gene import GeneEvaluator, SUM_VARIANTS_SENTINEL
 from biostat_cli.evaluators.variant import VariantEvaluator
 from biostat_cli.io import scan_table, write_json, write_tsv
 from biostat_cli.stats.binary import _compute_enrichment_value, _compute_rate_ratio_value
 from biostat_cli.stats.continuous import compute_auc as _raw_auc, compute_auprc as _raw_auprc
 from biostat_cli.stats.factory import GeneAvgStatOutput, PairwiseStatOutput, StatFactory
+from biostat_cli.stats.obs_exp import obs_exp_ratio_value
 
 ERROR_INVALID_THRESHOLD = 22
 
@@ -127,6 +130,99 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-fname", required=True)
     parser.add_argument("--write-missing", choices=["none", "all", "any"], default="none")
     return parser
+
+
+def _schema_has_obs_exp(schema_names: set[str], eval_stem: str) -> bool:
+    obs_c, exp_c = obs_exp_column_names(eval_stem)
+    return obs_c in schema_names and exp_c in schema_names
+
+
+def _effective_stats_for_eval(requested_stats: set[str], is_obs_exp_eval: bool) -> set[str]:
+    """Restrict stats to those valid for a boolean-labeled eval vs. an obs/expected eval."""
+    if is_obs_exp_eval:
+        eff = requested_stats & OE_STATS
+        if not eff:
+            raise ValueError(
+                f"Table has {OE_STATS!r} columns for this eval stem, but --stat does not request any of "
+                f"those. Requested: {sorted(requested_stats)}."
+            )
+        return eff
+    eff = requested_stats - OE_STATS
+    if not eff and (requested_stats & OE_STATS):
+        raise ValueError(
+            f"obs_exp_ratio / pairwise_obs_exp_ratio need {{eval_stem}}_observed and {{eval_stem}}_expected. "
+            f"Requested: {sorted(requested_stats)}."
+        )
+    return eff
+
+
+def _oe_ratio_tail(
+    table: pl.DataFrame, score: str, obs: str, exp: str, threshold: float
+) -> float:
+    s = table.filter(pl.col(score) >= threshold)
+    if s.height == 0:
+        return float("nan")
+    return obs_exp_ratio_value(
+        float(s[obs].sum()), float(s[exp].sum()),
+    )
+
+
+def _oe_ratio_for_thresholds(
+    score_frame: Any, score_col: str, obs_col: str, exp_col: str, thresholds: list[float]
+) -> list[float]:
+    df = score_frame.frame.select([pl.col(score_col), pl.col(obs_col), pl.col(exp_col)]).collect(streaming=True)
+    if df.height == 0:
+        return [float("nan")] * len(thresholds)
+    return [_oe_ratio_tail(df, score_col, obs_col, exp_col, t) for t in thresholds]
+
+
+def _append_obs_exp_row(
+    rows: list[dict[str, Any]],
+    eval_name: str,
+    filter_name: str,
+    score_name: str,
+    threshold: float,
+    value: float,
+    rows_used: int,
+    total_eval_rows: int,
+) -> None:
+    _append_binary_row(
+        rows=rows,
+        eval_name=eval_name,
+        filter_name=filter_name,
+        score_name=score_name,
+        threshold=threshold,
+        stat_name="obs_exp_ratio",
+        value=value,
+        p_value=float("nan"),
+        std_error=float("nan"),
+        tp=float("nan"),
+        fp=float("nan"),
+        tn=float("nan"),
+        fn=float("nan"),
+        rows_used=rows_used,
+        total_eval_rows=total_eval_rows,
+    )
+
+
+def _compute_obs_exp_ratio_stats(
+    rows: list[dict[str, Any]],
+    score_frame: Any,
+    eval_stem: str,
+    filter_name: str,
+    score_col: str,
+    obs_col: str,
+    exp_col: str,
+    thresholds: list[float],
+    total_eval_rows: int,
+) -> None:
+    if not thresholds:
+        return
+    ratios = _oe_ratio_for_thresholds(score_frame, score_col, obs_col, exp_col, thresholds)
+    for t, v in zip(thresholds, ratios):
+        _append_obs_exp_row(
+            rows, eval_stem, filter_name, score_col, t, v, score_frame.rows_used, total_eval_rows,
+        )
 
 
 def _choose_evaluator(eval_level: str, source: pl.LazyFrame) -> BaseEvaluator:
@@ -669,10 +765,12 @@ def _compute_pairwise_stats(
     *,
     within_gene_percentile: bool = False,
     pvalue_method: str = DEFAULT_PVALUE_METHOD,
+    obs_exp_columns: tuple[str, str] | None = None,
 ) -> None:
-    """Compute pairwise statistics (enrichment, rate_ratio, AUC, AUPRC)."""
+    """Compute pairwise statistics (enrichment, rate_ratio, AUC, AUPRC, O/E)."""
     need_pw_binary = bool(requested_stats & {"pairwise_enrichment", "pairwise_rate_ratio"})
     need_pw_continuous = bool(requested_stats & {"pairwise_auc", "pairwise_auprc"})
+    need_pairwise_oe = "pairwise_obs_exp_ratio" in requested_stats and obs_exp_columns is not None
 
     anchor_score_frame = evaluator.prepare_score_frame(
         prepared, score_col=pairwise_cols.anchor_full_col, within_gene_percentile=within_gene_percentile,
@@ -695,6 +793,13 @@ def _compute_pairwise_stats(
                 anchor_full_auc = compute_auc(anchor_full_ls[0], anchor_full_ls[1])
             if "pairwise_auprc" in requested_stats:
                 anchor_full_auprc = compute_auprc(anchor_full_ls[0], anchor_full_ls[1])
+
+    r_full_by_t: list[float] = []
+    if need_pairwise_oe and obs_exp_columns is not None and thresholds:
+        o_c, e_c = obs_exp_columns
+        r_full_by_t = _oe_ratio_for_thresholds(
+            anchor_score_frame, pairwise_cols.anchor_full_col, o_c, e_c, thresholds,
+        )
 
     # Process each VSM pair
     for vsm_base, vsm_col, anchor_pairwise_col in pairwise_cols.vsm_pairs:
@@ -775,6 +880,19 @@ def _compute_pairwise_stats(
                     rows_used=pairwise_rows_used, total_eval_rows=prepared.total_eval_rows,
                 )
 
+        if need_pairwise_oe and obs_exp_columns is not None and thresholds:
+            o_c, e_c = obs_exp_columns
+            for t_i, threshold in enumerate(thresholds):
+                r_f = r_full_by_t[t_i] if t_i < len(r_full_by_t) else float("nan")
+                r_v = _oe_ratio_tail(pairwise_df, vsm_col, o_c, e_c, threshold)
+                r_a = _oe_ratio_tail(pairwise_df, anchor_pairwise_col, o_c, e_c, threshold)
+                out = StatFactory.pairwise_obs_exp_ratio(r_f, r_v, r_a)
+                _append_pairwise_row(
+                    rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=vsm_base,
+                    threshold=threshold, out=out, cont=_NAN_CONTINGENCY,
+                    rows_used=pairwise_rows_used, total_eval_rows=prepared.total_eval_rows,
+                )
+
     # Add anchor baseline rows
     if need_pw_binary and thresholds:
         for threshold, anchor_cont in zip(thresholds, anchor_conts_full):
@@ -809,6 +927,16 @@ def _compute_pairwise_stats(
             _append_pairwise_row(
                 rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=pairwise_cols.anchor_base,
                 threshold=float("nan"), out=out, cont=_NAN_CONTINGENCY,
+                rows_used=anchor_score_frame.rows_used, total_eval_rows=prepared.total_eval_rows,
+            )
+
+    if need_pairwise_oe and obs_exp_columns is not None and thresholds:
+        for t_i, threshold in enumerate(thresholds):
+            r = r_full_by_t[t_i] if t_i < len(r_full_by_t) else float("nan")
+            out = StatFactory.pairwise_obs_exp_ratio(r, r, r)
+            _append_pairwise_row(
+                rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=pairwise_cols.anchor_base,
+                threshold=threshold, out=out, cont=_NAN_CONTINGENCY,
                 rows_used=anchor_score_frame.rows_used, total_eval_rows=prepared.total_eval_rows,
             )
 
@@ -856,6 +984,7 @@ def _compute_rows_for_prepared(
     prepared: PreparedFrame,
     eval_col: str,
     filter_name: str,
+    filter_col: str | None,
     score_cols: list[str],
     requested_stats: set[str],
     thresholds: list[float],
@@ -867,6 +996,7 @@ def _compute_rows_for_prepared(
     pvalue_method: str = DEFAULT_PVALUE_METHOD,
     vsm_comparison_method: str = DEFAULT_VSM_COMPARISON_METHOD,
     gene_col: str | None = None,
+    obs_exp_columns: tuple[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
     Compute all requested statistics for a prepared frame.
@@ -877,18 +1007,39 @@ def _compute_rows_for_prepared(
     Returns (rows, vsm_comparison_rows).
     """
     rows: list[dict[str, Any]] = []
-    need_continuous = "auc" in requested_stats or "auprc" in requested_stats
-    need_binary = "enrichment" in requested_stats or "rate_ratio" in requested_stats
+    is_obs_exp = obs_exp_columns is not None
+    need_oe = "obs_exp_ratio" in requested_stats and is_obs_exp
+    need_continuous = (not is_obs_exp) and ("auc" in requested_stats or "auprc" in requested_stats)
+    need_binary = (not is_obs_exp) and (
+        "enrichment" in requested_stats or "rate_ratio" in requested_stats
+    )
     need_pairwise = bool(requested_stats & PAIRWISE_STATS)
-    need_vsm_comparison = "vsm_comparison" in requested_stats
-    need_gene_avg = bool(requested_stats & GENE_AVG_STATS)
+    need_vsm_comparison = (not is_obs_exp) and "vsm_comparison" in requested_stats
+    need_gene_avg = (not is_obs_exp) and bool(requested_stats & GENE_AVG_STATS)
 
     conts_by_score: dict[str, tuple[list[Contingency], int]] = {}
+    prepared_schema = set(prepared.frame.collect_schema().names())
 
     for score_col in score_cols:
-        score_frame = evaluator.prepare_score_frame(
-            prepared, score_col=score_col, within_gene_percentile=within_gene_percentile,
+        sub_prepared = slice_prepared_for_score(
+            prepared,
+            eval_col=eval_col,
+            filter_col=filter_col,
+            score_col=score_col,
+            within_gene_percentile=within_gene_percentile,
+            gene_col=gene_col,
+            schema_names=prepared_schema,
+            obs_exp_columns=obs_exp_columns,
         )
+        score_frame = evaluator.prepare_score_frame(
+            sub_prepared, score_col=score_col, within_gene_percentile=within_gene_percentile,
+        )
+
+        if need_oe and obs_exp_columns is not None and thresholds:
+            oc, ec = obs_exp_columns
+            _compute_obs_exp_ratio_stats(
+                rows, score_frame, eval_col, filter_name, score_col, oc, ec, thresholds, prepared.total_eval_rows,
+            )
 
         if need_continuous:
             _compute_continuous_stats(
@@ -918,6 +1069,7 @@ def _compute_rows_for_prepared(
             requested_stats, thresholds, eval_case_total, eval_ctrl_total, pairwise_cols,
             within_gene_percentile=within_gene_percentile,
             pvalue_method=pvalue_method,
+            obs_exp_columns=obs_exp_columns,
         )
 
     vsm_comparison_rows: list[dict[str, Any]] = []
@@ -937,6 +1089,7 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     requested_stats = parse_stats(args.stat)
 
     source = scan_table(table.path)
+    table_schema = set(source.collect_schema().names())
 
     if args.within_gene_percentile:
         if args.eval_level == "gene":
@@ -954,13 +1107,14 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     case_totals_by_eval = parse_eval_totals(args.case_total_by_eval, "--case-total-by-eval")
     ctrl_totals_by_eval = parse_eval_totals(args.ctrl_total_by_eval, "--ctrl-total-by-eval")
 
-    # Validate gene-averaged stats
+    # Validate gene-averaged stats (only when at least one eval is not obs/expected-only)
     need_gene_avg = bool(requested_stats & GENE_AVG_STATS)
+    any_non_oe_eval = any(not _schema_has_obs_exp(table_schema, e) for e in eval_cols)
     gene_col: str | None = None
-    if need_gene_avg:
+    if need_gene_avg and any_non_oe_eval:
         if args.eval_level == "gene":
             raise ValueError("Gene-averaged stats are not compatible with --eval-level gene.")
-        if args.gene_col not in source.collect_schema().names():
+        if args.gene_col not in table_schema:
             raise ValueError(
                 f"Gene-averaged stats require column '{args.gene_col}' "
                 f"but it is not present in {table.path}. "
@@ -988,6 +1142,16 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     coverage_rows: list[dict[str, Any]] = []
 
     for eval_col in eval_cols:
+        eff_stats = _effective_stats_for_eval(
+            requested_stats, _schema_has_obs_exp(table_schema, eval_col),
+        )
+        obs_exp_columns: tuple[str, str] | None = None
+        if _schema_has_obs_exp(table_schema, eval_col):
+            if args.eval_level == "gene":
+                raise ValueError(
+                    "Obs/expected evals require --eval-level variant (use <eval_stem>_observed and <eval_stem>_expected columns)."
+                )
+            obs_exp_columns = obs_exp_column_names(eval_col)
         eval_case_total, eval_ctrl_total = _resolve_eval_totals(
             eval_col=eval_col,
             table_case_totals=table.case_totals,
@@ -999,7 +1163,9 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
         )
         for filter_name, filter_col in filter_pairs:
             combo_start = time.perf_counter()
-            prepared = evaluator.prepare_eval_frame(eval_col=eval_col, filter_col=filter_col)
+            prepared = evaluator.prepare_eval_frame(
+                eval_col=eval_col, filter_col=filter_col, obs_exp_columns=obs_exp_columns,
+            )
             if args.write_missing != "none":
                 missing_rows.extend(
                     _build_missing_variant_rows(
@@ -1037,8 +1203,9 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                 prepared=prepared,
                 eval_col=eval_col,
                 filter_name=filter_name,
+                filter_col=filter_col,
                 score_cols=table.score_cols,
-                requested_stats=requested_stats,
+                requested_stats=eff_stats,
                 thresholds=thresholds,
                 eval_case_total=eval_case_total,
                 eval_ctrl_total=eval_ctrl_total,
@@ -1047,6 +1214,7 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                 pvalue_method=args.pvalue_method,
                 vsm_comparison_method=args.vsm_comparison_method,
                 gene_col=gene_col,
+                obs_exp_columns=obs_exp_columns,
             )
             all_vsm_comparison_rows.extend(vsm_cmp_rows)
 
@@ -1066,8 +1234,9 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                             prepared=sample_prepared,
                             eval_col=eval_col,
                             filter_name=filter_name,
+                            filter_col=filter_col,
                             score_cols=table.score_cols,
-                            requested_stats=requested_stats,
+                            requested_stats=eff_stats,
                             thresholds=thresholds,
                             eval_case_total=eval_case_total,
                             eval_ctrl_total=eval_ctrl_total,
@@ -1076,6 +1245,7 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                             pvalue_method=args.pvalue_method,
                             vsm_comparison_method=args.vsm_comparison_method,
                             gene_col=gene_col,
+                            obs_exp_columns=obs_exp_columns,
                         )
                         for row in sample_rows:
                             key = _row_identity_key(row)

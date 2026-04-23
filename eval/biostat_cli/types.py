@@ -19,6 +19,12 @@ class StatType(str, Enum):
     PAIRWISE_AUC = "pairwise_auc"
     PAIRWISE_AUPRC = "pairwise_auprc"
     VSM_COMPARISON = "vsm_comparison"
+    OBS_EXP_RATIO = "obs_exp_ratio"
+    PAIRWISE_OBS_EXP_RATIO = "pairwise_obs_exp_ratio"
+    GENE_AVG_ENRICHMENT = "gene_avg_enrichment"
+    GENE_AVG_RATE_RATIO = "gene_avg_rate_ratio"
+    GENE_AVG_AUC = "gene_avg_auc"
+    GENE_AVG_AUPRC = "gene_avg_auprc"
 
     @classmethod
     def all(cls) -> set[str]:
@@ -29,6 +35,7 @@ class StatType(str, Enum):
         return {
             cls.PAIRWISE_ENRICHMENT.value, cls.PAIRWISE_RATE_RATIO.value,
             cls.PAIRWISE_AUC.value, cls.PAIRWISE_AUPRC.value,
+            cls.PAIRWISE_OBS_EXP_RATIO.value,
         }
 
     @classmethod
@@ -38,6 +45,13 @@ class StatType(str, Enum):
     @classmethod
     def binary(cls) -> set[str]:
         return {cls.ENRICHMENT.value, cls.RATE_RATIO.value}
+
+    @classmethod
+    def gene_averaged(cls) -> set[str]:
+        return {
+            cls.GENE_AVG_ENRICHMENT.value, cls.GENE_AVG_RATE_RATIO.value,
+            cls.GENE_AVG_AUC.value, cls.GENE_AVG_AUPRC.value,
+        }
 
 
 class EvalLevel(str, Enum):

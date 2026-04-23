@@ -249,3 +249,19 @@ class StatFactory:
             anchor_value=out.anchor_value,
             adjustment_ratio=out.adjustment_ratio,
         )
+
+    @staticmethod
+    def pairwise_obs_exp_ratio(
+        r_full: float,
+        r_vsm_pair: float,
+        r_anchor_pair: float,
+    ) -> PairwiseStatOutput:
+        """O/E pairwise: r_full * (r_vsm_pair / r_anchor_pair) (same layout as other pairwise_ stats)."""
+        out = pairwise_continuous_adjust(r_full, r_anchor_pair, r_vsm_pair)
+        return PairwiseStatOutput(
+            stat="pairwise_obs_exp_ratio",
+            value=out.value,
+            p_value=math.nan,
+            anchor_value=out.anchor_value,
+            adjustment_ratio=out.adjustment_ratio,
+        )

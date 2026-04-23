@@ -11,7 +11,22 @@ from typing import Any
 
 import polars as pl
 
-from biostat_cli.config import get_table_config, load_resources, parse_csv_arg, parse_stats, parse_thresholds
+from biostat_cli.cli import (
+    _compute_rows_for_prepared,
+    _effective_stats_for_eval,
+    _schema_has_obs_exp,
+)
+from biostat_cli.config import (
+    PAIRWISE_STATS,
+    PairwiseColumns,
+    detect_pairwise_columns,
+    get_table_config,
+    load_resources,
+    obs_exp_column_names,
+    parse_csv_arg,
+    parse_stats,
+    parse_thresholds,
+)
 from biostat_cli.evaluators.base import BaseEvaluator
 from biostat_cli.evaluators.gene import GeneEvaluator, SUM_VARIANTS_SENTINEL
 from biostat_cli.evaluators.variant import VariantEvaluator
@@ -114,52 +129,6 @@ def _resolve_filter_cols(raw: str | None, metadata_filters: dict[str, str]) -> l
             pairs.append((name, metadata_filters[name]))
 
     return [("none", None), *pairs]
-
-
-def _append_binary_row(
-    rows: list[dict[str, Any]],
-    eval_name: str,
-    filter_name: str,
-    score_name: str,
-    threshold: float,
-    stat_name: str,
-    value: float,
-    p_value: float,
-    std_error: float,
-    tp: float,
-    fp: float,
-    tn: float,
-    fn: float,
-    rows_used: int,
-    total_eval_rows: int,
-    *,
-    enrichment_ci_lower: float = float("nan"),
-    enrichment_ci_upper: float = float("nan"),
-    rate_ratio_ci_lower: float = float("nan"),
-    rate_ratio_ci_upper: float = float("nan"),
-) -> None:
-    rows.append(
-        {
-            "eval_name": eval_name,
-            "filter_name": filter_name,
-            "score_name": score_name,
-            "threshold": threshold,
-            "stat": stat_name,
-            "value": value,
-            "p_value": p_value,
-            "std_error": std_error,
-            "enrichment_ci_lower": enrichment_ci_lower,
-            "enrichment_ci_upper": enrichment_ci_upper,
-            "rate_ratio_ci_lower": rate_ratio_ci_lower,
-            "rate_ratio_ci_upper": rate_ratio_ci_upper,
-            "tp": tp,
-            "fp": fp,
-            "tn": tn,
-            "fn": fn,
-            "rows_used": rows_used,
-            "total_eval_rows": total_eval_rows,
-        }
-    )
 
 
 def _resolve_output_paths(out_fname: str) -> dict[str, str]:
@@ -366,10 +335,22 @@ def _run_eval_filter_combo(
     filter_name: str,
     filter_col: str | None,
     missing_mode: str | None,
+    table_schema: set[str],
+    pairwise_cols: PairwiseColumns | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     combo_start = time.perf_counter()
     evaluator = _choose_evaluator(args.eval_level, source)
-    prepared = evaluator.prepare_eval_frame(eval_col=eval_col, filter_col=filter_col)
+    obs_exp_columns: tuple[str, str] | None = None
+    if _schema_has_obs_exp(table_schema, eval_col):
+        if args.eval_level == "gene":
+            raise ValueError(
+                "Obs/expected evals ({stem}_observed / {stem}_expected) require --eval-level variant."
+            )
+        obs_exp_columns = obs_exp_column_names(eval_col)
+    eff_stats = _effective_stats_for_eval(requested_stats, obs_exp_columns is not None)
+    prepared = evaluator.prepare_eval_frame(
+        eval_col=eval_col, filter_col=filter_col, obs_exp_columns=obs_exp_columns,
+    )
     combo_missing_rows: list[dict[str, Any]] = []
     if missing_mode is not None:
         combo_missing_rows = _build_missing_variant_rows(
@@ -380,132 +361,24 @@ def _run_eval_filter_combo(
             mode=missing_mode,
         )
 
-    need_labels = "auc" in requested_stats or "auprc" in requested_stats
-    need_cont = "enrichment" in requested_stats or "rate_ratio" in requested_stats
-    need_vsm_comparison = "vsm_comparison" in requested_stats
-
-    conts_by_score: dict[str, tuple[list, int]] = {}
-
-    combo_rows: list[dict[str, Any]] = []
-    for score_col in score_cols:
-        score_frame = evaluator.prepare_score_frame(
-            prepared, score_col=score_col, within_gene_percentile=args.within_gene_percentile,
-        )
-
-        if need_labels:
-            labels_scores = evaluator.labels_and_scores(score_frame, eval_col=eval_col, score_col=score_col)
-            labels = labels_scores[0] if labels_scores else None
-            scores = labels_scores[1] if labels_scores else None
-            if "auc" in requested_stats:
-                out = StatFactory.auc(labels, scores)
-                _append_binary_row(
-                    rows=combo_rows,
-                    eval_name=eval_col,
-                    filter_name=filter_name,
-                    score_name=score_col,
-                    threshold=float("nan"),
-                    stat_name=out.stat,
-                    value=out.value,
-                    p_value=out.p_value,
-                    std_error=out.std_error,
-                    tp=float("nan"),
-                    fp=float("nan"),
-                    tn=float("nan"),
-                    fn=float("nan"),
-                    rows_used=score_frame.rows_used,
-                    total_eval_rows=prepared.total_eval_rows,
-                    enrichment_ci_lower=float("nan"),
-                    enrichment_ci_upper=float("nan"),
-                    rate_ratio_ci_lower=float("nan"),
-                    rate_ratio_ci_upper=float("nan"),
-                )
-            if "auprc" in requested_stats:
-                out = StatFactory.auprc(labels, scores)
-                _append_binary_row(
-                    rows=combo_rows,
-                    eval_name=eval_col,
-                    filter_name=filter_name,
-                    score_name=score_col,
-                    threshold=float("nan"),
-                    stat_name=out.stat,
-                    value=out.value,
-                    p_value=out.p_value,
-                    std_error=out.std_error,
-                    tp=float("nan"),
-                    fp=float("nan"),
-                    tn=float("nan"),
-                    fn=float("nan"),
-                    rows_used=score_frame.rows_used,
-                    total_eval_rows=prepared.total_eval_rows,
-                    enrichment_ci_lower=float("nan"),
-                    enrichment_ci_upper=float("nan"),
-                    rate_ratio_ci_lower=float("nan"),
-                    rate_ratio_ci_upper=float("nan"),
-                )
-
-        if (need_cont or need_vsm_comparison) and thresholds:
-            conts = evaluator.contingency_batch(
-                score_frame, eval_col=eval_col, score_col=score_col, thresholds=thresholds
-            )
-            if need_vsm_comparison:
-                conts_by_score[score_col] = (conts, score_frame.rows_used)
-            if "enrichment" in requested_stats:
-                enr_results = StatFactory.enrichment_batch(conts, pvalue_method=args.pvalue_method)
-                for threshold, cont, out in zip(thresholds, conts, enr_results):
-                    _append_binary_row(
-                        rows=combo_rows,
-                        eval_name=eval_col,
-                        filter_name=filter_name,
-                        score_name=score_col,
-                        threshold=threshold,
-                        stat_name=out.stat,
-                        value=out.value,
-                        p_value=out.p_value,
-                        std_error=out.std_error,
-                        tp=cont.tp,
-                        fp=cont.fp,
-                        tn=cont.tn,
-                        fn=cont.fn,
-                        rows_used=score_frame.rows_used,
-                        total_eval_rows=prepared.total_eval_rows,
-                        enrichment_ci_lower=out.enrichment_ci_lower,
-                        enrichment_ci_upper=out.enrichment_ci_upper,
-                        rate_ratio_ci_lower=float("nan"),
-                        rate_ratio_ci_upper=float("nan"),
-                    )
-            if "rate_ratio" in requested_stats:
-                rr_results = StatFactory.rate_ratio_batch(
-                    conts, case_total=args.case_total, ctrl_total=args.ctrl_total,
-                    pvalue_method=args.pvalue_method,
-                )
-                for threshold, cont, out in zip(thresholds, conts, rr_results):
-                    _append_binary_row(
-                        rows=combo_rows,
-                        eval_name=eval_col,
-                        filter_name=filter_name,
-                        score_name=score_col,
-                        threshold=threshold,
-                        stat_name=out.stat,
-                        value=out.value,
-                        p_value=out.p_value,
-                        std_error=out.std_error,
-                        tp=cont.tp,
-                        fp=cont.fp,
-                        tn=cont.tn,
-                        fn=cont.fn,
-                        rows_used=score_frame.rows_used,
-                        total_eval_rows=prepared.total_eval_rows,
-                        enrichment_ci_lower=float("nan"),
-                        enrichment_ci_upper=float("nan"),
-                        rate_ratio_ci_lower=out.rate_ratio_ci_lower,
-                        rate_ratio_ci_upper=out.rate_ratio_ci_upper,
-                    )
-
-    vsm_cmp_rows: list[dict[str, Any]] = []
-    if need_vsm_comparison and len(conts_by_score) >= 2 and thresholds:
-        vsm_cmp_rows = _compute_vsm_comparison_parallel(
-            conts_by_score, eval_col, filter_name, thresholds, method=args.vsm_comparison_method,
-        )
+    combo_rows, vsm_cmp_rows = _compute_rows_for_prepared(
+        evaluator=evaluator,
+        prepared=prepared,
+        eval_col=eval_col,
+        filter_name=filter_name,
+        filter_col=filter_col,
+        score_cols=score_cols,
+        requested_stats=eff_stats,
+        thresholds=thresholds,
+        eval_case_total=args.case_total,
+        eval_ctrl_total=args.ctrl_total,
+        pairwise_cols=pairwise_cols,
+        within_gene_percentile=args.within_gene_percentile,
+        pvalue_method=args.pvalue_method,
+        vsm_comparison_method=args.vsm_comparison_method,
+        gene_col=None,
+        obs_exp_columns=obs_exp_columns,
+    )
 
     timing = {
         "eval_name": eval_col,
@@ -523,6 +396,19 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
 
     # Share a single LazyFrame across all workers so parquet metadata is read once.
     source = scan_table(table.path)
+    table_column_names = source.collect_schema().names()
+    table_schema = set(table_column_names)
+
+    need_pairwise = bool(requested_stats & PAIRWISE_STATS)
+    pairwise_cols: PairwiseColumns | None = None
+    if need_pairwise:
+        pairwise_cols = detect_pairwise_columns(table_column_names)
+        if pairwise_cols is None:
+            raise ValueError(
+                "Pairwise stats requested but pairwise column structure not detected. "
+                "Expected columns: {anchor}_anchor_percentile, {vsm}_percentile_with_anchor, "
+                "{anchor}_anchor_percentile_with_{vsm}"
+            )
 
     if args.within_gene_percentile:
         if args.eval_level == "gene":
@@ -562,6 +448,8 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                 filter_name=filter_name,
                 filter_col=filter_col,
                 missing_mode=args.write_missing if args.write_missing != "none" else None,
+                table_schema=table_schema,
+                pairwise_cols=pairwise_cols,
             )
             rows_by_idx[idx] = combo_rows
             timings_by_idx[idx] = combo_timing
@@ -581,6 +469,8 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                     filter_name,
                     filter_col,
                     args.write_missing if args.write_missing != "none" else None,
+                    table_schema,
+                    pairwise_cols,
                 ): idx
                 for idx, eval_col, filter_name, filter_col in combos
             }

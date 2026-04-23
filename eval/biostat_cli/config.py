@@ -8,14 +8,31 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_THRESHOLDS = [0.90, 0.95, 0.98, 0.99]
-ALL_STATS = {"auc", "auprc", "enrichment", "rate_ratio", "pairwise_enrichment", "pairwise_rate_ratio", "pairwise_auc", "pairwise_auprc", "vsm_comparison"}
-PAIRWISE_STATS = {"pairwise_enrichment", "pairwise_rate_ratio", "pairwise_auc", "pairwise_auprc"}
+DEFAULT_THRESHOLDS = [0.90, 0.95, 0.98, 0.99, 0.995]
+GENE_AVG_STATS = {"gene_avg_enrichment", "gene_avg_rate_ratio", "gene_avg_auc", "gene_avg_auprc"}
+OE_STATS = {"obs_exp_ratio", "pairwise_obs_exp_ratio"}
+ALL_STATS = {
+    "auc", "auprc", "enrichment", "rate_ratio",
+    "pairwise_enrichment", "pairwise_rate_ratio", "pairwise_auc", "pairwise_auprc",
+    "vsm_comparison", "obs_exp_ratio", "pairwise_obs_exp_ratio",
+} | GENE_AVG_STATS
+PAIRWISE_STATS = {
+    "pairwise_enrichment", "pairwise_rate_ratio", "pairwise_auc", "pairwise_auprc",
+    "pairwise_obs_exp_ratio",
+}
+
+def obs_exp_column_names(eval_stem: str) -> tuple[str, str]:
+    """Column pair ``{stem}_observed`` and ``{stem}_expected`` for an O/E eval."""
+    return f"{eval_stem}_observed", f"{eval_stem}_expected"
+
 
 __all__ = [
     "DEFAULT_THRESHOLDS",
     "ALL_STATS",
+    "GENE_AVG_STATS",
+    "OE_STATS",
     "PAIRWISE_STATS",
+    "obs_exp_column_names",
     "TableConfig",
     "PairwiseColumns",
     "load_resources",
