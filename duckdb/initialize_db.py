@@ -18,7 +18,10 @@ CREATE TABLE metadata (
     table_name     VARCHAR NOT NULL PRIMARY KEY,
     table_type      VARCHAR NOT NULL CHECK (table_type IN ('score', 'eval', 'merged_scores', 'merged_evals', 'merged_analysis')),
     analysis_level  VARCHAR NOT NULL CHECK (analysis_level IN ('variant', 'gene')),
-    deduped        BOOLEAN NOT NULL DEFAULT FALSE
+    deduped        BOOLEAN NOT NULL DEFAULT FALSE,
+    eval_column    VARCHAR,
+    case_column    VARCHAR,
+    ctrl_column    VARCHAR
 );
 """
 

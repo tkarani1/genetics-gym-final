@@ -17,6 +17,8 @@ class _EvalInfo(NamedTuple):
     table_name: str
     source_column: str
     analysis_level: str
+    has_bool: bool
+    has_counts: bool
 
 
 def _validate_inputs(
@@ -27,13 +29,14 @@ def _validate_inputs(
     infos: list[_EvalInfo] = []
     for tbl in table_names:
         row = con.execute(
-            "SELECT table_type, deduped, source_column, analysis_level "
+            "SELECT table_type, deduped, source_column, analysis_level, "
+            "eval_column, case_column "
             "FROM metadata WHERE table_name = ?",
             [tbl],
         ).fetchone()
         if row is None:
             raise ValueError(f"Table {tbl!r} not found in metadata.")
-        ttype, deduped, source_column, analysis_level = row
+        ttype, deduped, source_column, analysis_level, eval_col, case_col = row
         if ttype != "eval":
             raise ValueError(f"Table {tbl!r} is type {ttype!r}, not 'eval'.")
         if not deduped:
@@ -41,24 +44,30 @@ def _validate_inputs(
                 f"Table {tbl!r} has not been deduped. "
                 f"Run remove_duplicates first."
             )
-        infos.append(_EvalInfo(tbl, source_column, analysis_level))
+        infos.append(_EvalInfo(
+            tbl, source_column, analysis_level,
+            has_bool=eval_col is not None,
+            has_counts=case_col is not None,
+        ))
     return infos
 
 
 def _data_col_refs(alias: str, info: _EvalInfo) -> list[str]:
     """Return SELECT fragments for the eval data columns of one input table.
 
-    Variant tables contribute ``is_pos`` (renamed to the source label).
-    Gene tables contribute ``n_case`` and ``n_ctrl`` (prefixed with the
-    source label).
+    Tables with a boolean column contribute ``is_pos`` (renamed to the
+    source label).  Tables with count columns contribute ``n_case`` and
+    ``n_ctrl`` (prefixed with the source label).  Tables with both
+    contribute all three.
     """
     label = info.source_column
-    if info.analysis_level == "variant":
-        return [f'{alias}.is_pos AS "{label}"']
-    return [
-        f'{alias}.n_case AS "{label}_n_case"',
-        f'{alias}.n_ctrl AS "{label}_n_ctrl"',
-    ]
+    refs: list[str] = []
+    if info.has_bool:
+        refs.append(f'{alias}.is_pos AS "{label}"')
+    if info.has_counts:
+        refs.append(f'{alias}.n_case AS "{label}_n_case"')
+        refs.append(f'{alias}.n_ctrl AS "{label}_n_ctrl"')
+    return refs
 
 
 def merge_evals(

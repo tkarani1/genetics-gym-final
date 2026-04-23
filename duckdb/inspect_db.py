@@ -66,6 +66,8 @@ def _print_score_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
 def _print_eval_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
                     table_name: str, source_column: str, source_path: str,
                     analysis_level: str, deduped: bool,
+                    eval_column: str | None, case_column: str | None,
+                    ctrl_column: str | None,
                     sample_rows: int | None) -> None:
     if table_name not in existing_tables:
         print(f"{table_name:<25} {'MISSING TABLE':}")
@@ -77,7 +79,17 @@ def _print_eval_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
     ).fetchone()
     dedup_flag = "yes" if deduped else "no"
 
-    if analysis_level == "variant":
+    has_bool = eval_column is not None
+    has_counts = case_column is not None
+
+    col_desc_parts: list[str] = []
+    if has_bool:
+        col_desc_parts.append(f"eval={eval_column}")
+    if has_counts:
+        col_desc_parts.append(f"case={case_column}, ctrl={ctrl_column}")
+    col_desc = "; ".join(col_desc_parts)
+
+    if has_bool:
         positives, negatives, nulls = con.execute(f"""
             SELECT
                 COUNT(*) FILTER (WHERE is_pos = TRUE),
@@ -90,7 +102,7 @@ def _print_eval_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
             f"{positives:>12,} {negatives:>12,} {nulls:>12,} "
             f"{unique_keys:>12,}"
         )
-    else:
+    elif has_counts:
         sum_case, sum_ctrl = con.execute(
             f"SELECT SUM(n_case), SUM(n_ctrl) FROM {quoted}"
         ).fetchone()
@@ -102,7 +114,7 @@ def _print_eval_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
             f"{unique_keys:>12,}"
         )
 
-    print(f"  path: {source_path}")
+    print(f"  path: {source_path}  [{col_desc}]")
     if unique_keys < total:
         print(f"  *** {total - unique_keys:,} duplicate key(s) detected ***")
     _print_sample(con, quoted, sample_rows)
@@ -200,7 +212,7 @@ def inspect_db(db_path: str, sample_rows: int | None = None,
 
         rows = con.execute(
             "SELECT source_column, source_path, table_name, table_type, "
-            "analysis_level, deduped "
+            "analysis_level, deduped, eval_column, case_column, ctrl_column "
             "FROM metadata ORDER BY table_type, table_name"
         ).fetchall()
 
@@ -223,22 +235,28 @@ def inspect_db(db_path: str, sample_rows: int | None = None,
                   f"{'Scored':>12} {'Nulls':>12} {'Unique Keys':>12} "
                   f"{'Min':>12} {'Max':>12} {'Mean':>12} {'Median':>12}")
             print("-" * 182)
-            for source_column, source_path, table_name, _, analysis_level, deduped in score_rows:
+            for r in score_rows:
+                source_column, source_path, table_name = r[0], r[1], r[2]
+                analysis_level, deduped = r[4], r[5]
                 _print_score_row(con, existing_tables, table_name,
                                  source_column, source_path, analysis_level,
                                  deduped, fmt, sample_rows)
             print()
 
         if eval_rows:
-            print("EVAL TABLES  (variant: Positive/Negative/Nulls · gene: Σn_case/Σn_ctrl)")
-            print(f"{'Table':<25} {'Column':<25} {'Key':>8} {'Deduped':>8} {'Rows':>12} "
+            print("EVAL TABLES  (bool: Positive/Negative/Nulls · counts: Σcase/Σctrl)")
+            print(f"{'Table':<25} {'Label':<25} {'Key':>8} {'Deduped':>8} {'Rows':>12} "
                   f"{'Pos/Σcase':>12} {'Neg/Σctrl':>12} {'Nulls':>12} "
                   f"{'Unique Keys':>12}")
             print("-" * 144)
-            for source_column, source_path, table_name, _, analysis_level, deduped in eval_rows:
+            for r in eval_rows:
+                source_column, source_path, table_name = r[0], r[1], r[2]
+                analysis_level, deduped = r[4], r[5]
+                eval_column, case_column, ctrl_column = r[6], r[7], r[8]
                 _print_eval_row(con, existing_tables, table_name,
                                 source_column, source_path, analysis_level,
-                                deduped, sample_rows)
+                                deduped, eval_column, case_column,
+                                ctrl_column, sample_rows)
             print()
 
         if merged_rows:
@@ -246,7 +264,9 @@ def inspect_db(db_path: str, sample_rows: int | None = None,
             print(f"{'Table':<25} {'Operation':<15} {'Key':>8} {'Rows':>12} "
                   f"{'Columns':>8} {'Data Cols':>12}")
             print("-" * 83)
-            for source_column, source_path, table_name, _, analysis_level, _ in merged_rows:
+            for r in merged_rows:
+                source_column, source_path, table_name = r[0], r[1], r[2]
+                analysis_level = r[4]
                 _print_merged_row(con, existing_tables, table_name,
                                   source_column, source_path, analysis_level,
                                   sample_rows)
