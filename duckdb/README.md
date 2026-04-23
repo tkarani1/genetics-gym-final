@@ -2,7 +2,7 @@
 
 A persistent DuckDB-based pipeline for ingesting, deduplicating, inspecting, and merging variant/gene scores from Parquet files. Each step is a standalone Python script that can be run individually from the command line or composed into larger workflows.
 
-All scripts default to `scores.duckdb` as the database path. Override with `--db <path>`.
+All scripts accept a `--db <path>` argument to specify the database file. Override the default with this flag.
 
 ## Prerequisites
 
@@ -46,7 +46,7 @@ Each row has the following columns:
 | `ref`    | VARCHAR  | Reference allele (NULL for gene-keyed tables) |
 | `alt`    | VARCHAR  | Alternate allele (NULL for gene-keyed tables) |
 | `ensg`   | VARCHAR  | Ensembl gene ID (NULL for variant-keyed tables) |
-| `key`    | UBIGINT  | Hash of variant key columns, NULL for gene keys |
+| `key`    | UBIGINT  | Hash of key columns: `hash(chrom\|pos\|ref\|alt)` for variant, `hash(ensg)` for gene |
 | `score`  | DOUBLE   | The ingested score value |
 | `temp_1` | DOUBLE   | Reserved for percentile computation (initially NULL) |
 | `temp_2` | DOUBLE   | Reserved for percentile computation (initially NULL) |
@@ -129,7 +129,7 @@ python duckdb/remove_duplicates.py \
 
 ### `pairwise_percentile.py` — In-place pairwise percentile computation
 
-Computes intersection-based `PERCENT_RANK` between an anchor and a non-anchor score table, writing the results into the non-anchor table's `temp_1` and `temp_2` columns:
+Computes intersection-based `CUME_DIST` between an anchor and a non-anchor score table, writing the results into the non-anchor table's `temp_1` and `temp_2` columns:
 
 - `temp_1` = anchor score percentile within the key intersection
 - `temp_2` = non-anchor score percentile within the key intersection
@@ -270,6 +270,36 @@ python duckdb/create_analysis_table.py \
 
 ---
 
+### `join_linker.py` — Enrich a merged table with key columns from a linker
+
+Fills in the "other side" key columns on any merged table (`merged_scores`, `merged_evals`, or `merged_analysis`) using a linker Parquet that maps between variant keys and gene keys.
+
+**Variant-level table + linker (add `ensg`):** LEFT JOIN on variant `key` to pull in `ensg` from the linker. This is many-to-one, so the row count does not change — it simply fills in the `ensg` column where a match exists. The `analysis_level` remains `variant`.
+
+**Gene-level table + linker (add `chrom/pos/ref/alt`):** LEFT JOIN on `ensg` to pull in variant key columns from the linker. This is one-to-many, so the row count **expands** (each gene row becomes N variant rows). The `analysis_level` changes to `variant`.
+
+The operation is **in-place** — it replaces the existing table rather than creating a new one.
+
+Constraints:
+- The table must be a merged type (`merged_scores`, `merged_evals`, or `merged_analysis`)
+- The linker Parquet must contain `chrom`, `pos`, `ref`, `alt`, and `ensg` columns
+
+```bash
+# Add ensg to a variant-level merged table
+python duckdb/join_linker.py \
+  --db scores.duckdb \
+  --table_name merged_scores_tbl \
+  --linker_path data/linker.parquet
+
+# Expand a gene-level merged table to variant granularity
+python duckdb/join_linker.py \
+  --db scores.duckdb \
+  --table_name merged_gene_evals \
+  --linker_path data/linker.parquet
+```
+
+---
+
 ## Typical Workflows
 
 ### Basic: Ingest, inspect, and merge scores
@@ -355,7 +385,7 @@ python duckdb/merge_scores.py --db my_scores.duckdb \
 python duckdb/inspect_db.py --db my_scores.duckdb --sample 3
 ```
 
-This produces columns like `AM_pairwise_revel`, `revel_pairwise_AM`, `AM_pairwise_cadd_score`, `cadd_score_pairwise_AM` — each representing the PERCENT_RANK of the respective score within the key intersection of that anchor-nonanchor pair.
+This produces columns like `AM_pairwise_revel`, `revel_pairwise_AM`, `AM_pairwise_cadd_score`, `cadd_score_pairwise_AM` — each representing the `CUME_DIST` percentile of the respective score within the key intersection of that anchor-nonanchor pair.
 
 ### Standalone pairwise percentile (in-place)
 
@@ -443,8 +473,8 @@ python duckdb/inspect_db.py --db my_scores.duckdb
 
 ## Design Notes
 
-- **Key hashing**: Variant keys are hashed via `hash(chrom || '|' || pos || '|' || ref || '|' || alt)` using DuckDB's built-in `hash()` function. Gene-keyed tables use NULL for the hash since `ensg` itself serves as the key.
-- **Physical sort order**: Score tables are stored sorted by score at ingestion time. This benefits subsequent window-function operations (DENSE_RANK, PERCENT_RANK) by aligning with DuckDB's optimizer expectations.
-- **NULL-safe percentiles**: All percentile computations use `PERCENT_RANK() OVER (PARTITION BY (score IS NOT NULL) ORDER BY score)` wrapped in `CASE WHEN ... IS NOT NULL` to exclude NULL scores from the ranking denominator and assign NULL percentiles to NULL scores.
+- **Key hashing**: Variant keys are hashed via `hash(chrom || '|' || pos || '|' || ref || '|' || alt)` using DuckDB's built-in `hash()` function. Gene-keyed tables are hashed via `hash(ensg)`. Both produce a `UBIGINT` key used for joins and deduplication.
+- **Physical sort order**: Score tables are stored sorted by score at ingestion time. This benefits subsequent window-function operations (DENSE_RANK, CUME_DIST) by aligning with DuckDB's optimizer expectations.
+- **NULL-safe percentiles**: All percentile computations use `CUME_DIST() OVER (PARTITION BY (score IS NOT NULL) ORDER BY score)` wrapped in `CASE WHEN ... IS NOT NULL` to exclude NULL scores from the ranking denominator and assign NULL percentiles to NULL scores. `CUME_DIST` is used rather than `PERCENT_RANK` to guarantee the maximum value in any percentile column is always 1.0.
 - **Deduplication as explicit step**: Duplicate keys are detected at ingestion but not automatically removed. The `deduped` metadata flag gates access to pairwise operations and merging, ensuring data integrity without silent data loss.
 - **Merged table metadata**: Merged tables store the comma-separated source column names in `source_column` and the set operation in `source_path` for traceability.
