@@ -9,10 +9,7 @@ from typing import NamedTuple
 
 import duckdb
 
-from initialize_db import log_event
-
-
-DEFAULT_DB_PATH = "scores.duckdb"
+from initialize_db import DEFAULT_DB_PATH, log_event
 
 SET_OPERATIONS = ("intersection", "union", "pairwise")
 PERCENTILE_MODES = ("pre", "post", "none")

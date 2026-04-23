@@ -7,10 +7,7 @@ import sys
 
 import duckdb
 
-from initialize_db import log_event
-
-
-DEFAULT_DB_PATH = "scores.duckdb"
+from initialize_db import DEFAULT_DB_PATH, log_event
 
 
 def eject_table(db_path: str, table_name: str) -> None:

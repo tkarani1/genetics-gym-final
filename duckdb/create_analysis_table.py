@@ -8,10 +8,7 @@ import sys
 
 import duckdb
 
-from initialize_db import log_event
-
-
-DEFAULT_DB_PATH = "gg_data.duckdb"
+from initialize_db import DEFAULT_DB_PATH, log_event
 
 KEY_COLS = ("chrom", "pos", "ref", "alt", "ensg", '"key"')
 KEY_NAMES = {"chrom", "pos", "ref", "alt", "ensg", "key"}

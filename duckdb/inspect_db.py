@@ -7,8 +7,7 @@ import sys
 
 import duckdb
 
-
-DEFAULT_DB_PATH = "scores.duckdb"
+from initialize_db import DEFAULT_DB_PATH
 
 
 def _print_sample(con: duckdb.DuckDBPyConnection, quoted: str,

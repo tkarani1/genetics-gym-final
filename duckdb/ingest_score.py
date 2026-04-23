@@ -8,10 +8,7 @@ import sys
 
 import duckdb
 
-from initialize_db import log_event
-
-
-DEFAULT_DB_PATH = "scores.duckdb"
+from initialize_db import DEFAULT_DB_PATH, log_event
 
 
 def ingest_score(
