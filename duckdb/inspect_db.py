@@ -71,22 +71,37 @@ def _print_eval_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
         print(f"{table_name:<25} {'MISSING TABLE':}")
         return
     quoted = f'"{table_name}"'
-    stats = con.execute(f"""
-        SELECT
-            COUNT(*)                                        AS total,
-            COUNT(*) FILTER (WHERE is_pos = TRUE)           AS positives,
-            COUNT(*) FILTER (WHERE is_pos = FALSE)          AS negatives,
-            COUNT(*) FILTER (WHERE is_pos IS NULL)          AS nulls,
-            COUNT(DISTINCT "key")                           AS unique_keys
-        FROM {quoted}
-    """).fetchone()
-    total, positives, negatives, nulls, unique_keys = stats
+
+    total, unique_keys = con.execute(
+        f'SELECT COUNT(*), COUNT(DISTINCT "key") FROM {quoted}'
+    ).fetchone()
     dedup_flag = "yes" if deduped else "no"
-    print(
-        f"{table_name:<25} {source_column:<25} {analysis_level:>8} {dedup_flag:>8} {total:>12,} "
-        f"{positives:>12,} {negatives:>12,} {nulls:>12,} "
-        f"{unique_keys:>12,}"
-    )
+
+    if analysis_level == "variant":
+        positives, negatives, nulls = con.execute(f"""
+            SELECT
+                COUNT(*) FILTER (WHERE is_pos = TRUE),
+                COUNT(*) FILTER (WHERE is_pos = FALSE),
+                COUNT(*) FILTER (WHERE is_pos IS NULL)
+            FROM {quoted}
+        """).fetchone()
+        print(
+            f"{table_name:<25} {source_column:<25} {analysis_level:>8} {dedup_flag:>8} {total:>12,} "
+            f"{positives:>12,} {negatives:>12,} {nulls:>12,} "
+            f"{unique_keys:>12,}"
+        )
+    else:
+        sum_case, sum_ctrl = con.execute(
+            f"SELECT SUM(n_case), SUM(n_ctrl) FROM {quoted}"
+        ).fetchone()
+        sum_case = sum_case or 0
+        sum_ctrl = sum_ctrl or 0
+        print(
+            f"{table_name:<25} {source_column:<25} {analysis_level:>8} {dedup_flag:>8} {total:>12,} "
+            f"{sum_case:>12,} {sum_ctrl:>12,} {'':>12} "
+            f"{unique_keys:>12,}"
+        )
+
     print(f"  path: {source_path}")
     if unique_keys < total:
         print(f"  *** {total - unique_keys:,} duplicate key(s) detected ***")
@@ -215,9 +230,9 @@ def inspect_db(db_path: str, sample_rows: int | None = None,
             print()
 
         if eval_rows:
-            print("EVAL TABLES")
+            print("EVAL TABLES  (variant: Positive/Negative/Nulls · gene: Σn_case/Σn_ctrl)")
             print(f"{'Table':<25} {'Column':<25} {'Key':>8} {'Deduped':>8} {'Rows':>12} "
-                  f"{'Positive':>12} {'Negative':>12} {'Nulls':>12} "
+                  f"{'Pos/Σcase':>12} {'Neg/Σctrl':>12} {'Nulls':>12} "
                   f"{'Unique Keys':>12}")
             print("-" * 144)
             for source_column, source_path, table_name, _, analysis_level, deduped in eval_rows:

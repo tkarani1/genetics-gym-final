@@ -45,6 +45,22 @@ def _validate_inputs(
     return infos
 
 
+def _data_col_refs(alias: str, info: _EvalInfo) -> list[str]:
+    """Return SELECT fragments for the eval data columns of one input table.
+
+    Variant tables contribute ``is_pos`` (renamed to the source label).
+    Gene tables contribute ``n_case`` and ``n_ctrl`` (prefixed with the
+    source label).
+    """
+    label = info.source_column
+    if info.analysis_level == "variant":
+        return [f'{alias}.is_pos AS "{label}"']
+    return [
+        f'{alias}.n_case AS "{label}_n_case"',
+        f'{alias}.n_ctrl AS "{label}_n_ctrl"',
+    ]
+
+
 def merge_evals(
     db_path: str,
     table_names: list[str],
@@ -52,10 +68,11 @@ def merge_evals(
 ) -> None:
     """Merge multiple eval tables into a single wide output table via union.
 
-    Each input eval table's ``is_pos`` column is renamed to the table's
-    ``source_column`` name so they are distinct in the wide table.  The
-    union is a ``FULL OUTER JOIN`` on ``key``, so the result contains all
-    rows from any input table; labels are NULL where a table lacks a key.
+    Variant-level input tables contribute their ``is_pos`` column (renamed
+    to the table's ``source_column``).  Gene-level input tables contribute
+    ``n_case`` and ``n_ctrl`` columns (prefixed with the source label).
+    The union is a ``FULL OUTER JOIN`` on ``key``, so the result contains
+    all rows from any input table; values are NULL where a table lacks a key.
 
     Parameters
     ----------
@@ -93,10 +110,10 @@ def merge_evals(
             for k in KEY_COLS
         )
 
-        eval_col_refs = ", ".join(
-            f'{aliases[i]}.is_pos AS "{info.source_column}"'
-            for i, info in enumerate(infos)
-        )
+        eval_col_parts: list[str] = []
+        for i, info in enumerate(infos):
+            eval_col_parts.extend(_data_col_refs(aliases[i], info))
+        eval_col_refs = ", ".join(eval_col_parts)
 
         select_clause = f"{key_coalesce}, {eval_col_refs}"
 

@@ -18,21 +18,27 @@ def ingest_eval(
     table_name: str,
     analysis_level: str,
 ) -> None:
-    """Read one boolean label column from a parquet file and materialise it
-    as a DuckDB table with canonical key columns and a hash key.
+    """Read evaluation data from a parquet/TSV file and materialise it as a
+    DuckDB table with canonical key columns, a hash key, and evaluation
+    columns.
 
-    The resulting table has the same key structure as score tables
-    (chrom/pos/ref/alt/ensg/key) but stores a boolean ``is_pos`` column
-    instead of score/temp/rank.
+    Variant-level tables store a boolean ``is_pos`` column (read from the
+    column named by *eval_name*) with ``n_case``/``n_ctrl`` set to NULL.
+
+    Gene-level tables store integer ``n_case`` and ``n_ctrl`` columns (read
+    from identically-named source columns) with ``is_pos`` set to NULL.
+    For gene-level ingestion *eval_name* is a descriptive label only and
+    does not need to match a source column.
 
     Parameters
     ----------
     db_path : str
         Path to the persistent ``.duckdb`` file (must already be initialised).
     eval_name : str
-        Column name in the parquet file to use as the ``is_pos`` label.
+        For variant-level: column name in the source file to use as ``is_pos``.
+        For gene-level: descriptive label stored in metadata.
     eval_path : str
-        Path to the source parquet file.
+        Path to the source parquet (or TSV/CSV) file.
     table_name : str
         Name for the new table inside the database.
     analysis_level : str
@@ -44,9 +50,14 @@ def ingest_eval(
     if not os.path.isfile(db_path):
         raise FileNotFoundError(f"Database not found: {db_path}")
     if not os.path.isfile(eval_path):
-        raise FileNotFoundError(f"Parquet file not found: {eval_path}")
+        raise FileNotFoundError(f"Source file not found: {eval_path}")
     if analysis_level not in ("variant", "gene"):
         raise ValueError(f"analysis_level must be 'variant' or 'gene', got {analysis_level!r}")
+
+    lower = eval_path.lower()
+    is_parquet = lower.endswith(".parquet")
+    read_fn = (f"read_parquet('{eval_path}')" if is_parquet
+               else f"read_csv_auto('{eval_path}')")
 
     con = duckdb.connect(db_path)
     try:
@@ -66,23 +77,26 @@ def ingest_eval(
                 f"Table {table_name!r} already exists in the database."
             )
 
-        parquet_columns = {
-            r[0]
-            for r in con.execute(
-                f"SELECT name FROM parquet_schema('{eval_path}')"
-            ).fetchall()
-        }
-        if eval_name not in parquet_columns:
-            raise ValueError(
-                f"Column {eval_name!r} not found in parquet. "
-                f"Available: {sorted(parquet_columns)}"
-            )
+        if is_parquet:
+            source_columns = {
+                r[0] for r in con.execute(
+                    f"SELECT name FROM parquet_schema('{eval_path}')"
+                ).fetchall()
+            }
+        else:
+            desc = con.execute(f"DESCRIBE SELECT * FROM {read_fn}").fetchall()
+            source_columns = {r[0] for r in desc}
 
         if analysis_level == "variant":
-            missing = [k for k in ("chrom", "pos", "ref", "alt") if k not in parquet_columns]
+            if eval_name not in source_columns:
+                raise ValueError(
+                    f"Column {eval_name!r} not found in source. "
+                    f"Available: {sorted(source_columns)}"
+                )
+            missing = [k for k in ("chrom", "pos", "ref", "alt") if k not in source_columns]
             if missing:
                 raise ValueError(
-                    f"Variant key column(s) missing from parquet: {missing}"
+                    f"Variant key column(s) missing from source: {missing}"
                 )
             key_select = (
                 "chrom, "
@@ -95,9 +109,25 @@ def ingest_eval(
                 "hash(chrom || '|' || CAST(pos AS VARCHAR) "
                 "|| '|' || ref || '|' || alt)"
             )
+            quoted_eval = f'"{eval_name}"'
+            data_select = (
+                f"{quoted_eval}::BOOLEAN AS is_pos, "
+                "NULL::INTEGER AS n_case, "
+                "NULL::INTEGER AS n_ctrl"
+            )
         else:
-            if "ensg" not in parquet_columns:
-                raise ValueError("Key column 'ensg' not found in parquet.")
+            if "ensg" not in source_columns:
+                raise ValueError("Key column 'ensg' not found in source.")
+
+            has_bool = eval_name in source_columns
+            has_counts = "n_case" in source_columns and "n_ctrl" in source_columns
+            if not has_bool and not has_counts:
+                raise ValueError(
+                    f"Gene-level source must contain either "
+                    f"{eval_name!r} (boolean) or n_case/n_ctrl (counts). "
+                    f"Available: {sorted(source_columns)}"
+                )
+
             key_select = (
                 "NULL::VARCHAR AS chrom, "
                 "NULL::BIGINT AS pos, "
@@ -107,16 +137,21 @@ def ingest_eval(
             )
             hash_expr = "hash(ensg)"
 
+            quoted_eval = f'"{eval_name}"'
+            is_pos_expr = f"{quoted_eval}::BOOLEAN AS is_pos" if has_bool else "NULL::BOOLEAN AS is_pos"
+            n_case_expr = "n_case::INTEGER AS n_case" if has_counts else "NULL::INTEGER AS n_case"
+            n_ctrl_expr = "n_ctrl::INTEGER AS n_ctrl" if has_counts else "NULL::INTEGER AS n_ctrl"
+            data_select = f"{is_pos_expr}, {n_case_expr}, {n_ctrl_expr}"
+
         quoted_table = f'"{table_name}"'
-        quoted_eval = f'"{eval_name}"'
 
         create_sql = f"""
         CREATE TABLE {quoted_table} AS
         SELECT
             {key_select},
             {hash_expr} AS "key",
-            {quoted_eval}::BOOLEAN AS is_pos
-        FROM read_parquet('{eval_path}');
+            {data_select}
+        FROM {read_fn};
         """
         con.execute(create_sql)
 
@@ -139,19 +174,44 @@ def ingest_eval(
             f"analysis_level={analysis_level}, rows={row_count}",
         )
 
-        pos_count = con.execute(
-            f"SELECT COUNT(*) FROM {quoted_table} WHERE is_pos = TRUE"
-        ).fetchone()[0]
-        null_count = con.execute(
-            f"SELECT COUNT(*) FROM {quoted_table} WHERE is_pos IS NULL"
-        ).fetchone()[0]
-        print(
-            f"Ingested {eval_name!r} → {table_name!r}: "
-            f"{row_count} rows ({pos_count} positive, "
-            f"{row_count - pos_count - null_count} negative, "
-            f"{null_count} null)",
-            file=sys.stderr,
-        )
+        if analysis_level == "variant":
+            pos_count = con.execute(
+                f"SELECT COUNT(*) FROM {quoted_table} WHERE is_pos = TRUE"
+            ).fetchone()[0]
+            neg_count = con.execute(
+                f"SELECT COUNT(*) FROM {quoted_table} WHERE is_pos = FALSE"
+            ).fetchone()[0]
+            null_count = row_count - pos_count - neg_count
+            print(
+                f"Ingested {eval_name!r} → {table_name!r}: "
+                f"{row_count} rows ({pos_count} positive, "
+                f"{neg_count} negative, {null_count} null)",
+                file=sys.stderr,
+            )
+        else:
+            parts = [f"{row_count} rows"]
+            if has_bool:
+                pos_count = con.execute(
+                    f"SELECT COUNT(*) FROM {quoted_table} WHERE is_pos = TRUE"
+                ).fetchone()[0]
+                neg_count = con.execute(
+                    f"SELECT COUNT(*) FROM {quoted_table} WHERE is_pos = FALSE"
+                ).fetchone()[0]
+                parts.append(f"{pos_count} positive, {neg_count} negative")
+            if has_counts:
+                total_case = con.execute(
+                    f"SELECT SUM(n_case) FROM {quoted_table}"
+                ).fetchone()[0] or 0
+                total_ctrl = con.execute(
+                    f"SELECT SUM(n_ctrl) FROM {quoted_table}"
+                ).fetchone()[0] or 0
+                parts.append(f"Σn_case={total_case:,}, Σn_ctrl={total_ctrl:,}")
+            print(
+                f"Ingested {eval_name!r} → {table_name!r}: "
+                f"{' ('.join(parts)})",
+                file=sys.stderr,
+            )
+
         if has_dupes:
             print(
                 f"  WARNING: {row_count - unique_keys:,} duplicate key(s) "
@@ -172,11 +232,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--eval_name", required=True,
-        help="Name of the boolean label column in the parquet file.",
+        help="Variant: column name to use as is_pos. Gene: descriptive label.",
     )
     parser.add_argument(
         "--eval_path", required=True,
-        help="Path to the source parquet file.",
+        help="Path to the source file (parquet, TSV, or CSV).",
     )
     parser.add_argument(
         "--table_name", required=True,
