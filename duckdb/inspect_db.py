@@ -119,7 +119,42 @@ def _print_merged_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
     _print_sample(con, quoted, sample_rows)
 
 
-def inspect_db(db_path: str, sample_rows: int | None = None) -> None:
+def _print_audit_log(con: duckdb.DuckDBPyConnection,
+                     existing_tables: set, last_n: int | None) -> None:
+    """Print the audit_log table, optionally limited to the last N events."""
+    if "audit_log" not in existing_tables:
+        print("No audit_log table found (database may pre-date this feature).",
+              file=sys.stderr)
+        return
+
+    total = con.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+    if total == 0:
+        print("AUDIT LOG  (empty)\n")
+        return
+
+    limit_clause = f"LIMIT {last_n}" if last_n else ""
+    rows = con.execute(
+        f"SELECT ts, module, action, table_name, details "
+        f"FROM audit_log ORDER BY ts DESC {limit_clause}"
+    ).fetchall()
+
+    shown = len(rows)
+    header = f"AUDIT LOG  ({shown} of {total} events"
+    if last_n and shown < total:
+        header += f", showing last {last_n}"
+    header += ")"
+    print(header)
+    print(f"{'Timestamp':<26} {'Module':<30} {'Action':<25} {'Table':<25} Details")
+    print("-" * 140)
+    for ts, module, action, table_name, details in rows:
+        tbl = table_name or ""
+        det = details or ""
+        print(f"{str(ts):<26} {module:<30} {action:<25} {tbl:<25} {det}")
+    print()
+
+
+def inspect_db(db_path: str, sample_rows: int | None = None,
+               show_audit: bool = False, audit_last: int | None = None) -> None:
     """Print metadata entries and summary statistics for every table.
 
     For each row in the *metadata* table, verifies the corresponding
@@ -130,6 +165,10 @@ def inspect_db(db_path: str, sample_rows: int | None = None) -> None:
     ----------
     sample_rows : int or None
         If set, print this many randomly sampled rows per table.
+    show_audit : bool
+        If True, print the audit log.
+    audit_last : int or None
+        If set with show_audit, only show the last N audit events.
     """
     con = duckdb.connect(db_path, read_only=True)
     try:
@@ -153,6 +192,8 @@ def inspect_db(db_path: str, sample_rows: int | None = None) -> None:
 
         if not rows:
             print("No tables registered.", file=sys.stderr)
+            if show_audit:
+                _print_audit_log(con, existing_tables, audit_last)
             return
 
         def fmt(v: float | None) -> str:
@@ -197,6 +238,9 @@ def inspect_db(db_path: str, sample_rows: int | None = None) -> None:
                                   sample_rows)
             print()
 
+        if show_audit:
+            _print_audit_log(con, existing_tables, audit_last)
+
     finally:
         con.close()
 
@@ -213,8 +257,18 @@ def main() -> None:
         "--sample", type=int, default=None, metavar="N",
         help="Print N randomly sampled rows per table.",
     )
+    parser.add_argument(
+        "--audit", action="store_true",
+        help="Print the audit log.",
+    )
+    parser.add_argument(
+        "--audit-last", type=int, default=None, metavar="N",
+        help="Show only the last N audit log events (implies --audit).",
+    )
     args = parser.parse_args()
-    inspect_db(args.db, sample_rows=args.sample)
+    show_audit = args.audit or args.audit_last is not None
+    inspect_db(args.db, sample_rows=args.sample,
+               show_audit=show_audit, audit_last=args.audit_last)
 
 
 if __name__ == "__main__":

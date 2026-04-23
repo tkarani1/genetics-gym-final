@@ -7,6 +7,8 @@ import sys
 
 import duckdb
 
+from initialize_db import log_event
+
 
 DEFAULT_DB_PATH = "scores.duckdb"
 
@@ -110,6 +112,10 @@ def remove_duplicates(
         after = con.execute(
             f"SELECT COUNT(*) FROM {quoted}"
         ).fetchone()[0]
+        log_event(
+            con, "remove_duplicates", "deduplicate", table_name,
+            f"strategy={strategy}, rows_before={before}, rows_after={after}",
+        )
         print(
             f"Deduped {table_name!r}: {before} → {after} rows "
             f"({before - after} duplicates removed)",

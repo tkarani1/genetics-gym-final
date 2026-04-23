@@ -8,6 +8,8 @@ import sys
 
 import duckdb
 
+from initialize_db import log_event
+
 
 DEFAULT_DB_PATH = "gg_data.duckdb"
 
@@ -265,6 +267,13 @@ def create_analysis_table(
             "VALUES (?, ?, ?, 'merged_analysis', ?, TRUE)",
             [source_names, f"{scores_table}+{evals_table}",
              output_table, output_level],
+        )
+
+        linker_note = f", linker_path={linker_path}" if linker_path else ""
+        log_event(
+            con, "create_analysis_table", "create_table", output_table,
+            f"scores_table={scores_table}, evals_table={evals_table}, "
+            f"analysis_level={output_level}, rows={row_count}{linker_note}",
         )
 
         print(

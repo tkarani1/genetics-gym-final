@@ -7,6 +7,8 @@ import sys
 
 import duckdb
 
+from initialize_db import log_event
+
 
 DEFAULT_DB_PATH = "scores.duckdb"
 
@@ -36,6 +38,7 @@ def eject_table(db_path: str, table_name: str) -> None:
             "DELETE FROM metadata WHERE table_name = ?",
             [table_name],
         )
+        log_event(con, "eject_table", "drop_table", table_name)
         print(f"Ejected table {table_name!r}", file=sys.stderr)
     finally:
         con.close()

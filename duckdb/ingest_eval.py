@@ -8,6 +8,8 @@ import sys
 
 import duckdb
 
+from initialize_db import log_event
+
 
 DEFAULT_DB_PATH = "scores.duckdb"
 
@@ -133,6 +135,11 @@ def ingest_eval(
             "INSERT INTO metadata (source_column, source_path, table_name, table_type, analysis_level, deduped) "
             "VALUES (?, ?, ?, 'eval', ?, ?)",
             [eval_name, eval_path, table_name, analysis_level, not has_dupes],
+        )
+        log_event(
+            con, "ingest_eval", "create_table", table_name,
+            f"source_column={eval_name}, source_path={eval_path}, "
+            f"analysis_level={analysis_level}, rows={row_count}",
         )
 
         pos_count = con.execute(

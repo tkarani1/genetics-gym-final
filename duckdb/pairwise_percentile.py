@@ -7,6 +7,8 @@ import sys
 
 import duckdb
 
+from initialize_db import log_event
+
 
 DEFAULT_DB_PATH = "scores.duckdb"
 
@@ -111,6 +113,10 @@ def pairwise_percentile(
         """).fetchone()
         intersection_size, anchor_scored, target_scored = stats
 
+        log_event(
+            con, "pairwise_percentile", "update_percentiles", table_name,
+            f"anchor={anchor_table}, intersection_rows={intersection_size}",
+        )
         print(
             f"Pairwise percentiles {anchor_table!r} x {table_name!r}: "
             f"{intersection_size} intersection rows "

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a persistent DuckDB database with an empty metadata table."""
+"""Create a persistent DuckDB database with metadata and audit_log tables."""
 from __future__ import annotations
 
 import argparse
@@ -22,9 +22,41 @@ CREATE TABLE metadata (
 );
 """
 
+AUDIT_LOG_DDL = """\
+CREATE TABLE audit_log (
+    ts          TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    module      VARCHAR NOT NULL,
+    action      VARCHAR NOT NULL,
+    table_name  VARCHAR,
+    details     VARCHAR
+);
+"""
+
+
+def log_event(
+    con: duckdb.DuckDBPyConnection,
+    module: str,
+    action: str,
+    table_name: str | None = None,
+    details: str | None = None,
+) -> None:
+    """Append a row to the audit_log table.
+
+    Safe to call even if the database pre-dates the audit_log table;
+    the INSERT is silently skipped in that case.
+    """
+    try:
+        con.execute(
+            "INSERT INTO audit_log (module, action, table_name, details) "
+            "VALUES (?, ?, ?, ?)",
+            [module, action, table_name, details],
+        )
+    except duckdb.CatalogException:
+        pass
+
 
 def initialize_db(db_path: str) -> None:
-    """Create a new .duckdb file containing only the *metadata* table.
+    """Create a new .duckdb file containing *metadata* and *audit_log* tables.
 
     Raises ``FileExistsError`` if *db_path* already exists to prevent
     accidentally overwriting a populated database.
@@ -35,6 +67,9 @@ def initialize_db(db_path: str) -> None:
     con = duckdb.connect(db_path)
     try:
         con.execute(METADATA_DDL)
+        con.execute(AUDIT_LOG_DDL)
+        log_event(con, "initialize_db", "create_database",
+                  details=f"db_path={db_path}")
         print(f"Initialized database: {db_path}", file=sys.stderr)
     finally:
         con.close()

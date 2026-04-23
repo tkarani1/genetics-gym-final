@@ -9,6 +9,8 @@ from typing import NamedTuple
 
 import duckdb
 
+from initialize_db import log_event
+
 
 DEFAULT_DB_PATH = "scores.duckdb"
 
@@ -381,6 +383,13 @@ def merge_scores(
             "(source_column, source_path, table_name, table_type, analysis_level, deduped) "
             "VALUES (?, ?, ?, 'merged_scores', ?, TRUE)",
             [source_names, set_operation, output_table, merged_analysis_level],
+        )
+
+        input_tables = ", ".join(i.table_name for i in infos)
+        log_event(
+            con, "merge_scores", "create_table", output_table,
+            f"set_operation={set_operation}, percentile={percentile}, "
+            f"input_tables=[{input_tables}], rows={row_count}",
         )
 
         print(

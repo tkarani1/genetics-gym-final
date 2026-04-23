@@ -8,6 +8,8 @@ import sys
 
 import duckdb
 
+from initialize_db import log_event
+
 
 DEFAULT_DB_PATH = "gg_data.duckdb"
 
@@ -197,6 +199,10 @@ def join_linker(
                 f'SELECT COUNT(*) FROM "{table_name}" '
                 f'WHERE ensg IS NOT NULL'
             ).fetchone()[0]
+            log_event(
+                con, "join_linker", "enrich_variant", table_name,
+                f"linker_path={linker_path}, ensg_filled={ensg_filled}",
+            )
             print(
                 f"Enriched {table_name!r} (variant): "
                 f"{before_count:,} rows, "
@@ -205,6 +211,11 @@ def join_linker(
                 file=sys.stderr,
             )
         else:
+            log_event(
+                con, "join_linker", "enrich_gene_to_variant", table_name,
+                f"linker_path={linker_path}, rows_before={before_count}, "
+                f"rows_after={after_count}",
+            )
             print(
                 f"Enriched {table_name!r} (gene -> variant): "
                 f"{before_count:,} -> {after_count:,} rows "
