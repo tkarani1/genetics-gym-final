@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""Merge multiple score tables into a single wide table."""
+"""Merge score columns from a wide score table and export to Parquet.
+
+With the wide-table model every score column lives in the same DuckDB
+table (e.g. ``variant_scores``).  A "merge" is now a single-table scan
+with an optional WHERE clause rather than an N-way join.
+
+Pairwise mode produces one Parquet file per anchor-target pair, each
+containing keys, both raw scores, both pairwise percentiles, and
+(optionally) all eval columns pre-joined.
+"""
 from __future__ import annotations
 
 import argparse
-import re
+import os
 import sys
-from typing import NamedTuple
 
 import duckdb
 
@@ -15,16 +23,11 @@ SET_OPERATIONS = ("intersection", "union", "pairwise")
 PERCENTILE_MODES = ("pre", "post", "none")
 
 KEY_COLS = ("chrom", "pos", "ref", "alt", "ensg", '"key"')
-
-
-class _ScoreInfo(NamedTuple):
-    table_name: str
-    score_name: str
-    analysis_level: str
+KEY_NAMES = {"chrom", "pos", "ref", "alt", "ensg", "key"}
 
 
 def _percentile_expr(col: str, alias: str) -> str:
-    """SQL expression for null-safe CUME_DIST over *col*."""
+    """SQL for null-safe CUME_DIST over *col*."""
     return (
         f'CASE WHEN "{col}" IS NOT NULL '
         f"THEN CUME_DIST() OVER ("
@@ -35,276 +38,300 @@ def _percentile_expr(col: str, alias: str) -> str:
     )
 
 
-def _validate_inputs(
+def _validate_columns(
     con: duckdb.DuckDBPyConnection,
-    table_names: list[str],
-    require_variant: bool = False,
-) -> list[_ScoreInfo]:
-    """Check every table exists, is a deduped score, and return metadata."""
-    infos: list[_ScoreInfo] = []
-    for tbl in table_names:
-        row = con.execute(
-            "SELECT table_type, deduped, source_column, analysis_level "
-            "FROM metadata WHERE table_name = ?",
-            [tbl],
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"Table {tbl!r} not found in metadata.")
-        ttype, deduped, score_name, analysis_level = row
-        if ttype != "score":
-            raise ValueError(f"Table {tbl!r} is type {ttype!r}, not 'score'.")
-        if not deduped:
-            raise ValueError(
-                f"Table {tbl!r} has not been deduped. "
-                f"Run remove_duplicates first."
-            )
-        if require_variant and analysis_level != "variant":
-            raise ValueError(
-                f"Table {tbl!r} has analysis_level {analysis_level!r}. "
-                f"Pairwise operations require all tables to be "
-                f"analysis_level 'variant'."
-            )
-        infos.append(_ScoreInfo(tbl, score_name, analysis_level))
-    return infos
+    wide_table: str,
+    score_columns: list[str],
+) -> str:
+    """Verify the wide table exists and all requested columns are present.
+    Returns the analysis_level for the table."""
+    exists = con.execute(
+        "SELECT COUNT(*) FROM information_schema.tables "
+        "WHERE table_name = ? AND table_schema = 'main'",
+        [wide_table],
+    ).fetchone()[0]
+    if not exists:
+        raise ValueError(f"Table {wide_table!r} does not exist.")
 
-
-def _build_subselect(info: _ScoreInfo, add_percentile: bool) -> str:
-    """Build a sub-select that renames ``score`` to the score's own name."""
-    quoted = f'"{info.table_name}"'
-    cols = ", ".join(KEY_COLS)
-    parts = [f"SELECT {cols}, score AS \"{info.score_name}\""]
-    if add_percentile:
-        pct = _percentile_expr(
-            info.score_name, f"{info.score_name}_percentile"
+    actual_cols = {
+        desc[0]
+        for desc in con.execute(
+            f'SELECT * FROM "{wide_table}" LIMIT 0'
+        ).description
+    }
+    missing = [c for c in score_columns if c not in actual_cols]
+    if missing:
+        raise ValueError(
+            f"Score column(s) not found in {wide_table!r}: {missing}"
         )
-        parts[0] += f", {pct}"
-    parts.append(f"FROM {quoted}")
-    return "\n".join(parts)
+
+    row = con.execute(
+        "SELECT DISTINCT analysis_level FROM metadata WHERE table_name = ?",
+        [wide_table],
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"No metadata found for {wide_table!r}.")
+    return row[0]
 
 
-
-def _non_key_columns(subselect: str) -> list[str]:
-    """Extract non-key column names from a sub-select by inspecting its text."""
-    key_names = {"chrom", "pos", "ref", "alt", "ensg", "key"}
-    cols = []
-    for m in re.finditer(r'AS\s+"([^"]+)"', subselect):
-        name = m.group(1)
-        if name not in key_names:
-            cols.append(name)
-    return cols
+def _eval_col_refs(
+    con: duckdb.DuckDBPyConnection,
+    evals_table: str,
+) -> list[str]:
+    """Return non-key column names from the merged evals table."""
+    cols = [
+        desc[0]
+        for desc in con.execute(
+            f'SELECT * FROM "{evals_table}" LIMIT 0'
+        ).description
+    ]
+    return [c for c in cols if c not in KEY_NAMES]
 
 
 def _merge_intersection_union(
     con: duckdb.DuckDBPyConnection,
-    infos: list[_ScoreInfo],
-    output_table: str,
+    wide_table: str,
+    score_columns: list[str],
+    output_path: str,
     how: str,
     percentile: str,
-) -> None:
-    """Merge via intersection or union with pre/post/none percentile."""
-    add_pre = percentile == "pre"
+) -> int:
+    """Intersection or union merge -> Parquet."""
+    quoted = f'"{wide_table}"'
+    key_select = ", ".join(KEY_COLS)
+    score_select = ", ".join(f'"{c}"' for c in score_columns)
 
-    subselects = [_build_subselect(info, add_pre) for info in infos]
-    aliases = [f"t{i}" for i in range(len(infos))]
+    pct_parts: list[str] = []
+    if percentile in ("pre", "post"):
+        for c in score_columns:
+            pct_parts.append(_percentile_expr(c, f"{c}_percentile"))
 
-    join_type = "INNER" if how == "intersection" else "FULL OUTER"
+    select_parts = [key_select, score_select]
+    if pct_parts:
+        select_parts.append(", ".join(pct_parts))
+    select_clause = ", ".join(select_parts)
 
-    # For intersection, the first table's keys are sufficient.
-    # For union, we need to COALESCE keys across all tables.
-    first = aliases[0]
-    key_exprs: list[str] = []
-    if join_type == "FULL OUTER":
-        for k in KEY_COLS:
-            coalesced = ", ".join(f"{a}.{k}" for a in aliases)
-            key_exprs.append(f"COALESCE({coalesced}) AS {k}")
+    if how == "intersection":
+        where_clause = " AND ".join(
+            f'"{c}" IS NOT NULL' for c in score_columns
+        )
+        query = f"SELECT {select_clause} FROM {quoted} WHERE {where_clause}"
     else:
-        for k in KEY_COLS:
-            key_exprs.append(f"{first}.{k}")
+        query = f"SELECT {select_clause} FROM {quoted}"
 
-    score_col_refs: list[str] = []
-    for i, info in enumerate(infos):
-        a = aliases[i]
-        non_key = _non_key_columns(subselects[i])
-        for c in non_key:
-            score_col_refs.append(f'{a}."{c}" AS "{c}"')
-
-    select_clause = ", ".join(key_exprs + score_col_refs)
-
-    from_clause = f"({subselects[0]}) AS {aliases[0]}"
-    for i in range(1, len(subselects)):
-        from_clause += (
-            f'\n    {join_type} JOIN ({subselects[i]}) AS {aliases[i]} '
-            f'ON {first}."key" = {aliases[i]}."key"'
-        )
-
-    quoted_output = f'"{output_table}"'
-
-    if percentile == "post":
-        # Join first, then add percentile columns
-        temp_name = f"_tmp_{output_table}"
-        quoted_tmp = f'"{temp_name}"'
-        con.execute(
-            f"CREATE TABLE {quoted_tmp} AS\n"
-            f"SELECT {select_clause}\nFROM {from_clause}"
-        )
-        # Build percentile expressions over the joined result
-        pct_exprs = []
-        for info in infos:
-            pct_exprs.append(
-                _percentile_expr(
-                    info.score_name, f"{info.score_name}_percentile"
-                )
-            )
-        pct_select = ", ".join(["*"] + pct_exprs)
-        con.execute(
-            f"CREATE TABLE {quoted_output} AS\n"
-            f"SELECT {pct_select} FROM {quoted_tmp}"
-        )
-        con.execute(f"DROP TABLE {quoted_tmp}")
-    else:
-        # pre or none: percentile columns (if any) are already in subselects
-        con.execute(
-            f"CREATE TABLE {quoted_output} AS\n"
-            f"SELECT {select_clause}\nFROM {from_clause}"
-        )
+    con.execute(
+        f"COPY ({query}) TO '{output_path}' (FORMAT PARQUET)"
+    )
+    row_count = con.execute(
+        f"SELECT COUNT(*) FROM read_parquet('{output_path}')"
+    ).fetchone()[0]
+    return row_count
 
 
 def _merge_pairwise(
     con: duckdb.DuckDBPyConnection,
-    infos: list[_ScoreInfo],
-    anchor_table: str,
-    output_table: str,
-) -> None:
-    """Merge via pairwise intersection-based percentiles."""
-    anchor_info = next(i for i in infos if i.table_name == anchor_table)
-    non_anchor_infos = [i for i in infos if i.table_name != anchor_table]
-    anchor_name = anchor_info.score_name
-    quoted_anchor = f'"{anchor_table}"'
+    wide_table: str,
+    score_columns: list[str],
+    anchor_column: str,
+    output_dir: str,
+    evals_table: str | None = None,
+    linker_path: str | None = None,
+    gene_average: bool = False,
+) -> list[str]:
+    """Pairwise intersection-based percentiles -> one Parquet per pair.
 
-    pair_tables: list[str] = []
-    pair_columns: list[list[str]] = []
+    Each output file contains keys, the anchor score, the target score,
+    2 pairwise percentile columns, and (if *evals_table* is given) all
+    eval columns pre-joined.
 
-    for na_info in non_anchor_infos:
-        na_name = na_info.score_name
-        quoted_na = f'"{na_info.table_name}"'
-        raw_anchor_col = f"_raw_anchor_{na_name}"
-        pw_anchor_col = f"{anchor_name}_pairwise_{na_name}"
-        pw_na_col = f"{na_name}_pairwise_{anchor_name}"
+    When *gene_average* is True, the linker is joined to obtain ``ensg``
+    and each pairwise percentile column is supplemented with a
+    gene-averaged version (``AVG(...) OVER (PARTITION BY ensg)``).
+    The per-variant percentiles are kept alongside the gene-averaged ones.
 
-        pair_tmp = f"_pw_{na_info.table_name}"
-        quoted_pair = f'"{pair_tmp}"'
+    Returns the list of output file paths produced.
+    """
+    quoted = f'"{wide_table}"'
+    non_anchor = [c for c in score_columns if c != anchor_column]
+    n = len(non_anchor)
 
-        con.execute(f"""
-            CREATE OR REPLACE TABLE {quoted_pair} AS
-            WITH intersection AS (
-                SELECT
-                    a."key",
-                    a.score AS anchor_score,
-                    b.score AS nonanchor_score
-                FROM {quoted_anchor} a
-                INNER JOIN {quoted_na} b ON a."key" = b."key"
+    eval_select = ""
+    eval_join = ""
+    if evals_table is not None:
+        eval_data_cols = _eval_col_refs(con, evals_table)
+        if eval_data_cols:
+            eval_select = ", " + ", ".join(
+                f'ev."{c}"' for c in eval_data_cols
             )
-            SELECT
-                "key",
-                anchor_score AS "{raw_anchor_col}",
-                nonanchor_score AS "{na_name}",
-                CASE WHEN anchor_score IS NOT NULL
-                     THEN CUME_DIST() OVER (
-                         PARTITION BY (anchor_score IS NOT NULL)
-                         ORDER BY anchor_score
-                     )
-                END AS "{pw_anchor_col}",
-                CASE WHEN nonanchor_score IS NOT NULL
-                     THEN CUME_DIST() OVER (
-                         PARTITION BY (nonanchor_score IS NOT NULL)
-                         ORDER BY nonanchor_score
-                     )
-                END AS "{pw_na_col}"
-            FROM intersection;
-        """)
-        pair_tables.append(pair_tmp)
-        pair_columns.append(
-            [raw_anchor_col, na_name, pw_anchor_col, pw_na_col]
-        )
-
-    # Join all pair tables together on key, pulling keys from the first pair
-    # and taking the non-key columns from each
-    quoted_output = f'"{output_table}"'
-
-    if len(pair_tables) == 1:
-        pt = f'"{pair_tables[0]}"'
-        # Need to add full key columns from one of the source tables
-        con.execute(f"""
-            CREATE TABLE {quoted_output} AS
-            SELECT
-                s.chrom, s.pos, s.ref, s.alt, s.ensg, p."key",
-                p.*  EXCLUDE ("key")
-            FROM {pt} p
-            LEFT JOIN {quoted_anchor} s ON p."key" = s."key";
-        """)
-    else:
-        # Build sequential FULL OUTER JOIN of pair tables
-        aliases = [f"p{i}" for i in range(len(pair_tables))]
-        first_a = aliases[0]
-
-        key_coalesce = ", ".join(
-            f'COALESCE({", ".join(f"{a}."+"\"key\"" for a in aliases)}) AS "key"'
-            for _ in [0]
-        )
-
-        score_refs: list[str] = []
-        for i, cols in enumerate(pair_columns):
-            a = aliases[i]
-            for c in cols:
-                score_refs.append(f'{a}."{c}"')
-
-        select = f"{key_coalesce}, " + ", ".join(score_refs)
-
-        from_part = f'"{pair_tables[0]}" AS {aliases[0]}'
-        for i in range(1, len(pair_tables)):
-            from_part += (
-                f'\nFULL OUTER JOIN "{pair_tables[i]}" AS {aliases[i]} '
-                f'ON {first_a}."key" = {aliases[i]}."key"'
+            eval_join = (
+                f'LEFT JOIN "{evals_table}" ev '
+                f'ON base."key" = ev."key"'
             )
 
-        con.execute(f"""
-            CREATE TABLE {quoted_output} AS
-            SELECT
-                s.chrom, s.pos, s.ref, s.alt, s.ensg, merged."key",
-                merged.* EXCLUDE ("key")
-            FROM (SELECT {select} FROM {from_part}) AS merged
-            LEFT JOIN {quoted_anchor} s ON merged."key" = s."key";
-        """)
+    suffix = "_gene_avg" if gene_average else ""
+    output_files: list[str] = []
 
-    # Clean up temp pair tables
-    for pt in pair_tables:
-        con.execute(f'DROP TABLE "{pt}"')
+    for idx, na in enumerate(non_anchor):
+        both_not_null = (
+            f'(base."{anchor_column}" IS NOT NULL '
+            f'AND base."{na}" IS NOT NULL)'
+        )
+        pw_anchor = f"{anchor_column}_pairwise_{na}"
+        pw_na = f"{na}_pairwise_{anchor_column}"
+
+        out_path = os.path.join(
+            output_dir, f"{anchor_column}_x_{na}{suffix}.parquet"
+        )
+        if os.path.exists(out_path):
+            print(
+                f"  pair {idx + 1}/{n}: {anchor_column} x {na} "
+                f"— SKIPPED (file exists)",
+                file=sys.stderr,
+            )
+            output_files.append(out_path)
+            continue
+
+        key_select = ", ".join(f"base.{k}" for k in KEY_COLS)
+
+        if not gene_average:
+            query = f"""
+                SELECT {key_select},
+                    base."{anchor_column}",
+                    base."{na}",
+                    CASE WHEN {both_not_null} THEN CUME_DIST() OVER (
+                        PARTITION BY {both_not_null}
+                        ORDER BY base."{anchor_column}"
+                    ) END AS "{pw_anchor}",
+                    CASE WHEN {both_not_null} THEN CUME_DIST() OVER (
+                        PARTITION BY {both_not_null}
+                        ORDER BY base."{na}"
+                    ) END AS "{pw_na}"
+                    {eval_select}
+                FROM {quoted} base
+                {eval_join}
+            """
+        else:
+            # Two-level CTE: first compute per-variant pairwise
+            # percentiles, then join linker and add gene-averaged columns.
+            inner_eval_select = eval_select.replace("ev.", "ev.")
+            inner_eval_join = eval_join
+
+            # Passthrough eval columns from the CTE
+            eval_passthrough = ""
+            if evals_table is not None and eval_data_cols:
+                eval_passthrough = ", " + ", ".join(
+                    f'p."{c}"' for c in eval_data_cols
+                )
+
+            query = f"""
+                WITH pairwise AS (
+                    SELECT {key_select},
+                        base."{anchor_column}",
+                        base."{na}",
+                        CASE WHEN {both_not_null} THEN CUME_DIST() OVER (
+                            PARTITION BY {both_not_null}
+                            ORDER BY base."{anchor_column}"
+                        ) END AS "{pw_anchor}",
+                        CASE WHEN {both_not_null} THEN CUME_DIST() OVER (
+                            PARTITION BY {both_not_null}
+                            ORDER BY base."{na}"
+                        ) END AS "{pw_na}"
+                        {inner_eval_select}
+                    FROM {quoted} base
+                    {inner_eval_join}
+                ),
+                linker_dedup AS (
+                    SELECT
+                        hash(chrom || '|' || CAST(pos AS VARCHAR)
+                             || '|' || ref || '|' || alt) AS "key",
+                        FIRST(ensg) AS ensg
+                    FROM read_parquet('{linker_path}')
+                    GROUP BY hash(chrom || '|' || CAST(pos AS VARCHAR)
+                                  || '|' || ref || '|' || alt)
+                )
+                SELECT p.chrom, p.pos, p.ref, p.alt,
+                    COALESCE(lk.ensg, p.ensg) AS ensg,
+                    p."key",
+                    p."{anchor_column}",
+                    p."{na}",
+                    p."{pw_anchor}",
+                    p."{pw_na}",
+                    AVG(p."{pw_anchor}") OVER (
+                        PARTITION BY lk.ensg
+                    ) AS "{pw_anchor}_gene_avg",
+                    AVG(p."{pw_na}") OVER (
+                        PARTITION BY lk.ensg
+                    ) AS "{pw_na}_gene_avg"
+                    {eval_passthrough}
+                FROM pairwise p
+                LEFT JOIN linker_dedup lk ON p."key" = lk."key"
+            """
+
+        con.execute(
+            f"COPY ({query}) TO '{out_path}' (FORMAT PARQUET)"
+        )
+
+        row_count = con.execute(
+            f"SELECT COUNT(*) FROM read_parquet('{out_path}')"
+        ).fetchone()[0]
+        output_files.append(out_path)
+
+        label = f"{anchor_column} x {na}"
+        if gene_average:
+            label += " (gene_avg)"
+        print(
+            f"  pair {idx + 1}/{n}: {label} "
+            f"-> {row_count:,} rows",
+            file=sys.stderr,
+        )
+
+    return output_files
 
 
 def merge_scores(
     db_path: str,
-    table_names: list[str],
-    output_table: str,
+    wide_table: str,
+    score_columns: list[str],
+    output_path: str | None,
     set_operation: str,
     percentile: str,
-    anchor_table: str | None = None,
+    anchor_column: str | None = None,
+    output_dir: str | None = None,
+    evals_table: str | None = None,
+    linker_path: str | None = None,
+    gene_average: bool = False,
+    *,
+    memory_limit: str | None = None,
 ) -> None:
-    """Merge multiple score tables into a single wide output table.
+    """Merge score columns from a wide table and write to Parquet.
 
     Parameters
     ----------
     db_path : str
         Path to the persistent ``.duckdb`` file.
-    table_names : list[str]
-        Names of the input score tables to merge.
-    output_table : str
-        Name for the output merged table.
+    wide_table : str
+        Name of the wide score table (e.g. ``variant_scores``).
+    score_columns : list[str]
+        Score columns to include in the merge.
+    output_path : str or None
+        Destination Parquet file path (for intersection/union).
     set_operation : str
         ``"intersection"``, ``"union"``, or ``"pairwise"``.
     percentile : str
         ``"pre"``, ``"post"``, or ``"none"``.
-    anchor_table : str or None
-        Required for pairwise; must be one of *table_names*.
+    anchor_column : str or None
+        Required for pairwise; must be one of *score_columns*.
+    output_dir : str or None
+        Output directory for pairwise (one file per pair).
+    evals_table : str or None
+        Optional merged-evals table to left-join into pairwise outputs.
+    linker_path : str or None
+        Path to a linker Parquet (required when *gene_average* is True).
+    gene_average : bool
+        If True, add gene-averaged pairwise percentile columns by
+        joining the linker and computing ``AVG(...) OVER (PARTITION BY ensg)``.
+    memory_limit : str or None
+        Optional DuckDB memory limit (e.g. ``'8GB'``).
     """
     if set_operation not in SET_OPERATIONS:
         raise ValueError(
@@ -321,99 +348,133 @@ def merge_scores(
             "Pairwise mode computes its own percentiles. "
             "Set --percentile none when using --set_operation pairwise."
         )
-    if set_operation == "pairwise" and anchor_table is None:
+    if set_operation == "pairwise" and anchor_column is None:
         raise ValueError(
-            "--anchor_table is required for pairwise set operation."
+            "--anchor_column is required for pairwise set operation."
         )
-    if anchor_table is not None and set_operation != "pairwise":
+    if anchor_column is not None and set_operation != "pairwise":
         raise ValueError(
-            "--anchor_table is only used with --set_operation pairwise."
+            "--anchor_column is only used with --set_operation pairwise."
         )
-    if anchor_table is not None and anchor_table not in table_names:
+    if anchor_column is not None and anchor_column not in score_columns:
         raise ValueError(
-            f"anchor_table {anchor_table!r} must be one of --tables."
+            f"anchor_column {anchor_column!r} must be one of --columns."
         )
-    if len(table_names) < 2:
-        raise ValueError("At least two input tables are required.")
-
-    con = duckdb.connect(db_path)
-    try:
-        existing = {
-            r[0]
-            for r in con.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'main'"
-            ).fetchall()
-        }
-        if output_table in existing:
-            raise ValueError(
-                f"Output table {output_table!r} already exists."
+    if len(score_columns) < 2:
+        raise ValueError("At least two score columns are required.")
+    if gene_average and set_operation != "pairwise":
+        raise ValueError(
+            "--gene_average is only supported with --set_operation pairwise."
+        )
+    if gene_average and linker_path is None:
+        raise ValueError(
+            "--linker_path is required when --gene_average is set."
+        )
+    if linker_path is not None:
+        linker_path = os.path.abspath(linker_path)
+        if not os.path.isfile(linker_path):
+            raise FileNotFoundError(
+                f"Linker Parquet not found: {linker_path}"
             )
 
-        infos = _validate_inputs(
-            con, table_names,
-            require_variant=(set_operation == "pairwise"),
-        )
+    if set_operation == "pairwise":
+        if output_dir is None:
+            raise ValueError(
+                "--output_dir is required for pairwise set operation."
+            )
+        output_dir = os.path.abspath(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+    else:
+        if output_path is None:
+            raise ValueError(
+                "--output_path is required for intersection/union."
+            )
+        output_path = os.path.abspath(output_path)
+        if os.path.exists(output_path):
+            raise FileExistsError(
+                f"Output file already exists: {output_path}"
+            )
+
+    con = duckdb.connect(db_path, read_only=True)
+    try:
+        if memory_limit:
+            con.execute(f"SET memory_limit = '{memory_limit}'")
+        con.execute("SET preserve_insertion_order = false")
+
+        _validate_columns(con, wide_table, score_columns)
 
         if set_operation in ("intersection", "union"):
-            _merge_intersection_union(
-                con, infos, output_table, set_operation, percentile,
+            row_count = _merge_intersection_union(
+                con, wide_table, score_columns, output_path,
+                set_operation, percentile,
+            )
+            print(
+                f"Merged {len(score_columns)} columns ({set_operation}, "
+                f"percentile={percentile}) -> {output_path}: "
+                f"{row_count:,} rows",
+                file=sys.stderr,
             )
         else:
-            _merge_pairwise(con, infos, anchor_table, output_table)
-
-        quoted_output = f'"{output_table}"'
-        row_count = con.execute(
-            f"SELECT COUNT(*) FROM {quoted_output}"
-        ).fetchone()[0]
-        col_count = len(
-            con.execute(
-                f"SELECT * FROM {quoted_output} LIMIT 0"
-            ).description
-        )
-
-        source_names = ", ".join(i.score_name for i in infos)
-        analysis_levels = {i.analysis_level for i in infos}
-        merged_analysis_level = analysis_levels.pop() if len(analysis_levels) == 1 else "variant"
-        con.execute(
-            "INSERT INTO metadata "
-            "(source_column, source_path, table_name, table_type, analysis_level, deduped) "
-            "VALUES (?, ?, ?, 'merged_scores', ?, TRUE)",
-            [source_names, set_operation, output_table, merged_analysis_level],
-        )
-
-        input_tables = ", ".join(i.table_name for i in infos)
-        log_event(
-            con, "merge_scores", "create_table", output_table,
-            f"set_operation={set_operation}, percentile={percentile}, "
-            f"input_tables=[{input_tables}], rows={row_count}",
-        )
-
-        print(
-            f"Merged {len(infos)} tables ({set_operation}, "
-            f"percentile={percentile}) → {output_table!r}: "
-            f"{row_count:,} rows, {col_count} columns",
-            file=sys.stderr,
-        )
+            output_files = _merge_pairwise(
+                con, wide_table, score_columns,
+                anchor_column, output_dir,
+                evals_table=evals_table,
+                linker_path=linker_path,
+                gene_average=gene_average,
+            )
+            print(
+                f"Pairwise complete: {len(output_files)} files in "
+                f"{output_dir}",
+                file=sys.stderr,
+            )
     finally:
         con.close()
+
+    con_rw = duckdb.connect(db_path)
+    try:
+        source_names = ", ".join(score_columns)
+        if set_operation == "pairwise":
+            log_event(
+                con_rw, "merge_scores", "export_pairwise", wide_table,
+                f"anchor={anchor_column}, pairs={len(output_files)}, "
+                f"output_dir={output_dir}, "
+                f"evals_table={evals_table}, "
+                f"gene_average={gene_average}",
+            )
+        else:
+            log_event(
+                con_rw, "merge_scores", "export_parquet", wide_table,
+                f"set_operation={set_operation}, percentile={percentile}, "
+                f"columns=[{source_names}], output={output_path}, "
+                f"rows={row_count}",
+            )
+    finally:
+        con_rw.close()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Merge multiple score tables into a single wide table.",
+        description="Merge score columns from a wide table and export to Parquet.",
     )
     parser.add_argument(
         "--db", default=DEFAULT_DB_PATH,
         help=f"Path to the .duckdb file (default: {DEFAULT_DB_PATH}).",
     )
     parser.add_argument(
-        "--tables", required=True, nargs="+",
-        help="Names of the input score tables to merge.",
+        "--wide_table", required=True,
+        help="Name of the wide score table (e.g. variant_scores).",
     )
     parser.add_argument(
-        "--output_table", required=True,
-        help="Name for the output merged table.",
+        "--columns", required=True, nargs="+",
+        help="Score columns to include in the merge.",
+    )
+    parser.add_argument(
+        "--output_path", default=None,
+        help="Destination Parquet file (for intersection/union).",
+    )
+    parser.add_argument(
+        "--output_dir", default=None,
+        help="Output directory for pairwise (one file per pair).",
     )
     parser.add_argument(
         "--set_operation", required=True, choices=list(SET_OPERATIONS),
@@ -424,13 +485,35 @@ def main() -> None:
         help="Percentile mode: pre, post, or none.",
     )
     parser.add_argument(
-        "--anchor_table", default=None,
-        help="Anchor table for pairwise mode (must be one of --tables).",
+        "--anchor_column", default=None,
+        help="Anchor column for pairwise mode (must be one of --columns).",
+    )
+    parser.add_argument(
+        "--evals_table", default=None,
+        help="Merged-evals table to left-join into pairwise outputs.",
+    )
+    parser.add_argument(
+        "--linker_path", default=None,
+        help="Path to a linker Parquet (required with --gene_average).",
+    )
+    parser.add_argument(
+        "--gene_average", action="store_true",
+        help="Add gene-averaged pairwise percentile columns via linker.",
+    )
+    parser.add_argument(
+        "--memory_limit", default=None,
+        help="DuckDB memory limit (e.g. '8GB'). Default: DuckDB auto.",
     )
     args = parser.parse_args()
     merge_scores(
-        args.db, args.tables, args.output_table,
-        args.set_operation, args.percentile, args.anchor_table,
+        args.db, args.wide_table, args.columns,
+        args.output_path,
+        args.set_operation, args.percentile, args.anchor_column,
+        output_dir=args.output_dir,
+        evals_table=args.evals_table,
+        linker_path=args.linker_path,
+        gene_average=args.gene_average,
+        memory_limit=args.memory_limit,
     )
 
 

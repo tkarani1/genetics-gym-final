@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections import defaultdict
 
 import duckdb
 
 from initialize_db import DEFAULT_DB_PATH
+
+KEY_NAMES = {"chrom", "pos", "ref", "alt", "ensg", "key"}
 
 
 def _print_sample(con: duckdb.DuckDBPyConnection, quoted: str,
@@ -30,36 +33,59 @@ def _print_sample(con: duckdb.DuckDBPyConnection, quoted: str,
     print()
 
 
-def _print_score_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
-                     table_name: str, source_column: str, source_path: str,
-                     analysis_level: str, deduped: bool, fmt,
-                     sample_rows: int | None) -> None:
+def _print_wide_score_table(
+    con: duckdb.DuckDBPyConnection,
+    existing_tables: set,
+    table_name: str,
+    score_rows: list[tuple],
+    fmt,
+    sample_rows: int | None,
+) -> None:
+    """Print a wide score table: one summary line per score column."""
     if table_name not in existing_tables:
-        print(f"{table_name:<25} {'MISSING TABLE':}")
+        print(f"  {table_name:<25} MISSING TABLE")
         return
+
     quoted = f'"{table_name}"'
-    stats = con.execute(f"""
-        SELECT
-            COUNT(*)                    AS total,
-            COUNT(score)                AS scored,
-            COUNT(*) - COUNT(score)     AS nulls,
-            COUNT(DISTINCT "key")       AS unique_keys,
-            MIN(score)                  AS min_score,
-            MAX(score)                  AS max_score,
-            AVG(score)                  AS mean_score,
-            MEDIAN(score)               AS median_score
-        FROM {quoted}
-    """).fetchone()
-    total, scored, nulls, unique_keys, mn, mx, mean, median = stats
-    dedup_flag = "yes" if deduped else "no"
-    print(
-        f"{table_name:<25} {source_column:<25} {analysis_level:>8} {dedup_flag:>8} {total:>12,} "
-        f"{scored:>12,} {nulls:>12,} {unique_keys:>12,} "
-        f"{fmt(mn)} {fmt(mx)} {fmt(mean)} {fmt(median)}"
-    )
-    print(f"  path: {source_path}")
-    if unique_keys < total:
-        print(f"  *** {total - unique_keys:,} duplicate key(s) detected ***")
+    total_rows = con.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0]
+    unique_keys = con.execute(
+        f'SELECT COUNT(DISTINCT "key") FROM {quoted}'
+    ).fetchone()[0]
+    analysis_level = score_rows[0][4]
+
+    print(f"  Table: {table_name}  |  {analysis_level}  |  "
+          f"{total_rows:,} rows  |  {unique_keys:,} unique keys  |  "
+          f"{len(score_rows)} score column(s)")
+    if unique_keys < total_rows:
+        print(f"  *** {total_rows - unique_keys:,} duplicate key(s) detected ***")
+    print()
+
+    print(f"  {'Column':<25} {'Deduped':>8} {'Scored':>12} {'Nulls':>12} "
+          f"{'Min':>12} {'Max':>12} {'Mean':>12} {'Median':>12}")
+    print(f"  {'-'*109}")
+
+    for r in score_rows:
+        source_column, source_path = r[0], r[1]
+        deduped = r[5]
+        quoted_col = f'"{source_column}"'
+        stats = con.execute(f"""
+            SELECT
+                COUNT({quoted_col})                         AS scored,
+                COUNT(*) - COUNT({quoted_col})              AS nulls,
+                MIN({quoted_col})                           AS mn,
+                MAX({quoted_col})                           AS mx,
+                AVG({quoted_col})                           AS mean,
+                MEDIAN({quoted_col})                        AS median
+            FROM {quoted}
+        """).fetchone()
+        scored, nulls, mn, mx, mean, median = stats
+        dedup_flag = "yes" if deduped else "no"
+        print(
+            f"  {source_column:<25} {dedup_flag:>8} {scored:>12,} {nulls:>12,} "
+            f"{fmt(mn)} {fmt(mx)} {fmt(mean)} {fmt(median)}"
+        )
+        print(f"    path: {source_path}")
+
     _print_sample(con, quoted, sample_rows)
 
 
@@ -134,8 +160,7 @@ def _print_merged_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
         desc[0]
         for desc in con.execute(f"SELECT * FROM {quoted} LIMIT 0").description
     ]
-    key_names = {"chrom", "pos", "ref", "alt", "ensg", "key"}
-    data_cols = [c for c in columns if c not in key_names]
+    data_cols = [c for c in columns if c not in KEY_NAMES]
     print(
         f"{table_name:<25} {source_path:<15} {analysis_level:>8} {row_count:>12,} "
         f"{len(columns):>8} {len(data_cols):>12}"
@@ -181,21 +206,7 @@ def _print_audit_log(con: duckdb.DuckDBPyConnection,
 
 def inspect_db(db_path: str, sample_rows: int | None = None,
                show_audit: bool = False, audit_last: int | None = None) -> None:
-    """Print metadata entries and summary statistics for every table.
-
-    For each row in the *metadata* table, verifies the corresponding
-    DuckDB table exists and reports row count, null count, unique key
-    count, and min/max/mean/median of non-null scores.
-
-    Parameters
-    ----------
-    sample_rows : int or None
-        If set, print this many randomly sampled rows per table.
-    show_audit : bool
-        If True, print the audit log.
-    audit_last : int or None
-        If set with show_audit, only show the last N audit events.
-    """
+    """Print metadata entries and summary statistics for every table."""
     con = duckdb.connect(db_path, read_only=True)
     try:
         existing_tables = {
@@ -213,7 +224,7 @@ def inspect_db(db_path: str, sample_rows: int | None = None,
         rows = con.execute(
             "SELECT source_column, source_path, table_name, table_type, "
             "analysis_level, deduped, eval_column, case_column, ctrl_column "
-            "FROM metadata ORDER BY table_type, table_name"
+            "FROM metadata ORDER BY table_type, table_name, source_column"
         ).fetchall()
 
         if not rows:
@@ -231,16 +242,13 @@ def inspect_db(db_path: str, sample_rows: int | None = None,
 
         if score_rows:
             print("SCORE TABLES")
-            print(f"{'Table':<25} {'Column':<25} {'Key':>8} {'Deduped':>8} {'Rows':>12} "
-                  f"{'Scored':>12} {'Nulls':>12} {'Unique Keys':>12} "
-                  f"{'Min':>12} {'Max':>12} {'Mean':>12} {'Median':>12}")
-            print("-" * 182)
+            print("=" * 120)
+            grouped: dict[str, list[tuple]] = defaultdict(list)
             for r in score_rows:
-                source_column, source_path, table_name = r[0], r[1], r[2]
-                analysis_level, deduped = r[4], r[5]
-                _print_score_row(con, existing_tables, table_name,
-                                 source_column, source_path, analysis_level,
-                                 deduped, fmt, sample_rows)
+                grouped[r[2]].append(r)  # group by table_name
+            for tbl_name, tbl_rows in grouped.items():
+                _print_wide_score_table(con, existing_tables, tbl_name,
+                                        tbl_rows, fmt, sample_rows)
             print()
 
         if eval_rows:

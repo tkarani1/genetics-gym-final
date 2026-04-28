@@ -31,19 +31,21 @@ def _data_columns(
 def _validate_table(
     con: duckdb.DuckDBPyConnection,
     table_name: str,
-    expected_type: str,
+    expected_type: str | tuple[str, ...],
 ) -> str:
     """Validate a table exists with the expected type. Return its analysis_level."""
     row = con.execute(
-        "SELECT table_type, analysis_level FROM metadata WHERE table_name = ?",
+        "SELECT DISTINCT table_type, analysis_level FROM metadata "
+        "WHERE table_name = ?",
         [table_name],
     ).fetchone()
     if row is None:
         raise ValueError(f"Table {table_name!r} not found in metadata.")
     ttype, analysis_level = row
-    if ttype != expected_type:
+    allowed = (expected_type,) if isinstance(expected_type, str) else expected_type
+    if ttype not in allowed:
         raise ValueError(
-            f"Table {table_name!r} is type {ttype!r}, expected {expected_type!r}."
+            f"Table {table_name!r} is type {ttype!r}, expected one of {allowed!r}."
         )
     return analysis_level
 
@@ -202,7 +204,7 @@ def create_analysis_table(
                 f"Output table {output_table!r} already exists."
             )
 
-        scores_level = _validate_table(con, scores_table, "merged_scores")
+        scores_level = _validate_table(con, scores_table, ("merged_scores", "score"))
         evals_level = _validate_table(con, evals_table, "merged_evals")
 
         same_level = scores_level == evals_level
@@ -247,10 +249,11 @@ def create_analysis_table(
             ).description
         )
 
-        scores_meta = con.execute(
+        scores_meta_rows = con.execute(
             "SELECT source_column FROM metadata WHERE table_name = ?",
             [scores_table],
-        ).fetchone()[0]
+        ).fetchall()
+        scores_meta = ", ".join(r[0] for r in scores_meta_rows)
         evals_meta = con.execute(
             "SELECT source_column FROM metadata WHERE table_name = ?",
             [evals_table],

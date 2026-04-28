@@ -1,134 +1,138 @@
 #!/usr/bin/env python3
-"""Compute pairwise percentiles between an anchor and a non-anchor score table."""
+"""Compute pairwise percentiles between two score columns in a wide table.
+
+Output is written to a Parquet file — no scratch columns are modified in
+the database.
+"""
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 import duckdb
 
 from initialize_db import DEFAULT_DB_PATH, log_event
 
+KEY_COLS = ("chrom", "pos", "ref", "alt", "ensg", '"key"')
+
 
 def pairwise_percentile(
     db_path: str,
-    anchor_table: str,
-    table_name: str,
+    wide_table: str,
+    anchor_column: str,
+    target_column: str,
+    output_path: str,
+    *,
+    memory_limit: str | None = None,
 ) -> None:
-    """Compute intersection-based pairwise percentiles and write them into
-    the non-anchor table's ``temp_1`` and ``temp_2`` columns.
+    """Compute intersection-based pairwise percentiles for two score columns
+    and write the result to a Parquet file.
 
-    ``temp_1`` receives the percentile of the *anchor* table's scores
-    among the intersection, and ``temp_2`` receives the percentile of the
-    *non-anchor* table's scores among the intersection.  Rows not in the
-    intersection retain ``NULL`` in both columns.  Null scores within the
-    intersection also receive ``NULL`` percentiles and are excluded from
-    the ranking denominator.
+    For the rows where both *anchor_column* and *target_column* are non-null,
+    ``CUME_DIST`` is computed for each.  Rows outside the intersection still
+    appear in the output with ``NULL`` percentile values.
 
     Parameters
     ----------
     db_path : str
         Path to the persistent ``.duckdb`` file.
-    anchor_table : str
-        Name of the anchor score table.
-    table_name : str
-        Name of the non-anchor score table whose temp columns are written.
+    wide_table : str
+        Name of the wide score table (e.g. ``variant_scores``).
+    anchor_column : str
+        Score column to use as the anchor.
+    target_column : str
+        Score column to compute percentiles against the anchor.
+    output_path : str
+        Destination Parquet file.
+    memory_limit : str or None
+        Optional DuckDB memory limit (e.g. ``'8GB'``).
     """
-    con = duckdb.connect(db_path)
+    output_path = os.path.abspath(output_path)
+    if os.path.exists(output_path):
+        raise FileExistsError(f"Output file already exists: {output_path}")
+
+    con = duckdb.connect(db_path, read_only=True)
     try:
-        for tbl in (anchor_table, table_name):
-            meta = con.execute(
-                "SELECT table_type, deduped, analysis_level "
-                "FROM metadata WHERE table_name = ?",
-                [tbl],
-            ).fetchone()
-            if meta is None:
-                raise ValueError(f"Table {tbl!r} not found in metadata.")
-            ttype, deduped, analysis_level = meta
-            if ttype != "score":
+        if memory_limit:
+            con.execute(f"SET memory_limit = '{memory_limit}'")
+        con.execute("SET preserve_insertion_order = false")
+
+        exists = con.execute(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_name = ? AND table_schema = 'main'",
+            [wide_table],
+        ).fetchone()[0]
+        if not exists:
+            raise ValueError(f"Table {wide_table!r} does not exist.")
+
+        actual_cols = {
+            desc[0]
+            for desc in con.execute(
+                f'SELECT * FROM "{wide_table}" LIMIT 0'
+            ).description
+        }
+        for col_name in (anchor_column, target_column):
+            if col_name not in actual_cols:
                 raise ValueError(
-                    f"Table {tbl!r} is type {ttype!r}, not 'score'."
-                )
-            if not deduped:
-                raise ValueError(
-                    f"Table {tbl!r} has not been deduped. "
-                    f"Run remove_duplicates first."
-                )
-            if analysis_level != "variant":
-                raise ValueError(
-                    f"Table {tbl!r} has analysis_level {analysis_level!r}. "
-                    f"Pairwise operations require all tables to be "
-                    f"analysis_level 'variant'."
+                    f"Column {col_name!r} not found in {wide_table!r}."
                 )
 
-        quoted_anchor = f'"{anchor_table}"'
-        quoted_target = f'"{table_name}"'
+        quoted = f'"{wide_table}"'
+        key_select = ", ".join(KEY_COLS)
+        both_not_null = (
+            f'("{anchor_column}" IS NOT NULL AND "{target_column}" IS NOT NULL)'
+        )
+        pw_anchor = f"{anchor_column}_pairwise_{target_column}"
+        pw_target = f"{target_column}_pairwise_{anchor_column}"
 
-        # Reset temp columns before computing
+        query = f"""
+            SELECT {key_select},
+                "{anchor_column}",
+                "{target_column}",
+                CASE WHEN {both_not_null} THEN CUME_DIST() OVER (
+                    PARTITION BY {both_not_null}
+                    ORDER BY "{anchor_column}"
+                ) END AS "{pw_anchor}",
+                CASE WHEN {both_not_null} THEN CUME_DIST() OVER (
+                    PARTITION BY {both_not_null}
+                    ORDER BY "{target_column}"
+                ) END AS "{pw_target}"
+            FROM {quoted}
+        """
+
         con.execute(
-            f"UPDATE {quoted_target} SET temp_1 = NULL, temp_2 = NULL"
+            f"COPY ({query}) TO '{output_path}' (FORMAT PARQUET)"
         )
 
-        con.execute(f"""
-            WITH intersection AS (
-                SELECT
-                    a."key",
-                    a.score AS anchor_score,
-                    b.score AS nonanchor_score
-                FROM {quoted_anchor} a
-                INNER JOIN {quoted_target} b ON a."key" = b."key"
-            ),
-            ranked AS (
-                SELECT
-                    "key",
-                    CASE WHEN anchor_score IS NOT NULL
-                         THEN CUME_DIST() OVER (
-                             PARTITION BY (anchor_score IS NOT NULL)
-                             ORDER BY anchor_score
-                         )
-                    END AS temp_1,
-                    CASE WHEN nonanchor_score IS NOT NULL
-                         THEN CUME_DIST() OVER (
-                             PARTITION BY (nonanchor_score IS NOT NULL)
-                             ORDER BY nonanchor_score
-                         )
-                    END AS temp_2
-                FROM intersection
-            )
-            UPDATE {quoted_target} t
-            SET temp_1 = r.temp_1, temp_2 = r.temp_2
-            FROM ranked r
-            WHERE t."key" = r."key";
-        """)
+        row_count = con.execute(
+            f"SELECT COUNT(*) FROM read_parquet('{output_path}')"
+        ).fetchone()[0]
 
-        stats = con.execute(f"""
-            SELECT
-                COUNT(*) FILTER (WHERE temp_1 IS NOT NULL OR temp_2 IS NOT NULL),
-                COUNT(temp_1),
-                COUNT(temp_2)
-            FROM {quoted_target}
-        """).fetchone()
-        intersection_size, anchor_scored, target_scored = stats
-
-        log_event(
-            con, "pairwise_percentile", "update_percentiles", table_name,
-            f"anchor={anchor_table}, intersection_rows={intersection_size}",
-        )
         print(
-            f"Pairwise percentiles {anchor_table!r} x {table_name!r}: "
-            f"{intersection_size} intersection rows "
-            f"({anchor_scored} anchor scored, {target_scored} non-anchor scored)",
+            f"Pairwise percentiles {anchor_column!r} x {target_column!r} "
+            f"→ {output_path}: {row_count:,} rows",
             file=sys.stderr,
         )
     finally:
         con.close()
 
+    con_rw = duckdb.connect(db_path)
+    try:
+        log_event(
+            con_rw, "pairwise_percentile", "export_parquet", wide_table,
+            f"anchor={anchor_column}, target={target_column}, "
+            f"output={output_path}, rows={row_count}",
+        )
+    finally:
+        con_rw.close()
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Compute pairwise percentiles between an anchor and a "
-            "non-anchor score table."
+            "Compute pairwise percentiles between two score columns "
+            "in a wide table and export to Parquet."
         ),
     )
     parser.add_argument(
@@ -136,15 +140,30 @@ def main() -> None:
         help=f"Path to the .duckdb file (default: {DEFAULT_DB_PATH}).",
     )
     parser.add_argument(
-        "--anchor_table", required=True,
-        help="Name of the anchor score table.",
+        "--wide_table", required=True,
+        help="Name of the wide score table (e.g. variant_scores).",
     )
     parser.add_argument(
-        "--table_name", required=True,
-        help="Name of the non-anchor score table to write percentiles into.",
+        "--anchor_column", required=True,
+        help="Score column to use as the anchor.",
+    )
+    parser.add_argument(
+        "--target_column", required=True,
+        help="Score column to compute percentiles against the anchor.",
+    )
+    parser.add_argument(
+        "--output_path", required=True,
+        help="Destination Parquet file.",
+    )
+    parser.add_argument(
+        "--memory_limit", default=None,
+        help="DuckDB memory limit (e.g. '8GB'). Default: DuckDB auto.",
     )
     args = parser.parse_args()
-    pairwise_percentile(args.db, args.anchor_table, args.table_name)
+    pairwise_percentile(
+        args.db, args.wide_table, args.anchor_column, args.target_column,
+        args.output_path, memory_limit=args.memory_limit,
+    )
 
 
 if __name__ == "__main__":

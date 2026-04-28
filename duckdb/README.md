@@ -1,480 +1,432 @@
 # DuckDB Score Database
 
-A persistent DuckDB-based pipeline for ingesting, deduplicating, inspecting, and merging variant/gene scores from Parquet files. Each step is a standalone Python script that can be run individually from the command line or composed into larger workflows.
+A persistent DuckDB-based pipeline for ingesting, deduplicating, inspecting, merging, and exporting variant- and gene-level scores and evaluations from Parquet files. Each step is a standalone Python script that can be run individually from the command line or composed into larger workflows via shell scripts.
 
-All scripts accept a `--db <path>` argument to specify the database file. Override the default with this flag.
+All scripts accept a `--db <path>` argument to specify the database file (default: `gg_data.duckdb`).
 
 ## Prerequisites
 
 - Python 3.10+
 - `duckdb` Python package (`pip install duckdb`)
-- Input data as Parquet files with either variant key columns (`chrom`, `pos`, `ref`, `alt`) or a gene key column (`ensg`)
+- Input data as Parquet (or TSV/CSV for evals) with either variant key columns (`chrom`, `pos`, `ref`, `alt`) or a gene key column (`ensg`)
+
+## Architecture Overview
+
+The pipeline uses a **wide table model** for scores: all score columns for a given analysis level live in a single table (e.g. `variant_scores` or `gene_scores`) rather than one table per score. This dramatically reduces storage (key columns are stored once) and simplifies merges to single-table scans.
+
+Eval tables remain individual (one table per evaluation source) and are merged into wide tables on demand via cascading outer joins.
+
+All outputs from score merges and pairwise operations are exported directly to **Parquet files** rather than stored in the database, keeping the database compact and avoiding OOM issues during large joins.
+
+Every mutating operation is recorded in an **audit log** for full provenance tracking.
 
 ## Modules
 
 ### `initialize_db.py` — Create the database
 
-Creates a new `.duckdb` file containing a single `metadata` table that tracks all registered score, eval, and merged tables. Refuses to overwrite an existing database.
+Creates a new `.duckdb` file containing two system tables:
 
-The metadata table schema:
+**`metadata`** — tracks every ingested source:
 
-| Column          | Type    | Description                                              |
-|-----------------|---------|----------------------------------------------------------|
-| `source_column` | VARCHAR | Source column name from the Parquet file — the score column name for score tables, the eval column name for eval tables, or a comma-separated list of source names for merged tables |
-| `source_path`   | VARCHAR | Absolute path to the source Parquet file for score/eval tables, or the set operation name (e.g. `intersection`) for merged tables |
-| `table_name`    | VARCHAR | Internal DuckDB table name (primary key)                 |
-| `table_type`    | VARCHAR | One of `'score'`, `'eval'`, `'merged_scores'`, `'merged_evals'`, `'merged_analysis'` |
-| `analysis_level`    | VARCHAR | Key type: `'variant'` (chrom/pos/ref/alt) or `'gene'` (ensg) |
-| `deduped`       | BOOLEAN | Whether duplicate keys have been resolved                |
+| Column | Type | Description |
+|---|---|---|
+| `source_column` | VARCHAR | Score column name (scores), eval label (evals), or comma-separated list (merged) |
+| `source_path` | VARCHAR | Absolute path to source file, or operation name for merged tables |
+| `table_name` | VARCHAR | Internal DuckDB table name |
+| `table_type` | VARCHAR | `'score'`, `'eval'`, `'merged_scores'`, `'merged_evals'`, or `'merged_analysis'` |
+| `analysis_level` | VARCHAR | `'variant'` (chrom/pos/ref/alt) or `'gene'` (ensg) |
+| `deduped` | BOOLEAN | Whether duplicate keys have been resolved |
+| `eval_column` | VARCHAR | Source column read as `is_pos` (eval tables only, nullable) |
+| `case_column` | VARCHAR | Source column read as `n_case` (eval tables only, nullable) |
+| `ctrl_column` | VARCHAR | Source column read as `n_ctrl` (eval tables only, nullable) |
+
+Unique constraint: `(table_name, source_column)` — supports wide tables with multiple metadata rows per table.
+
+**`audit_log`** — append-only event journal:
+
+| Column | Type | Description |
+|---|---|---|
+| `ts` | TIMESTAMP | Event timestamp (auto-populated) |
+| `module` | VARCHAR | Python module that produced the event |
+| `action` | VARCHAR | Action type (e.g. `create_table`, `add_column`, `export_parquet`) |
+| `table_name` | VARCHAR | Affected table (nullable) |
+| `details` | VARCHAR | Free-text details (nullable) |
 
 ```bash
-python duckdb/initialize_db.py --db scores.duckdb
+python duckdb/initialize_db.py --db my_data.duckdb
 ```
 
 ---
 
-### `ingest_score.py` — Load a score column from Parquet
+### `ingest_score.py` — Add a score column to a wide table
 
-Reads a single numeric score column from a Parquet file and materializes it as a DuckDB table. The table is physically sorted by score and includes a precomputed dense rank.
+Ingests a single numeric score column from a Parquet file into a **wide score table**. Defaults to `variant_scores` or `gene_scores` based on `--analysis_level`, overridable with `--table_name`.
 
-Each row has the following columns:
+- If the wide table doesn't exist yet, creates it with canonical key columns plus the score column.
+- If it exists, adds the column via `ALTER TABLE ADD COLUMN`, then updates existing keys and inserts new keys (with NULLs for all other score columns).
+- Deduplicates on ingest: keeps the row with a non-null score when duplicate keys exist.
 
-| Column   | Type     | Description |
-|----------|----------|-------------|
-| `chrom`  | VARCHAR  | Chromosome (NULL for gene-keyed tables) |
-| `pos`    | BIGINT   | Position (NULL for gene-keyed tables) |
-| `ref`    | VARCHAR  | Reference allele (NULL for gene-keyed tables) |
-| `alt`    | VARCHAR  | Alternate allele (NULL for gene-keyed tables) |
-| `ensg`   | VARCHAR  | Ensembl gene ID (NULL for variant-keyed tables) |
-| `key`    | UBIGINT  | Hash of key columns: `hash(chrom\|pos\|ref\|alt)` for variant, `hash(ensg)` for gene |
-| `score`  | DOUBLE   | The ingested score value |
-| `temp_1` | DOUBLE   | Reserved for percentile computation (initially NULL) |
-| `temp_2` | DOUBLE   | Reserved for percentile computation (initially NULL) |
-| `rank`   | INTEGER  | Dense rank of non-null scores (NULL for null scores) |
+Wide table schema:
+
+| Column | Type | Description |
+|---|---|---|
+| `chrom` | VARCHAR | Chromosome (NULL for gene-keyed tables) |
+| `pos` | BIGINT | Position (NULL for gene-keyed tables) |
+| `ref` | VARCHAR | Reference allele (NULL for gene-keyed tables) |
+| `alt` | VARCHAR | Alternate allele (NULL for gene-keyed tables) |
+| `ensg` | VARCHAR | Ensembl gene ID (NULL for variant-keyed tables) |
+| `key` | UBIGINT | Hash of key columns |
+| *score_1* | DOUBLE | First ingested score |
+| *score_2* | DOUBLE | Second ingested score |
+| ... | ... | One column per ingested score |
 
 ```bash
 python duckdb/ingest_score.py \
-  --db scores.duckdb \
-  --score_name revel \
-  --score_path data/gnomad_chr22.parquet \
-  --table_name revel_chr22 \
+  --db my_data.duckdb \
+  --score_name AM_score \
+  --score_path data/alphamissense.parquet \
   --analysis_level variant
-```
 
-After ingestion the script checks for duplicate keys and sets `metadata.deduped` accordingly. A warning is printed if duplicates are detected.
+python duckdb/ingest_score.py \
+  --db my_data.duckdb \
+  --score_name loeuf_v2_score \
+  --score_path data/loeuf.parquet \
+  --table_name gene_scores \
+  --analysis_level gene
+```
 
 ---
 
-### `ingest_eval.py` — Load a boolean label column from Parquet
+### `ingest_eval.py` — Load evaluation data
 
-Similar to `ingest_score.py`, but stores a boolean `is_pos` column instead of score/temp/rank. Used for evaluation labels (e.g., pathogenicity truth sets).
+Ingests an evaluation table from a Parquet, TSV, or CSV file. Each eval table has a fixed schema of three data columns — which are populated depends on the arguments:
+
+| Column | Type | Populated when |
+|---|---|---|
+| `is_pos` | BOOLEAN | `--eval_column` is given (source column cast to boolean) |
+| `n_case` | INTEGER | `--case_column` is given (must pair with `--ctrl_column`) |
+| `n_ctrl` | INTEGER | `--ctrl_column` is given (must pair with `--case_column`) |
+
+This allows flexible ingestion regardless of the source column names — e.g. `--eval_column is_case` reads a column named `is_case` as `is_pos`, and `--case_column n_case_subset` reads `n_case_subset` as `n_case`. The original source column names are recorded in metadata for provenance.
 
 ```bash
+# Boolean eval (variant-level)
 python duckdb/ingest_eval.py \
-  --db scores.duckdb \
-  --eval_name is_pathogenic \
-  --eval_path data/clinvar_labels.parquet \
+  --db my_data.duckdb \
+  --eval_name clinvar \
+  --eval_path data/clinvar.parquet \
   --table_name clinvar_eval \
-  --analysis_level variant
-```
+  --analysis_level variant \
+  --eval_column is_pos
 
----
+# Count eval (gene-level)
+python duckdb/ingest_eval.py \
+  --db my_data.duckdb \
+  --eval_name asc \
+  --eval_path data/asc_ensg_eval.tsv \
+  --table_name asc_gene_eval \
+  --analysis_level gene \
+  --case_column n_case --ctrl_column n_ctrl
 
-### `eject_table.py` — Remove a table from the database
-
-Drops the named table and deletes its row from the metadata table. Works for score, eval, and merged tables alike.
-
-```bash
-python duckdb/eject_table.py --db scores.duckdb --table_name revel_chr22
-```
-
----
-
-### `inspect_db.py` — View database contents and statistics
-
-Lists all registered tables grouped by type and reports summary statistics:
-
-- **Score tables**: row count, scored/null counts, unique keys, min/max/mean/median of score, dedup status, duplicate warnings
-- **Eval tables**: row count, positive/negative/null counts, unique keys, dedup status
-- **Merged tables**: row count, column count, data column list, source score names
-
-Optionally print randomly sampled rows with `--sample N`.
-
-```bash
-python duckdb/inspect_db.py --db scores.duckdb
-python duckdb/inspect_db.py --db scores.duckdb --sample 5
+# Both boolean and count columns
+python duckdb/ingest_eval.py \
+  --db my_data.duckdb \
+  --eval_name genebass \
+  --eval_path data/genebass.tsv \
+  --table_name genebass_gene_eval \
+  --analysis_level gene \
+  --eval_column is_pos \
+  --case_column n_case --ctrl_column n_ctrl
 ```
 
 ---
 
 ### `remove_duplicates.py` — Deduplicate a table by key
 
-Removes rows with duplicate `key` values. Required before pairwise operations or merging.
+Removes rows with duplicate `key` values. Required for eval tables before merging (score tables are deduplicated at ingest).
 
-Two strategies are available:
-
-| Strategy        | Behavior |
-|-----------------|----------|
-| `keep_random`   | Keeps one random row per duplicate key (works on both score and eval tables) |
+| Strategy | Behavior |
+|---|---|
+| `keep_random` | Keeps one random row per duplicate key (works on both score and eval tables) |
 | `prefer_scored` | Keeps the row with a non-null score, breaking ties at random (score tables only) |
 
 ```bash
 python duckdb/remove_duplicates.py \
-  --db scores.duckdb \
-  --table_name revel_chr22 \
-  --strategy prefer_scored
+  --db my_data.duckdb \
+  --table_name clinvar_eval \
+  --strategy keep_random
 ```
 
 ---
 
-### `pairwise_percentile.py` — In-place pairwise percentile computation
+### `eject_table.py` — Remove a table or score column
 
-Computes intersection-based `CUME_DIST` between an anchor and a non-anchor score table, writing the results into the non-anchor table's `temp_1` and `temp_2` columns:
+Two modes of operation:
 
-- `temp_1` = anchor score percentile within the key intersection
-- `temp_2` = non-anchor score percentile within the key intersection
-- Rows outside the intersection retain NULL
-- NULL scores within the intersection are excluded from the ranking denominator
-
-Both tables must be of type `'score'` and must be deduped.
+- **Drop entire table** (default): removes the table and all its metadata rows.
+- **Drop a score column** (`--score_column`): drops only that column from a wide score table and its metadata entry. If it's the last score column, the entire table is removed.
 
 ```bash
-python duckdb/pairwise_percentile.py \
-  --db scores.duckdb \
-  --anchor_table am_chr22 \
-  --table_name revel_chr22
+# Drop an entire eval table
+python duckdb/eject_table.py --db my_data.duckdb --table_name clinvar_eval
+
+# Drop a single score column from the wide table
+python duckdb/eject_table.py --db my_data.duckdb \
+  --table_name variant_scores --score_column AM_score
 ```
 
 ---
 
-### `merge_scores.py` — Combine multiple score tables
+### `inspect_db.py` — View database contents and statistics
 
-Merges two or more deduped score tables into a single wide output table. The merge is controlled by two orthogonal flags:
+Lists all registered tables grouped by type:
+
+- **Score tables**: per-column scored/null counts, min/max/mean/median, source path.
+- **Eval tables**: positive/negative/null counts (boolean), sum case/ctrl (count), source path, column mapping.
+- **Merged tables**: row count, column listing, source provenance.
+- **Audit log** (`--audit`): event history with timestamps, modules, actions, and details.
+
+```bash
+python duckdb/inspect_db.py --db my_data.duckdb
+python duckdb/inspect_db.py --db my_data.duckdb --sample 5
+python duckdb/inspect_db.py --db my_data.duckdb --audit
+python duckdb/inspect_db.py --db my_data.duckdb --audit-last 20
+```
+
+---
+
+### `export_table.py` — Export a table to Parquet
+
+Writes any database table to a Parquet file.
+
+```bash
+python duckdb/export_table.py --db my_data.duckdb \
+  --table_name variant_scores \
+  --output_path output/variant_scores.parquet
+```
+
+---
+
+### `merge_evals.py` — Combine eval tables into a wide table
+
+Merges N eval tables into a single wide database table via **cascading 2-way FULL OUTER JOINs** (bounded memory usage). Boolean columns are renamed to the source label; count columns are prefixed with the source label.
+
+Output column structure: key columns + per eval source:
+- `{label}` (BOOLEAN) — if the source had a boolean column
+- `{label}_n_case` (INTEGER) — if the source had count columns
+- `{label}_n_ctrl` (INTEGER) — if the source had count columns
+
+```bash
+python duckdb/merge_evals.py --db my_data.duckdb \
+  --tables clinvar_eval asd_eval dd_eval \
+  --output_table variant_evals_merged \
+  --memory_limit 8GB
+```
+
+---
+
+### `merge_scores.py` — Export score merges and pairwise analysis
+
+The primary output engine. Reads from a wide score table and writes to Parquet files.
 
 **Set operations** (`--set_operation`):
 
-| Operation      | Join type       | Description |
-|----------------|-----------------|-------------|
-| `intersection` | INNER JOIN      | Only rows present in every input table |
-| `union`        | FULL OUTER JOIN | All rows from any input table; missing scores are NULL |
-| `pairwise`     | Per-pair INNER, then FULL OUTER | Anchor-based pairwise percentiles across pair intersections |
+| Operation | Description |
+|---|---|
+| `intersection` | Only rows where all selected score columns are non-null → single Parquet |
+| `union` | All rows (NULLs preserved) → single Parquet |
+| `pairwise` | Anchor-based pairwise percentiles → one Parquet file per anchor-target pair |
 
-**Percentile modes** (`--percentile`):
+**Percentile modes** (`--percentile`, for intersection/union only):
 
-| Mode   | Description |
-|--------|-------------|
-| `pre`  | Percentile each table's score (full population) *before* joining |
-| `post` | Join first, then percentile each score column across the joined result |
-| `none` | Raw scores only, no percentile columns |
+| Mode | Description |
+|---|---|
+| `pre`/`post` | Add `CUME_DIST` percentile columns for each score |
+| `none` | Raw scores only |
 
-Constraints:
-- All input tables must be deduped score tables
-- `--anchor_table` is required for pairwise and forbidden otherwise
-- `--percentile` must be `none` for pairwise (it computes its own intersection-based percentiles)
-- `--output_table` must not already exist
-- At least two input tables are required
+**Pairwise mode** computes its own percentiles and supports additional features:
 
-The output table is registered in metadata as `table_type='merged_scores'`.
+| Flag | Description |
+|---|---|
+| `--evals_table` | Left-join a merged-evals table, embedding all eval columns in each output file |
+| `--gene_average` | Join a linker Parquet and add `AVG(percentile) OVER (PARTITION BY ensg)` columns |
+| `--linker_path` | Path to linker Parquet (required with `--gene_average`) |
+| `--memory_limit` | DuckDB memory limit (e.g. `8GB`) |
+
+Each pairwise output file contains:
+- Key columns: `chrom`, `pos`, `ref`, `alt`, `ensg`, `key`
+- 2 raw scores (anchor + target)
+- 2 pairwise `CUME_DIST` percentile columns
+- (with `--gene_average`) 2 gene-averaged percentile columns (`_gene_avg` suffix)
+- (with `--evals_table`) all eval columns
 
 ```bash
-# Intersection with post-percentile
-python duckdb/merge_scores.py \
-  --db scores.duckdb \
-  --tables revel_chr22 am_chr22 cadd_chr22 \
-  --output_table merged_intersection \
-  --set_operation intersection \
-  --percentile post
+# Intersection with percentiles
+python duckdb/merge_scores.py --db my_data.duckdb \
+  --wide_table variant_scores \
+  --columns AM_score cadd_score polyphen_score \
+  --output_path output/intersection.parquet \
+  --set_operation intersection --percentile post
 
-# Union with pre-percentile
-python duckdb/merge_scores.py \
-  --db scores.duckdb \
-  --tables revel_chr22 am_chr22 \
-  --output_table merged_union \
-  --set_operation union \
-  --percentile pre
+# Pairwise with eval join
+python duckdb/merge_scores.py --db my_data.duckdb \
+  --wide_table variant_scores \
+  --columns polyphen_score AM_score cadd_score \
+  --output_dir output/pairwise/ \
+  --set_operation pairwise --percentile none \
+  --anchor_column polyphen_score \
+  --evals_table variant_evals_merged \
+  --memory_limit 8GB
 
-# Pairwise with AM as anchor
-python duckdb/merge_scores.py \
-  --db scores.duckdb \
-  --tables am_chr22 revel_chr22 cadd_chr22 \
-  --output_table merged_pairwise \
-  --set_operation pairwise \
-  --percentile none \
-  --anchor_table am_chr22
+# Pairwise with gene-averaged percentiles
+python duckdb/merge_scores.py --db my_data.duckdb \
+  --wide_table variant_scores \
+  --columns polyphen_score AM_score cadd_score \
+  --output_dir output/pairwise_gene_avg/ \
+  --set_operation pairwise --percentile none \
+  --anchor_column polyphen_score \
+  --evals_table variant_evals_merged \
+  --gene_average \
+  --linker_path data/linker_all.parquet \
+  --memory_limit 8GB
 ```
-
-**Output column structure by mode:**
-
-- **intersection/union, `none`**: key columns + one raw score column per input (`{score_name}`)
-- **intersection/union, `pre` or `post`**: key columns + raw score + percentile per input (`{score_name}`, `{score_name}_percentile`)
-- **pairwise**: key columns + per non-anchor pair: anchor raw score, non-anchor raw score, anchor pairwise percentile (`{anchor}_pairwise_{C}`), non-anchor pairwise percentile (`{C}_pairwise_{anchor}`)
 
 ---
 
-### `merge_evals.py` — Combine multiple eval tables
+### `pairwise_percentile.py` — Single-pair percentile export
 
-Merges two or more deduped eval tables into a single wide table via `FULL OUTER JOIN` on `key`. Each input eval table's `is_pos` column is renamed to the table's `source_column` name so they are distinct in the output.
-
-The output table is registered in metadata as `table_type='merged_evals'`.
-
-Constraints:
-- All input tables must be deduped eval tables
-- `--output_table` must not already exist
-- At least two input tables are required
+Computes pairwise `CUME_DIST` percentiles between two specific score columns in a wide table and writes the result to a single Parquet file. Useful for ad-hoc single-pair analysis; for batch operations use pairwise mode in `merge_scores.py`.
 
 ```bash
-python duckdb/merge_evals.py \
-  --db scores.duckdb \
-  --tables clinvar_eval omim_eval \
-  --output_table merged_labels
+python duckdb/pairwise_percentile.py --db my_data.duckdb \
+  --wide_table variant_scores \
+  --anchor_column polyphen_score \
+  --target_column AM_score \
+  --output_path output/polyphen_x_am.parquet
 ```
-
-**Output column structure:** key columns (`chrom`, `pos`, `ref`, `alt`, `ensg`, `key`) + one boolean column per input eval, named after the eval's `source_column`.
 
 ---
 
-### `create_analysis_table.py` — Join merged scores and merged evals
+### `create_analysis_table.py` — Join scores and evals in-database
 
-Combines a `merged_scores` table and a `merged_evals` table into a single `merged_analysis` table via a `FULL OUTER JOIN`. This is the final assembly step that brings score data and evaluation labels together into one wide table for downstream analysis.
+Combines a scores table and a merged-evals table into a `merged_analysis` database table via FULL OUTER JOIN.
 
-**Same-key join** (default): When both input tables share the same `analysis_level` (both `variant` or both `gene`), the join is a straightforward `FULL OUTER JOIN` on `"key"`, coalescing key columns. The output `analysis_level` matches the shared level.
+- **Same-level join**: Both tables share `analysis_level` → direct key join.
+- **Cross-level join** (`--linker_path`): Different levels (e.g. variant scores + gene evals) → three-way join via linker.
 
-**Cross-key join** (`--linker_path`): When the two input tables have different `analysis_level` values (one `variant`, one `gene`), a linker Parquet file is required. The linker must contain `chrom`, `pos`, `ref`, `alt`, and `ensg` columns, establishing the many-to-one mapping from variant keys to gene keys. The output `analysis_level` is `variant`.
-
-The output table is registered in metadata as `table_type='merged_analysis'`.
-
-Constraints:
-- `--scores_table` must be `table_type='merged_scores'` in metadata
-- `--evals_table` must be `table_type='merged_evals'` in metadata
-- `--output_table` must not already exist
-- `--linker_path` is required when `analysis_level` differs between the two inputs, and forbidden when it matches
+Accepts both `score` and `merged_scores` types for the scores input.
 
 ```bash
-# Same-key join (both tables are variant-level)
-python duckdb/create_analysis_table.py \
-  --db scores.duckdb \
-  --scores_table merged_scores_tbl \
-  --evals_table merged_evals_tbl \
-  --output_table my_analysis
+# Same-level join
+python duckdb/create_analysis_table.py --db my_data.duckdb \
+  --scores_table variant_scores \
+  --evals_table variant_evals_merged \
+  --output_table variant_analysis
 
-# Cross-key join (variant scores + gene evals via linker)
-python duckdb/create_analysis_table.py \
-  --db scores.duckdb \
-  --scores_table merged_variant_scores \
-  --evals_table merged_gene_evals \
+# Cross-level join
+python duckdb/create_analysis_table.py --db my_data.duckdb \
+  --scores_table variant_scores \
+  --evals_table gene_evals_merged \
   --output_table cross_analysis \
-  --linker_path data/variant_gene_linker.parquet
+  --linker_path data/linker_all.parquet
 ```
-
-**Output column structure:** key columns (`chrom`, `pos`, `ref`, `alt`, `ensg`, `key`) + all data columns from the scores table (raw scores, percentiles, pairwise columns) + all data columns from the evals table (boolean label columns).
 
 ---
 
-### `join_linker.py` — Enrich a merged table with key columns from a linker
+### `join_linker.py` — Enrich a merged table with key columns
 
-Fills in the "other side" key columns on any merged table (`merged_scores`, `merged_evals`, or `merged_analysis`) using a linker Parquet that maps between variant keys and gene keys.
+Fills in the "other side" key columns on any merged table using a linker Parquet. The operation is **in-place**.
 
-**Variant-level table + linker (add `ensg`):** LEFT JOIN on variant `key` to pull in `ensg` from the linker. This is many-to-one, so the row count does not change — it simply fills in the `ensg` column where a match exists. The `analysis_level` remains `variant`.
-
-**Gene-level table + linker (add `chrom/pos/ref/alt`):** LEFT JOIN on `ensg` to pull in variant key columns from the linker. This is one-to-many, so the row count **expands** (each gene row becomes N variant rows). The `analysis_level` changes to `variant`.
-
-The operation is **in-place** — it replaces the existing table rather than creating a new one.
-
-Constraints:
-- The table must be a merged type (`merged_scores`, `merged_evals`, or `merged_analysis`)
-- The linker Parquet must contain `chrom`, `pos`, `ref`, `alt`, and `ensg` columns
+- **Variant table**: fills `ensg` (many-to-one, row count unchanged).
+- **Gene table**: expands to variant granularity (one-to-many, row count increases, `analysis_level` changes to `variant`).
 
 ```bash
-# Add ensg to a variant-level merged table
-python duckdb/join_linker.py \
-  --db scores.duckdb \
-  --table_name merged_scores_tbl \
-  --linker_path data/linker.parquet
-
-# Expand a gene-level merged table to variant granularity
-python duckdb/join_linker.py \
-  --db scores.duckdb \
-  --table_name merged_gene_evals \
-  --linker_path data/linker.parquet
+python duckdb/join_linker.py --db my_data.duckdb \
+  --table_name variant_evals_merged \
+  --linker_path data/linker_all.parquet
 ```
 
 ---
 
 ## Typical Workflows
 
-### Basic: Ingest, inspect, and merge scores
+### Wide table ingestion
 
 ```bash
 # 1. Create the database
-python duckdb/initialize_db.py --db my_scores.duckdb
+python duckdb/initialize_db.py --db my_data.duckdb
 
-# 2. Ingest scores from Parquet files
-python duckdb/ingest_score.py --db my_scores.duckdb \
-  --score_name revel --score_path data/revel_chr22.parquet \
-  --table_name revel_chr22 --analysis_level variant
+# 2. Ingest multiple scores into a single wide table
+python duckdb/ingest_score.py --db my_data.duckdb \
+  --score_name polyphen_score --score_path data/all.parquet --analysis_level variant
+python duckdb/ingest_score.py --db my_data.duckdb \
+  --score_name AM_score --score_path data/julia.parquet --analysis_level variant
+python duckdb/ingest_score.py --db my_data.duckdb \
+  --score_name cadd_score --score_path data/all.parquet --analysis_level variant
 
-python duckdb/ingest_score.py --db my_scores.duckdb \
-  --score_name AM --score_path data/alphamissense_chr22.parquet \
-  --table_name am_chr22 --analysis_level variant
-
-python duckdb/ingest_score.py --db my_scores.duckdb \
-  --score_name cadd_score --score_path data/cadd_chr22.parquet \
-  --table_name cadd_chr22 --analysis_level variant
-
-# 3. Deduplicate all score tables
-python duckdb/remove_duplicates.py --db my_scores.duckdb \
-  --table_name revel_chr22 --strategy prefer_scored
-python duckdb/remove_duplicates.py --db my_scores.duckdb \
-  --table_name am_chr22 --strategy prefer_scored
-python duckdb/remove_duplicates.py --db my_scores.duckdb \
-  --table_name cadd_chr22 --strategy prefer_scored
-
-# 4. Inspect the database
-python duckdb/inspect_db.py --db my_scores.duckdb --sample 3
-
-# 5. Merge into a single wide table with post-join percentiles
-python duckdb/merge_scores.py --db my_scores.duckdb \
-  --tables revel_chr22 am_chr22 cadd_chr22 \
-  --output_table merged_all \
-  --set_operation intersection --percentile post
-
-# 6. Inspect the result
-python duckdb/inspect_db.py --db my_scores.duckdb
+# 3. Inspect
+python duckdb/inspect_db.py --db my_data.duckdb
 ```
 
-### Replacing a score and re-merging
-
-If you realize a score table was ingested from the wrong source or needs to be updated:
+### Full pairwise analysis with evals and gene averaging
 
 ```bash
-# 1. Remove the old score and the existing merged table
-python duckdb/eject_table.py --db my_scores.duckdb --table_name revel_chr22
-python duckdb/eject_table.py --db my_scores.duckdb --table_name merged_all
+# 1. Ingest scores (as above)
 
-# 2. Re-ingest from the corrected Parquet
-python duckdb/ingest_score.py --db my_scores.duckdb \
-  --score_name revel --score_path data/revel_chr22_v2.parquet \
-  --table_name revel_chr22 --analysis_level variant
+# 2. Ingest evals
+python duckdb/ingest_eval.py --db my_data.duckdb \
+  --eval_name clinvar --eval_path data/clinvar.parquet \
+  --table_name clinvar_eval --analysis_level variant --eval_column is_pos
+python duckdb/ingest_eval.py --db my_data.duckdb \
+  --eval_name asd --eval_path data/asd.parquet \
+  --table_name asd_eval --analysis_level variant --eval_column is_pos
 
-# 3. Deduplicate
-python duckdb/remove_duplicates.py --db my_scores.duckdb \
-  --table_name revel_chr22 --strategy prefer_scored
-
-# 4. Re-merge
-python duckdb/merge_scores.py --db my_scores.duckdb \
-  --tables revel_chr22 am_chr22 cadd_chr22 \
-  --output_table merged_all \
-  --set_operation intersection --percentile post
-```
-
-### Pairwise merge with a specific anchor
-
-When you want to compute intersection-based percentiles for each score relative to one anchor:
-
-```bash
-# Prerequisite: all tables ingested and deduped (see above)
-
-# Merge with AM as the anchor score
-python duckdb/merge_scores.py --db my_scores.duckdb \
-  --tables am_chr22 revel_chr22 cadd_chr22 \
-  --output_table pairwise_am_anchor \
-  --set_operation pairwise --percentile none \
-  --anchor_table am_chr22
-
-# Inspect to see the pairwise columns
-python duckdb/inspect_db.py --db my_scores.duckdb --sample 3
-```
-
-This produces columns like `AM_pairwise_revel`, `revel_pairwise_AM`, `AM_pairwise_cadd_score`, `cadd_score_pairwise_AM` — each representing the `CUME_DIST` percentile of the respective score within the key intersection of that anchor-nonanchor pair.
-
-### Standalone pairwise percentile (in-place)
-
-If you need to write pairwise percentiles directly into a score table's temp columns (e.g., for downstream analysis outside of the merge pipeline):
-
-```bash
-# Write anchor and non-anchor percentiles into revel_chr22's temp_1/temp_2
-python duckdb/pairwise_percentile.py --db my_scores.duckdb \
-  --anchor_table am_chr22 --table_name revel_chr22
-
-# Inspect the temp columns
-python duckdb/inspect_db.py --db my_scores.duckdb --sample 5
-```
-
-### Full analysis: scores + evals → analysis table
-
-A complete workflow from raw Parquet files to a unified analysis table:
-
-```bash
-# 1. Create the database
-python duckdb/initialize_db.py --db my_analysis.duckdb
-
-# 2. Ingest scores
-python duckdb/ingest_score.py --db my_analysis.duckdb \
-  --score_name revel --score_path data/revel_chr22.parquet \
-  --table_name revel_chr22 --analysis_level variant
-python duckdb/ingest_score.py --db my_analysis.duckdb \
-  --score_name AM --score_path data/am_chr22.parquet \
-  --table_name am_chr22 --analysis_level variant
-
-# 3. Ingest evals
-python duckdb/ingest_eval.py --db my_analysis.duckdb \
-  --eval_name is_pathogenic --eval_path data/clinvar.parquet \
-  --table_name clinvar_eval --analysis_level variant
-python duckdb/ingest_eval.py --db my_analysis.duckdb \
-  --eval_name is_lof --eval_path data/lof_labels.parquet \
-  --table_name lof_eval --analysis_level variant
-
-# 4. Deduplicate everything
-python duckdb/remove_duplicates.py --db my_analysis.duckdb \
-  --table_name revel_chr22 --strategy prefer_scored
-python duckdb/remove_duplicates.py --db my_analysis.duckdb \
-  --table_name am_chr22 --strategy prefer_scored
-python duckdb/remove_duplicates.py --db my_analysis.duckdb \
+# 3. Deduplicate evals
+python duckdb/remove_duplicates.py --db my_data.duckdb \
   --table_name clinvar_eval --strategy keep_random
-python duckdb/remove_duplicates.py --db my_analysis.duckdb \
-  --table_name lof_eval --strategy keep_random
+python duckdb/remove_duplicates.py --db my_data.duckdb \
+  --table_name asd_eval --strategy keep_random
 
-# 5. Merge scores and evals separately
-python duckdb/merge_scores.py --db my_analysis.duckdb \
-  --tables revel_chr22 am_chr22 \
-  --output_table merged_scores \
-  --set_operation intersection --percentile post
-python duckdb/merge_evals.py --db my_analysis.duckdb \
-  --tables clinvar_eval lof_eval \
+# 4. Merge evals into a wide table
+python duckdb/merge_evals.py --db my_data.duckdb \
+  --tables clinvar_eval asd_eval \
   --output_table merged_evals
 
-# 6. Create the final analysis table
-python duckdb/create_analysis_table.py --db my_analysis.duckdb \
-  --scores_table merged_scores \
+# 5. Export pairwise with evals and gene averaging
+python duckdb/merge_scores.py --db my_data.duckdb \
+  --wide_table variant_scores \
+  --columns polyphen_score AM_score cadd_score \
+  --output_dir output/pairwise/ \
+  --set_operation pairwise --percentile none \
+  --anchor_column polyphen_score \
   --evals_table merged_evals \
-  --output_table final_analysis
+  --gene_average \
+  --linker_path data/linker_all.parquet \
+  --memory_limit 8GB
+```
 
-# 7. Inspect
-python duckdb/inspect_db.py --db my_analysis.duckdb --sample 3
+### Replacing a score column
+
+```bash
+# 1. Remove the old column
+python duckdb/eject_table.py --db my_data.duckdb \
+  --table_name variant_scores --score_column AM_score
+
+# 2. Re-ingest from corrected source
+python duckdb/ingest_score.py --db my_data.duckdb \
+  --score_name AM_score --score_path data/am_v2.parquet --analysis_level variant
 ```
 
 ---
 
-### Adding evaluation labels alongside scores
-
-```bash
-# Ingest a boolean label column
-python duckdb/ingest_eval.py --db my_scores.duckdb \
-  --eval_name is_pathogenic --eval_path data/clinvar_labels.parquet \
-  --table_name clinvar_eval --analysis_level variant
-
-# Deduplicate if needed
-python duckdb/remove_duplicates.py --db my_scores.duckdb \
-  --table_name clinvar_eval --strategy keep_random
-
-# View all tables including eval
-python duckdb/inspect_db.py --db my_scores.duckdb
-```
-
 ## Design Notes
 
-- **Key hashing**: Variant keys are hashed via `hash(chrom || '|' || pos || '|' || ref || '|' || alt)` using DuckDB's built-in `hash()` function. Gene-keyed tables are hashed via `hash(ensg)`. Both produce a `UBIGINT` key used for joins and deduplication.
-- **Physical sort order**: Score tables are stored sorted by score at ingestion time. This benefits subsequent window-function operations (DENSE_RANK, CUME_DIST) by aligning with DuckDB's optimizer expectations.
-- **NULL-safe percentiles**: All percentile computations use `CUME_DIST() OVER (PARTITION BY (score IS NOT NULL) ORDER BY score)` wrapped in `CASE WHEN ... IS NOT NULL` to exclude NULL scores from the ranking denominator and assign NULL percentiles to NULL scores. `CUME_DIST` is used rather than `PERCENT_RANK` to guarantee the maximum value in any percentile column is always 1.0.
-- **Deduplication as explicit step**: Duplicate keys are detected at ingestion but not automatically removed. The `deduped` metadata flag gates access to pairwise operations and merging, ensuring data integrity without silent data loss.
-- **Merged table metadata**: Merged tables store the comma-separated source column names in `source_column` and the set operation in `source_path` for traceability.
+- **Wide table model**: All score columns for a given analysis level coexist in a single table. Key columns are stored once, reducing database size by ~10x compared to one-table-per-score. New scores are added via `ALTER TABLE ADD COLUMN` + `UPDATE`/`INSERT`.
+- **Key hashing**: Variant keys are hashed via `hash(chrom || '|' || pos || '|' || ref || '|' || alt)` using DuckDB's built-in `hash()` function. Gene keys use `hash(ensg)`. Both produce a `UBIGINT` used for joins and deduplication.
+- **NULL-safe percentiles**: All percentile computations use `CUME_DIST() OVER (PARTITION BY (score IS NOT NULL) ORDER BY score)` wrapped in `CASE WHEN ... IS NOT NULL` to exclude NULL scores from the ranking denominator. `CUME_DIST` is used rather than `PERCENT_RANK` to guarantee the maximum percentile is always 1.0.
+- **Per-pair Parquet output**: Pairwise mode writes one file per anchor-target pair. This bounds memory usage to a single pair's worth of computation and provides natural resumability (existing files are skipped).
+- **Gene averaging**: When `--gene_average` is set, pairwise percentiles are computed first, then a linker is joined to obtain `ensg`, and `AVG(percentile) OVER (PARTITION BY ensg)` is computed. Both per-variant and gene-averaged percentiles are included in the output.
+- **Cascading joins**: Eval merges use cascading 2-way FULL OUTER JOINs rather than a single N-way join, bounding memory usage to one intermediate table at a time.
+- **Explicit eval column tracking**: Metadata records the original source column names (`eval_column`, `case_column`, `ctrl_column`) for each eval table, allowing ingestion of non-standard column names (e.g. `is_case`, `is_pos_fine_mapped`, `n_case_subset`) while normalizing to `is_pos`/`n_case`/`n_ctrl` internally.
+- **Audit log**: Every mutating operation appends to the `audit_log` table, recording the module, action, affected table, and details. This enables lineage tracking and dependency analysis.
+- **Deduplication**: Score tables are deduplicated at ingest (prefer non-null score). Eval tables require explicit deduplication via `remove_duplicates.py` before merging.

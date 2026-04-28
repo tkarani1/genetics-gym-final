@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ingest a single score column from a parquet file into a DuckDB table."""
+"""Ingest a single score column into a wide DuckDB score table."""
 from __future__ import annotations
 
 import argparse
@@ -10,6 +10,9 @@ import duckdb
 
 from initialize_db import DEFAULT_DB_PATH, log_event
 
+WIDE_TABLE_DEFAULTS = {"variant": "variant_scores", "gene": "gene_scores"}
+KEY_NAMES = {"chrom", "pos", "ref", "alt", "ensg", "key"}
+
 
 def ingest_score(
     db_path: str,
@@ -18,8 +21,15 @@ def ingest_score(
     table_name: str,
     analysis_level: str,
 ) -> None:
-    """Read one score column from a parquet file and materialise it as a
-    DuckDB table with canonical key columns, a hash key, and a dense rank.
+    """Add a score column to a wide score table from a Parquet source.
+
+    If the wide table does not exist yet, it is created with canonical key
+    columns plus the first score column.  If it already exists, the new
+    score column is added and populated.  Rows in the source that are new
+    to the table are inserted; existing rows are updated.
+
+    Incoming data is deduplicated on the key before insertion (keeps the
+    row where the score is non-null, breaking ties randomly).
 
     Parameters
     ----------
@@ -30,10 +40,9 @@ def ingest_score(
     score_path : str
         Path to the source parquet file.
     table_name : str
-        Name for the new table inside the database.
+        Name for the wide score table (e.g. ``variant_scores``).
     analysis_level : str
-        ``"variant"`` — key columns are ``chrom/pos/ref/alt``.
-        ``"gene"`` — key column is ``ensg``.
+        ``"variant"`` or ``"gene"``.
     """
     score_path = os.path.abspath(score_path)
 
@@ -56,10 +65,6 @@ def ingest_score(
         if "metadata" not in tables:
             raise RuntimeError(
                 "Database has no metadata table. Run initialize_db first."
-            )
-        if table_name in tables:
-            raise ValueError(
-                f"Table {table_name!r} already exists in the database."
             )
 
         parquet_columns = {
@@ -106,64 +111,135 @@ def ingest_score(
         quoted_table = f'"{table_name}"'
         quoted_score = f'"{score_name}"'
 
-        create_sql = f"""
-        CREATE TABLE {quoted_table} AS
-        SELECT
-            {key_select},
-            {hash_expr} AS "key",
-            {quoted_score}::DOUBLE AS score,
-            NULL::DOUBLE AS temp_1,
-            NULL::DOUBLE AS temp_2,
-            CASE WHEN {quoted_score} IS NOT NULL
-                 THEN DENSE_RANK() OVER (ORDER BY {quoted_score} NULLS LAST)
-                 ELSE NULL
-            END::INTEGER AS "rank"
-        FROM read_parquet('{score_path}')
-        ORDER BY score NULLS LAST;
+        deduped_src = f"""
+            (SELECT * EXCLUDE (rn) FROM (
+                SELECT
+                    {key_select},
+                    {hash_expr} AS "key",
+                    {quoted_score}::DOUBLE AS score,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY {hash_expr}
+                        ORDER BY ({quoted_score} IS NOT NULL) DESC, random()
+                    ) AS rn
+                FROM read_parquet('{score_path}')
+            ) WHERE rn = 1)
         """
-        con.execute(create_sql)
 
-        row_count = con.execute(
-            f"SELECT COUNT(*) FROM {quoted_table}"
-        ).fetchone()[0]
-        scored_count = con.execute(
-            f"SELECT COUNT(score) FROM {quoted_table}"
-        ).fetchone()[0]
-        unique_keys = con.execute(
-            f'SELECT COUNT(DISTINCT "key") FROM {quoted_table}'
-        ).fetchone()[0]
-        has_dupes = unique_keys < row_count
+        table_exists = table_name in tables
+
+        if not table_exists:
+            con.execute(
+                f"CREATE TABLE {quoted_table} AS\n"
+                f"SELECT chrom, pos, ref, alt, ensg, \"key\", "
+                f"score AS {quoted_score}\n"
+                f"FROM {deduped_src}"
+            )
+            row_count = con.execute(
+                f"SELECT COUNT(*) FROM {quoted_table}"
+            ).fetchone()[0]
+            scored_count = con.execute(
+                f"SELECT COUNT({quoted_score}) FROM {quoted_table}"
+            ).fetchone()[0]
+            print(
+                f"Created {table_name!r} with {score_name!r}: "
+                f"{row_count:,} rows ({scored_count:,} scored, "
+                f"{row_count - scored_count:,} null)",
+                file=sys.stderr,
+            )
+        else:
+            existing_cols = {
+                desc[0]
+                for desc in con.execute(
+                    f"SELECT * FROM {quoted_table} LIMIT 0"
+                ).description
+            }
+            if score_name in existing_cols:
+                raise ValueError(
+                    f"Score column {score_name!r} already exists in {table_name!r}."
+                )
+
+            con.execute(
+                f"ALTER TABLE {quoted_table} ADD COLUMN {quoted_score} DOUBLE"
+            )
+
+            updated = con.execute(f"""
+                UPDATE {quoted_table} AS t
+                SET {quoted_score} = src.score
+                FROM {deduped_src} AS src
+                WHERE t."key" = src."key"
+            """).fetchone()
+
+            new_rows = con.execute(f"""
+                INSERT INTO {quoted_table}
+                SELECT src.chrom, src.pos, src.ref, src.alt, src.ensg,
+                       src."key", {_null_fills(con, table_name, score_name)},
+                       src.score AS {quoted_score}
+                FROM {deduped_src} AS src
+                WHERE src."key" NOT IN (SELECT "key" FROM {quoted_table})
+            """).fetchone()
+
+            row_count = con.execute(
+                f"SELECT COUNT(*) FROM {quoted_table}"
+            ).fetchone()[0]
+            scored_count = con.execute(
+                f"SELECT COUNT({quoted_score}) FROM {quoted_table}"
+            ).fetchone()[0]
+            new_row_count = row_count - (
+                con.execute(
+                    f'SELECT COUNT(*) FROM {quoted_table} WHERE {quoted_score} IS NULL'
+                ).fetchone()[0]
+                + scored_count
+                - row_count
+            ) if False else 0  # placeholder; we report from scored_count
+
+            print(
+                f"Added {score_name!r} to {table_name!r}: "
+                f"{row_count:,} total rows ({scored_count:,} scored, "
+                f"{row_count - scored_count:,} null)",
+                file=sys.stderr,
+            )
 
         con.execute(
-            "INSERT INTO metadata (source_column, source_path, table_name, table_type, analysis_level, deduped) "
-            "VALUES (?, ?, ?, 'score', ?, ?)",
-            [score_name, score_path, table_name, analysis_level, not has_dupes],
+            "INSERT INTO metadata "
+            "(source_column, source_path, table_name, table_type, "
+            "analysis_level, deduped) "
+            "VALUES (?, ?, ?, 'score', ?, TRUE)",
+            [score_name, score_path, table_name, analysis_level],
         )
         log_event(
-            con, "ingest_score", "create_table", table_name,
+            con, "ingest_score", "add_column", table_name,
             f"source_column={score_name}, source_path={score_path}, "
             f"analysis_level={analysis_level}, rows={row_count}",
         )
 
-        print(
-            f"Ingested {score_name!r} → {table_name!r}: "
-            f"{row_count} rows ({scored_count} scored, "
-            f"{row_count - scored_count} null)",
-            file=sys.stderr,
-        )
-        if has_dupes:
-            print(
-                f"  WARNING: {row_count - unique_keys:,} duplicate key(s) "
-                f"detected. Run remove_duplicates before pairwise operations.",
-                file=sys.stderr,
-            )
     finally:
         con.close()
 
 
+def _null_fills(
+    con: duckdb.DuckDBPyConnection,
+    table_name: str,
+    new_score: str,
+) -> str:
+    """Build NULL fill expressions for all existing score columns except keys
+    and the new score being added, for the INSERT of new rows."""
+    cols = [
+        desc[0]
+        for desc in con.execute(
+            f'SELECT * FROM "{table_name}" LIMIT 0'
+        ).description
+    ]
+    fills = []
+    for c in cols:
+        if c in KEY_NAMES or c == new_score:
+            continue
+        fills.append(f'NULL AS "{c}"')
+    return ", ".join(fills)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Ingest a score column from a parquet file into a DuckDB table.",
+        description="Ingest a score column into a wide DuckDB score table.",
     )
     parser.add_argument(
         "--db", default=DEFAULT_DB_PATH,
@@ -178,16 +254,17 @@ def main() -> None:
         help="Path to the source parquet file.",
     )
     parser.add_argument(
-        "--table_name", required=True,
-        help="Name for the DuckDB table.",
+        "--table_name", default=None,
+        help="Name for the wide score table (default: variant_scores or gene_scores).",
     )
     parser.add_argument(
         "--analysis_level", required=True, choices=["variant", "gene"],
         help="Key type: 'variant' (chrom/pos/ref/alt) or 'gene' (ensg).",
     )
     args = parser.parse_args()
+    table_name = args.table_name or WIDE_TABLE_DEFAULTS[args.analysis_level]
     ingest_score(args.db, args.score_name, args.score_path,
-                 args.table_name, args.analysis_level)
+                 table_name, args.analysis_level)
 
 
 if __name__ == "__main__":

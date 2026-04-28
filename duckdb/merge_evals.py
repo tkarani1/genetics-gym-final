@@ -70,18 +70,30 @@ def _data_col_refs(alias: str, info: _EvalInfo) -> list[str]:
     return refs
 
 
+def _renamed_col_names(info: _EvalInfo) -> list[str]:
+    """Return the output column names that an eval table contributes."""
+    label = info.source_column
+    names: list[str] = []
+    if info.has_bool:
+        names.append(label)
+    if info.has_counts:
+        names.append(f"{label}_n_case")
+        names.append(f"{label}_n_ctrl")
+    return names
+
+
 def merge_evals(
     db_path: str,
     table_names: list[str],
     output_table: str,
+    *,
+    memory_limit: str | None = None,
 ) -> None:
     """Merge multiple eval tables into a single wide output table via union.
 
-    Variant-level input tables contribute their ``is_pos`` column (renamed
-    to the table's ``source_column``).  Gene-level input tables contribute
-    ``n_case`` and ``n_ctrl`` columns (prefixed with the source label).
-    The union is a ``FULL OUTER JOIN`` on ``key``, so the result contains
-    all rows from any input table; values are NULL where a table lacks a key.
+    Uses cascading 2-way FULL OUTER JOINs to bound memory usage: each step
+    joins the running result with one new table, writes an intermediate, and
+    drops the previous one.
 
     Parameters
     ----------
@@ -91,12 +103,18 @@ def merge_evals(
         Names of the input eval tables to merge.
     output_table : str
         Name for the output merged table.
+    memory_limit : str or None
+        Optional DuckDB memory limit (e.g. ``'8GB'``).
     """
     if len(table_names) < 2:
         raise ValueError("At least two input tables are required.")
 
     con = duckdb.connect(db_path)
     try:
+        if memory_limit:
+            con.execute(f"SET memory_limit = '{memory_limit}'")
+        con.execute("SET preserve_insertion_order = false")
+
         existing = {
             r[0]
             for r in con.execute(
@@ -110,34 +128,59 @@ def merge_evals(
             )
 
         infos = _validate_inputs(con, table_names)
+        n = len(infos)
 
-        aliases = [f"t{i}" for i in range(len(infos))]
-        first = aliases[0]
+        first_info = infos[0]
+        first_data_refs = _data_col_refs("src", first_info)
+        first_key_refs = ", ".join(f"src.{k}" for k in KEY_COLS)
+        first_select = f"{first_key_refs}, {', '.join(first_data_refs)}"
 
-        key_coalesce = ", ".join(
-            f'COALESCE({", ".join(f"{a}.{k}" for a in aliases)}) AS {k}'
-            for k in KEY_COLS
+        cascade_name = f"_cascade_{output_table}_0"
+        con.execute(
+            f'CREATE TABLE "{cascade_name}" AS\n'
+            f'SELECT {first_select}\n'
+            f'FROM "{first_info.table_name}" src'
+        )
+        accumulated_cols = _renamed_col_names(first_info)
+        print(
+            f"  merge step 1/{n}: materialised {first_info.source_column!r}",
+            file=sys.stderr,
         )
 
-        eval_col_parts: list[str] = []
-        for i, info in enumerate(infos):
-            eval_col_parts.extend(_data_col_refs(aliases[i], info))
-        eval_col_refs = ", ".join(eval_col_parts)
+        for i in range(1, n):
+            prev_name = cascade_name
+            cascade_name = f"_cascade_{output_table}_{i}"
+            info = infos[i]
 
-        select_clause = f"{key_coalesce}, {eval_col_refs}"
+            key_exprs = [
+                f"COALESCE(l.{k}, r.{k}) AS {k}" for k in KEY_COLS
+            ]
+            left_refs = [f'l."{c}"' for c in accumulated_cols]
+            right_refs = _data_col_refs("r", info)
+            select = ", ".join(key_exprs + left_refs + right_refs)
 
-        subselects = [f'"{info.table_name}"' for info in infos]
-        from_clause = f"{subselects[0]} AS {aliases[0]}"
-        for i in range(1, len(subselects)):
-            from_clause += (
-                f'\n    FULL OUTER JOIN {subselects[i]} AS {aliases[i]} '
-                f'ON {first}."key" = {aliases[i]}."key"'
+            con.execute(
+                f'CREATE TABLE "{cascade_name}" AS\n'
+                f"SELECT {select}\n"
+                f'FROM "{prev_name}" l\n'
+                f'FULL OUTER JOIN "{info.table_name}" r '
+                f'ON l."key" = r."key"'
+            )
+            con.execute(f'DROP TABLE "{prev_name}"')
+            accumulated_cols.extend(_renamed_col_names(info))
+
+            row_count_so_far = con.execute(
+                f'SELECT COUNT(*) FROM "{cascade_name}"'
+            ).fetchone()[0]
+            print(
+                f"  merge step {i + 1}/{n}: joined {info.source_column!r} "
+                f"({row_count_so_far:,} rows)",
+                file=sys.stderr,
             )
 
         quoted_output = f'"{output_table}"'
         con.execute(
-            f"CREATE TABLE {quoted_output} AS\n"
-            f"SELECT {select_clause}\nFROM {from_clause}"
+            f'ALTER TABLE "{cascade_name}" RENAME TO {quoted_output}'
         )
 
         row_count = con.execute(
@@ -190,8 +233,13 @@ def main() -> None:
         "--output_table", required=True,
         help="Name for the output merged eval table.",
     )
+    parser.add_argument(
+        "--memory_limit", default=None,
+        help="DuckDB memory limit (e.g. '8GB'). Default: DuckDB auto.",
+    )
     args = parser.parse_args()
-    merge_evals(args.db, args.tables, args.output_table)
+    merge_evals(args.db, args.tables, args.output_table,
+                memory_limit=args.memory_limit)
 
 
 if __name__ == "__main__":

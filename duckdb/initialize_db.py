@@ -15,13 +15,14 @@ METADATA_DDL = """\
 CREATE TABLE metadata (
     source_column  VARCHAR NOT NULL,
     source_path    VARCHAR NOT NULL,
-    table_name     VARCHAR NOT NULL PRIMARY KEY,
+    table_name     VARCHAR NOT NULL,
     table_type      VARCHAR NOT NULL CHECK (table_type IN ('score', 'eval', 'merged_scores', 'merged_evals', 'merged_analysis')),
     analysis_level  VARCHAR NOT NULL CHECK (analysis_level IN ('variant', 'gene')),
     deduped        BOOLEAN NOT NULL DEFAULT FALSE,
     eval_column    VARCHAR,
     case_column    VARCHAR,
-    ctrl_column    VARCHAR
+    ctrl_column    VARCHAR,
+    UNIQUE (table_name, source_column)
 );
 """
 
