@@ -58,7 +58,7 @@ def ingest_eval(
 
     if not os.path.isfile(db_path):
         raise FileNotFoundError(f"Database not found: {db_path}")
-    if not os.path.isfile(eval_path):
+    if not os.path.isfile(eval_path) and not os.path.isdir(eval_path):
         raise FileNotFoundError(f"Source file not found: {eval_path}")
     if analysis_level not in ("variant", "gene"):
         raise ValueError(f"analysis_level must be 'variant' or 'gene', got {analysis_level!r}")
@@ -77,8 +77,12 @@ def ingest_eval(
 
     lower = eval_path.lower()
     is_parquet = lower.endswith(".parquet")
-    read_fn = (f"read_parquet('{eval_path}')" if is_parquet
-               else f"read_csv_auto('{eval_path}')")
+    if is_parquet and os.path.isdir(eval_path):
+        read_fn = f"read_parquet('{eval_path}/*.parquet')"
+    elif is_parquet:
+        read_fn = f"read_parquet('{eval_path}')"
+    else:
+        read_fn = f"read_csv_auto('{eval_path}')"
 
     con = duckdb.connect(db_path)
     try:
@@ -99,9 +103,17 @@ def ingest_eval(
             )
 
         if is_parquet:
+            if os.path.isdir(eval_path):
+                schema_target = next(
+                    os.path.join(eval_path, f)
+                    for f in os.listdir(eval_path)
+                    if f.endswith(".parquet")
+                )
+            else:
+                schema_target = eval_path
             source_columns = {
                 r[0] for r in con.execute(
-                    f"SELECT name FROM parquet_schema('{eval_path}')"
+                    f"SELECT name FROM parquet_schema('{schema_target}')"
                 ).fetchall()
             }
         else:
@@ -122,19 +134,21 @@ def ingest_eval(
                         f"Available: {sorted(source_columns)}"
                     )
 
+        def _col_or_null(col: str, cast: str | None = None) -> str:
+            """Include a source column if present, otherwise NULL."""
+            if col in source_columns:
+                expr = f'"{col}"'
+                if cast:
+                    expr = f'{expr}::{cast}'
+                return f'{expr} AS {col}'
+            return f'NULL::{cast or "VARCHAR"} AS {col}'
+
         if analysis_level == "variant":
             missing = [k for k in ("chrom", "pos", "ref", "alt") if k not in source_columns]
             if missing:
                 raise ValueError(
                     f"Variant key column(s) missing from source: {missing}"
                 )
-            key_select = (
-                "chrom, "
-                "pos::BIGINT AS pos, "
-                "ref, "
-                "alt, "
-                "NULL::VARCHAR AS ensg"
-            )
             hash_expr = (
                 "hash(chrom || '|' || CAST(pos AS VARCHAR) "
                 "|| '|' || ref || '|' || alt)"
@@ -142,14 +156,15 @@ def ingest_eval(
         else:
             if "ensg" not in source_columns:
                 raise ValueError("Key column 'ensg' not found in source.")
-            key_select = (
-                "NULL::VARCHAR AS chrom, "
-                "NULL::BIGINT AS pos, "
-                "NULL::VARCHAR AS ref, "
-                "NULL::VARCHAR AS alt, "
-                "ensg"
-            )
             hash_expr = "hash(ensg)"
+
+        key_select = ", ".join([
+            _col_or_null("chrom"),
+            _col_or_null("pos", "BIGINT"),
+            _col_or_null("ref"),
+            _col_or_null("alt"),
+            _col_or_null("ensg"),
+        ])
 
         is_pos_expr = (f'"{eval_column}"::BOOLEAN AS is_pos'
                        if has_bool else "NULL::BOOLEAN AS is_pos")
