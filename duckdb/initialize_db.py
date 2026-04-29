@@ -22,6 +22,8 @@ CREATE TABLE metadata (
     eval_column    VARCHAR,
     case_column    VARCHAR,
     ctrl_column    VARCHAR,
+    observed_column VARCHAR,
+    expected_column VARCHAR,
     UNIQUE (table_name, source_column)
 );
 """

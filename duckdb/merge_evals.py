@@ -19,6 +19,7 @@ class _EvalInfo(NamedTuple):
     analysis_level: str
     has_bool: bool
     has_counts: bool
+    has_obs_exp: bool
 
 
 def _validate_inputs(
@@ -30,13 +31,13 @@ def _validate_inputs(
     for tbl in table_names:
         row = con.execute(
             "SELECT table_type, deduped, source_column, analysis_level, "
-            "eval_column, case_column "
+            "eval_column, case_column, observed_column "
             "FROM metadata WHERE table_name = ?",
             [tbl],
         ).fetchone()
         if row is None:
             raise ValueError(f"Table {tbl!r} not found in metadata.")
-        ttype, deduped, source_column, analysis_level, eval_col, case_col = row
+        ttype, deduped, source_column, analysis_level, eval_col, case_col, obs_col = row
         if ttype != "eval":
             raise ValueError(f"Table {tbl!r} is type {ttype!r}, not 'eval'.")
         if not deduped:
@@ -48,6 +49,7 @@ def _validate_inputs(
             tbl, source_column, analysis_level,
             has_bool=eval_col is not None,
             has_counts=case_col is not None,
+            has_obs_exp=obs_col is not None,
         ))
     return infos
 
@@ -57,8 +59,9 @@ def _data_col_refs(alias: str, info: _EvalInfo) -> list[str]:
 
     Tables with a boolean column contribute ``is_pos`` (renamed to the
     source label).  Tables with count columns contribute ``n_case`` and
-    ``n_ctrl`` (prefixed with the source label).  Tables with both
-    contribute all three.
+    ``n_ctrl`` (prefixed with the source label).  Tables with
+    observed/expected columns contribute ``observed`` and ``expected``
+    (prefixed with the source label).
     """
     label = info.source_column
     refs: list[str] = []
@@ -67,6 +70,9 @@ def _data_col_refs(alias: str, info: _EvalInfo) -> list[str]:
     if info.has_counts:
         refs.append(f'{alias}.n_case AS "{label}_n_case"')
         refs.append(f'{alias}.n_ctrl AS "{label}_n_ctrl"')
+    if info.has_obs_exp:
+        refs.append(f'{alias}.observed AS "{label}_observed"')
+        refs.append(f'{alias}.expected AS "{label}_expected"')
     return refs
 
 
@@ -79,6 +85,9 @@ def _renamed_col_names(info: _EvalInfo) -> list[str]:
     if info.has_counts:
         names.append(f"{label}_n_case")
         names.append(f"{label}_n_ctrl")
+    if info.has_obs_exp:
+        names.append(f"{label}_observed")
+        names.append(f"{label}_expected")
     return names
 
 

@@ -94,6 +94,8 @@ def _print_eval_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
                     analysis_level: str, deduped: bool,
                     eval_column: str | None, case_column: str | None,
                     ctrl_column: str | None,
+                    observed_column: str | None,
+                    expected_column: str | None,
                     sample_rows: int | None) -> None:
     if table_name not in existing_tables:
         print(f"{table_name:<25} {'MISSING TABLE':}")
@@ -107,12 +109,15 @@ def _print_eval_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
 
     has_bool = eval_column is not None
     has_counts = case_column is not None
+    has_obs_exp = observed_column is not None
 
     col_desc_parts: list[str] = []
     if has_bool:
         col_desc_parts.append(f"eval={eval_column}")
     if has_counts:
         col_desc_parts.append(f"case={case_column}, ctrl={ctrl_column}")
+    if has_obs_exp:
+        col_desc_parts.append(f"observed={observed_column}, expected={expected_column}")
     col_desc = "; ".join(col_desc_parts)
 
     if has_bool:
@@ -137,6 +142,17 @@ def _print_eval_row(con: duckdb.DuckDBPyConnection, existing_tables: set,
         print(
             f"{table_name:<25} {source_column:<25} {analysis_level:>8} {dedup_flag:>8} {total:>12,} "
             f"{sum_case:>12,} {sum_ctrl:>12,} {'':>12} "
+            f"{unique_keys:>12,}"
+        )
+    elif has_obs_exp:
+        sum_obs, sum_exp = con.execute(
+            f"SELECT SUM(observed), SUM(expected) FROM {quoted}"
+        ).fetchone()
+        sum_obs = sum_obs or 0
+        sum_exp = sum_exp or 0.0
+        print(
+            f"{table_name:<25} {source_column:<25} {analysis_level:>8} {dedup_flag:>8} {total:>12,} "
+            f"{sum_obs:>12,} {sum_exp:>12,.4f} {'':>12} "
             f"{unique_keys:>12,}"
         )
 
@@ -223,7 +239,8 @@ def inspect_db(db_path: str, sample_rows: int | None = None,
 
         rows = con.execute(
             "SELECT source_column, source_path, table_name, table_type, "
-            "analysis_level, deduped, eval_column, case_column, ctrl_column "
+            "analysis_level, deduped, eval_column, case_column, ctrl_column, "
+            "observed_column, expected_column "
             "FROM metadata ORDER BY table_type, table_name, source_column"
         ).fetchall()
 
@@ -261,10 +278,13 @@ def inspect_db(db_path: str, sample_rows: int | None = None,
                 source_column, source_path, table_name = r[0], r[1], r[2]
                 analysis_level, deduped = r[4], r[5]
                 eval_column, case_column, ctrl_column = r[6], r[7], r[8]
+                observed_column = r[9] if len(r) > 9 else None
+                expected_column = r[10] if len(r) > 10 else None
                 _print_eval_row(con, existing_tables, table_name,
                                 source_column, source_path, analysis_level,
                                 deduped, eval_column, case_column,
-                                ctrl_column, sample_rows)
+                                ctrl_column, observed_column,
+                                expected_column, sample_rows)
             print()
 
         if merged_rows:
