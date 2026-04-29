@@ -191,7 +191,20 @@ def _merge_pairwise(
             output_files.append(out_path)
             continue
 
-        key_select = ", ".join(f"base.{k}" for k in KEY_COLS)
+        has_eval_ensg = (evals_table is not None
+                         and eval_join
+                         and "ensg" in {
+                             desc[0] for desc in con.execute(
+                                 f'SELECT * FROM "{evals_table}" LIMIT 0'
+                             ).description
+                         })
+        key_parts = []
+        for k in KEY_COLS:
+            if k == "ensg" and has_eval_ensg:
+                key_parts.append(f'COALESCE(base.ensg, ev.ensg) AS ensg')
+            else:
+                key_parts.append(f"base.{k}")
+        key_select = ", ".join(key_parts)
 
         if not gene_average:
             query = f"""
