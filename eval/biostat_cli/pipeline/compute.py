@@ -158,8 +158,6 @@ def run_biostat(
         eval_set=",".join(eval_set),
         filters="none",
         thresholds=",".join(f"{v:g}" for v in thresholds),
-        case_total=None,
-        ctrl_total=None,
         case_total_by_eval=format_totals_arg(denominators, "case_total"),
         ctrl_total_by_eval=format_totals_arg(denominators, "ctrl_total"),
         bootstrap_samples=bootstrap_samples,
@@ -168,7 +166,7 @@ def run_biostat(
         pvalue_method=pvalue_method,
     )
 
-    out_df, eval_filter_timings, _, vsm_comparison_df = biostat_cli.run(args)
+    out_df, eval_filter_timings, _, vsm_comparison_df, _ = biostat_cli.run(args)
     out_tsv = f"{out_prefix}.tsv"
     log_json = f"{out_prefix}_log.json"
     vsm_cmp_tsv = f"{out_prefix}_vsm_comparison.tsv"

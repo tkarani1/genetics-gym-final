@@ -304,39 +304,33 @@ def test_resolve_eval_totals_priority():
         table_ctrl_totals={"eval_A": 300.0, "eval_B": 400.0},
         cli_case_totals={"eval_A": 111.0},
         cli_ctrl_totals={"eval_A": 333.0},
-        global_case_total=999.0,
-        global_ctrl_total=888.0,
     )
     assert case_total == 111.0
     assert ctrl_total == 333.0
 
 
 def test_resolve_eval_totals_fallbacks():
-    # Falls back to table-level totals for matching eval.
+    # Falls back to table-level totals for matching eval when CLI omits that eval.
     case_total, ctrl_total = _resolve_eval_totals(
         eval_col="eval_B",
         table_case_totals={"eval_B": 222.0},
         table_ctrl_totals={"eval_B": 444.0},
         cli_case_totals={},
         cli_ctrl_totals={},
-        global_case_total=999.0,
-        global_ctrl_total=888.0,
     )
     assert case_total == 222.0
     assert ctrl_total == 444.0
 
-    # Falls back to global totals when eval-specific totals are absent.
+    # No CLI or table entry for this eval → missing denominators.
     case_total, ctrl_total = _resolve_eval_totals(
         eval_col="eval_C",
         table_case_totals={},
         table_ctrl_totals={},
         cli_case_totals={},
         cli_ctrl_totals={},
-        global_case_total=999.0,
-        global_ctrl_total=888.0,
     )
-    assert case_total == 999.0
-    assert ctrl_total == 888.0
+    assert case_total is None
+    assert ctrl_total is None
 
 
 def test_compute_std_error():
@@ -372,8 +366,6 @@ def test_validate_bootstrap_args():
         eval_set=None,
         filters=None,
         thresholds=None,
-        case_total=None,
-        ctrl_total=None,
         case_total_by_eval=None,
         ctrl_total_by_eval=None,
         bootstrap_samples=1,
@@ -419,8 +411,6 @@ def test_bootstrap_run_value_and_pvalue_stable(tmp_path):
         eval_set=None,
         filters=None,
         thresholds="0.5",
-        case_total=None,
-        ctrl_total=None,
         case_total_by_eval=None,
         ctrl_total_by_eval=None,
         bootstrap_samples=None,
@@ -441,8 +431,6 @@ def test_bootstrap_run_value_and_pvalue_stable(tmp_path):
         eval_set=None,
         filters=None,
         thresholds="0.8",
-        case_total=None,
-        ctrl_total=None,
         case_total_by_eval=None,
         ctrl_total_by_eval=None,
         bootstrap_samples=20,
@@ -496,8 +484,6 @@ def test_bootstrap_pairwise_std_error(tmp_path):
         eval_set=None,
         filters=None,
         thresholds="0.8",
-        case_total=None,
-        ctrl_total=None,
         case_total_by_eval=None,
         ctrl_total_by_eval=None,
         bootstrap_samples=20,
@@ -509,6 +495,51 @@ def test_bootstrap_pairwise_std_error(tmp_path):
     assert rows
     assert all("std_error" in row for row in rows)
     assert any(not math.isnan(row["std_error"]) for row in rows)
+
+
+def test_rate_ratio_missing_denominators_raises(tmp_path):
+    df = pl.DataFrame(
+        {
+            "chrom": ["1", "1", "1", "1", "1", "1"],
+            "pos": [1, 2, 3, 4, 5, 6],
+            "ref": ["A"] * 6,
+            "alt": ["C"] * 6,
+            "eval_a": [True, False, True, False, True, False],
+            "score_x": [0.95, 0.85, 0.88, 0.1, 0.99, 0.4],
+        }
+    )
+    parquet_path = tmp_path / "toy_rr_missing_totals.parquet"
+    resources_path = tmp_path / "resources_rr_missing_totals.json"
+    out_prefix = tmp_path / "out_rr_missing_totals"
+    df.write_parquet(str(parquet_path))
+    resources = {
+        "Table_info": {
+            "toy_rr_missing_totals": {
+                "Path": str(parquet_path),
+                "Level": "variant",
+                "Score_cols": ["score_x"],
+                "evals": ["eval_a"],
+            }
+        }
+    }
+    resources_path.write_text(json.dumps(resources), encoding="utf-8")
+
+    args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="toy_rr_missing_totals",
+        eval_level="variant",
+        stat="rate_ratio",
+        eval_set=None,
+        filters=None,
+        thresholds="0.8",
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+    )
+    with pytest.raises(ValueError, match="Cohort denominators are required"):
+        run(args)
 
 
 def test_rate_ratio_poisson_std_error_without_bootstrap(tmp_path):
@@ -546,10 +577,8 @@ def test_rate_ratio_poisson_std_error_without_bootstrap(tmp_path):
         eval_set=None,
         filters=None,
         thresholds="0.8",
-        case_total=3,
-        ctrl_total=3,
-        case_total_by_eval=None,
-        ctrl_total_by_eval=None,
+        case_total_by_eval="eval_a:3",
+        ctrl_total_by_eval="eval_a:3",
         bootstrap_samples=None,
         out_fname=str(out_prefix),
         write_missing="none",
@@ -599,10 +628,8 @@ def test_rate_ratio_bootstrap_overrides_analytic_poisson_std_error(tmp_path):
         eval_set=None,
         filters=None,
         thresholds="0.8",
-        case_total=5,
-        ctrl_total=5,
-        case_total_by_eval=None,
-        ctrl_total_by_eval=None,
+        case_total_by_eval="eval_a:5",
+        ctrl_total_by_eval="eval_a:5",
         bootstrap_samples=None,
         out_fname=str(out_prefix),
         write_missing="none",
@@ -622,10 +649,8 @@ def test_rate_ratio_bootstrap_overrides_analytic_poisson_std_error(tmp_path):
         eval_set=None,
         filters=None,
         thresholds="0.8",
-        case_total=5,
-        ctrl_total=5,
-        case_total_by_eval=None,
-        ctrl_total_by_eval=None,
+        case_total_by_eval="eval_a:5",
+        ctrl_total_by_eval="eval_a:5",
         bootstrap_samples=30,
         out_fname=str(out_prefix),
         write_missing="none",
@@ -807,8 +832,6 @@ def test_vsm_comparison_integration(tmp_path):
         eval_set=None,
         filters=None,
         thresholds="0.8",
-        case_total=None,
-        ctrl_total=None,
         case_total_by_eval=None,
         ctrl_total_by_eval=None,
         bootstrap_samples=None,
@@ -869,8 +892,6 @@ def test_vsm_comparison_integration_poisson_method(tmp_path):
         eval_set=None,
         filters=None,
         thresholds="0.8",
-        case_total=None,
-        ctrl_total=None,
         case_total_by_eval=None,
         ctrl_total_by_eval=None,
         bootstrap_samples=None,
@@ -928,8 +949,6 @@ def test_vsm_comparison_missingness_marginal_rowsets(tmp_path):
         eval_set=None,
         filters=None,
         thresholds="0.5",
-        case_total=None,
-        ctrl_total=None,
         case_total_by_eval=None,
         ctrl_total_by_eval=None,
         bootstrap_samples=None,
@@ -983,8 +1002,6 @@ def test_vsm_comparison_parallel_matches_serial_poisson(tmp_path):
         eval_set=None,
         filters=None,
         thresholds="0.8,0.9",
-        case_total=None,
-        ctrl_total=None,
         case_total_by_eval=None,
         ctrl_total_by_eval=None,
         bootstrap_samples=None,
@@ -1002,8 +1019,8 @@ def test_vsm_comparison_parallel_matches_serial_poisson(tmp_path):
         eval_set=None,
         filters=None,
         thresholds="0.8,0.9",
-        case_total=None,
-        ctrl_total=None,
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
         out_fname=str(out_prefix),
         write_missing="none",
         vsm_comparison_method="poisson",
@@ -1269,7 +1286,6 @@ def test_gene_avg_enrichment_integration(tmp_path):
         resources_json=str(res_path), table_name="gene_avg_test",
         eval_level="variant", stat="gene_avg_enrichment",
         eval_set=None, filters=None, thresholds="0.5",
-        case_total=None, ctrl_total=None,
         case_total_by_eval=None, ctrl_total_by_eval=None,
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
@@ -1294,8 +1310,8 @@ def test_gene_avg_rate_ratio_integration(tmp_path):
         resources_json=str(res_path), table_name="gene_avg_test",
         eval_level="variant", stat="gene_avg_rate_ratio",
         eval_set=None, filters=None, thresholds="0.5",
-        case_total=12.0, ctrl_total=12.0,
-        case_total_by_eval=None, ctrl_total_by_eval=None,
+        case_total_by_eval="eval_a:12",
+        ctrl_total_by_eval="eval_a:12",
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
     )
@@ -1313,7 +1329,6 @@ def test_gene_avg_auc_integration(tmp_path):
         resources_json=str(res_path), table_name="gene_avg_test",
         eval_level="variant", stat="gene_avg_auc",
         eval_set=None, filters=None, thresholds=None,
-        case_total=None, ctrl_total=None,
         case_total_by_eval=None, ctrl_total_by_eval=None,
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
@@ -1341,7 +1356,6 @@ def test_gene_avg_auc_single_class_gene_excluded(tmp_path):
         resources_json=str(res_path), table_name="gene_avg_test",
         eval_level="variant", stat="gene_avg_auc",
         eval_set=None, filters=None, thresholds=None,
-        case_total=None, ctrl_total=None,
         case_total_by_eval=None, ctrl_total_by_eval=None,
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
@@ -1360,7 +1374,6 @@ def test_gene_avg_mixed_stats(tmp_path):
         resources_json=str(res_path), table_name="gene_avg_test",
         eval_level="variant", stat="enrichment,gene_avg_enrichment",
         eval_set=None, filters=None, thresholds="0.5",
-        case_total=None, ctrl_total=None,
         case_total_by_eval=None, ctrl_total_by_eval=None,
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
@@ -1390,7 +1403,6 @@ def test_gene_avg_requires_gene_col(tmp_path):
         resources_json=str(res_path), table_name="gene_avg_test",
         eval_level="variant", stat="gene_avg_enrichment",
         eval_set=None, filters=None, thresholds="0.5",
-        case_total=None, ctrl_total=None,
         case_total_by_eval=None, ctrl_total_by_eval=None,
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
@@ -1406,7 +1418,6 @@ def test_gene_avg_rejects_gene_eval_level(tmp_path):
         resources_json=str(res_path), table_name="gene_avg_test",
         eval_level="gene", stat="gene_avg_enrichment",
         eval_set=None, filters=None, thresholds="0.5",
-        case_total=None, ctrl_total=None,
         case_total_by_eval=None, ctrl_total_by_eval=None,
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
@@ -1427,7 +1438,6 @@ def test_gene_variant_coverage_off_by_default(tmp_path):
         resources_json=str(res_path), table_name="gene_avg_test",
         eval_level="variant", stat="gene_avg_enrichment",
         eval_set=None, filters=None, thresholds="0.5",
-        case_total=None, ctrl_total=None,
         case_total_by_eval=None, ctrl_total_by_eval=None,
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
@@ -1451,7 +1461,6 @@ def test_gene_variant_coverage_basic(tmp_path):
         resources_json=str(res_path), table_name="gene_avg_test",
         eval_level="variant", stat="gene_avg_enrichment",
         eval_set=None, filters=None, thresholds="0.5",
-        case_total=None, ctrl_total=None,
         case_total_by_eval=None, ctrl_total_by_eval=None,
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
@@ -1485,7 +1494,6 @@ def test_gene_variant_coverage_multiple_scores(tmp_path):
         resources_json=str(res_path), table_name="gene_avg_test",
         eval_level="variant", stat="gene_avg_enrichment",
         eval_set=None, filters=None, thresholds="0.5",
-        case_total=None, ctrl_total=None,
         case_total_by_eval=None, ctrl_total_by_eval=None,
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
@@ -1519,7 +1527,6 @@ def test_gene_avg_zero_genes_after_filtering(tmp_path):
         resources_json=str(res_path), table_name="gene_avg_test",
         eval_level="variant", stat="gene_avg_auc",
         eval_set=None, filters=None, thresholds=None,
-        case_total=None, ctrl_total=None,
         case_total_by_eval=None, ctrl_total_by_eval=None,
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",

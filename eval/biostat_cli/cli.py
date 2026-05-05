@@ -54,8 +54,6 @@ class RunArgs:
     eval_set: str | None
     filters: str | None
     thresholds: str | None
-    case_total: float | None
-    ctrl_total: float | None
     case_total_by_eval: str | None
     ctrl_total_by_eval: str | None
     bootstrap_samples: int | None
@@ -77,8 +75,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-set", default=None, help="Comma-separated eval columns")
     parser.add_argument("--filters", default=None, help="Comma-separated logical filter names")
     parser.add_argument("--thresholds", default=None, help="Comma-separated percentile thresholds")
-    parser.add_argument("--case-total", type=float, default=None)
-    parser.add_argument("--ctrl-total", type=float, default=None)
     parser.add_argument(
         "--case-total-by-eval",
         default=None,
@@ -349,20 +345,38 @@ def _resolve_eval_totals(
     table_ctrl_totals: dict[str, float],
     cli_case_totals: dict[str, float],
     cli_ctrl_totals: dict[str, float],
-    global_case_total: float | None,
-    global_ctrl_total: float | None,
 ) -> tuple[float | None, float | None]:
     """
     Resolve denominators for a specific eval column.
 
     Priority (high -> low):
-    1) per-eval CLI override
-    2) per-eval values from resources JSON
-    3) global CLI --case-total/--ctrl-total
+    1) per-eval CLI (--case-total-by-eval / --ctrl-total-by-eval)
+    2) per-eval values from resources JSON (Case_totals / Ctrl_totals)
     """
-    case_total = cli_case_totals.get(eval_col, table_case_totals.get(eval_col, global_case_total))
-    ctrl_total = cli_ctrl_totals.get(eval_col, table_ctrl_totals.get(eval_col, global_ctrl_total))
+    case_total = cli_case_totals.get(eval_col, table_case_totals.get(eval_col))
+    ctrl_total = cli_ctrl_totals.get(eval_col, table_ctrl_totals.get(eval_col))
     return case_total, ctrl_total
+
+
+STATS_REQUIRING_COHORT_TOTALS = frozenset({"rate_ratio", "pairwise_rate_ratio", "gene_avg_rate_ratio"})
+
+
+def _ensure_rate_ratio_denominators(
+    eff_stats: set[str],
+    eval_col: str,
+    case_total: float | None,
+    ctrl_total: float | None,
+) -> None:
+    """Fail fast when rate-ratio stats are requested but cohort denominators are missing."""
+    if not (eff_stats & STATS_REQUIRING_COHORT_TOTALS):
+        return
+    if case_total is None or ctrl_total is None:
+        raise ValueError(
+            f"Cohort denominators are required for rate ratio statistics on eval `{eval_col}`, "
+            f"but resolved case_total={case_total!r}, ctrl_total={ctrl_total!r}. "
+            "Provide --case-total-by-eval and --ctrl-total-by-eval as eval:value,... pairs, "
+            "or per-eval Case_totals and Ctrl_totals in the resources JSON Table_info entry."
+        )
 
 
 def _threshold_key(value: float) -> str:
@@ -1158,9 +1172,8 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
             table_ctrl_totals=table.ctrl_totals,
             cli_case_totals=case_totals_by_eval,
             cli_ctrl_totals=ctrl_totals_by_eval,
-            global_case_total=args.case_total,
-            global_ctrl_total=args.ctrl_total,
         )
+        _ensure_rate_ratio_denominators(eff_stats, eval_col, eval_case_total, eval_ctrl_total)
         for filter_name, filter_col in filter_pairs:
             combo_start = time.perf_counter()
             prepared = evaluator.prepare_eval_frame(
@@ -1327,8 +1340,6 @@ def main() -> None:
         eval_set=ns.eval_set,
         filters=ns.filters,
         thresholds=ns.thresholds,
-        case_total=ns.case_total,
-        ctrl_total=ns.ctrl_total,
         case_total_by_eval=ns.case_total_by_eval,
         ctrl_total_by_eval=ns.ctrl_total_by_eval,
         bootstrap_samples=ns.bootstrap,

@@ -58,9 +58,8 @@ pip install -e .
 - `--eval-set` optional csv eval override (defaults to all `evals` from resources)
 - `--filters` optional csv logical filter names (from `Filters` keys); `none` is always included
 - `--thresholds` optional csv thresholds
-- `--case-total`, `--ctrl-total` optional denominators for rate ratio
-- `--case-total-by-eval` optional per-eval case totals (`eval_name:value,eval2:value2`)
-- `--ctrl-total-by-eval` optional per-eval control totals (`eval_name:value,eval2:value2`)
+- `--case-total-by-eval` optional per-eval case totals (`eval_name:value,eval2:value2`); required for rate-ratio stats unless totals appear under `Case_totals` / `Ctrl_totals` in resources JSON
+- `--ctrl-total-by-eval` optional per-eval control totals (`eval_name:value,eval2:value2`); same resolution as case totals
 - `--bootstrap [N]` enable nonparametric row bootstrap stderr calculation; optional `N` sets sample count (e.g., `--bootstrap 50`, default `100` when `N` omitted)
 - `--pvalue-method` p-value calculation method: `fisher` (default) or `poisson`. Fisher's exact test is recommended for 2×2 contingency tables; Poisson is the legacy approximation
 - `--vsm-comparison-method` method for `vsm_comparison` pairwise VSM table: `fisher` (default) or `poisson`
@@ -71,9 +70,8 @@ pip install -e .
 
 Rate-ratio denominator resolution priority (high to low):
 
-1. per-eval CLI overrides (`--case-total-by-eval`, `--ctrl-total-by-eval`)
+1. per-eval CLI (`--case-total-by-eval`, `--ctrl-total-by-eval`)
 2. per-eval table metadata (`Case_totals`, `Ctrl_totals` in resources JSON)
-3. global CLI totals (`--case-total`, `--ctrl-total`)
 
 Bootstrap behavior:
 
@@ -191,8 +189,8 @@ python -m biostat_cli.cli \
   --eval-level variant \
   --stat "pairwise_enrichment,pairwise_rate_ratio" \
   --thresholds 0.90,0.95,0.98,0.99 \
-  --case-total 1000 \
-  --ctrl-total 5000 \
+  --case-total-by-eval "is_pos_dd:1000" \
+  --ctrl-total-by-eval "is_pos_dd:5000" \
   --out-fname ../results/VSM_pairwise
 ```
 
@@ -203,7 +201,7 @@ Gene-averaged stats compute each metric per gene and then average across genes, 
 ### Available stats
 
 - `gene_avg_enrichment` — per-gene enrichment averaged; null = 1.0
-- `gene_avg_rate_ratio` — per-gene rate ratio averaged (uses global `case_total`/`ctrl_total`); null = 1.0
+- `gene_avg_rate_ratio` — per-gene rate ratio averaged (cohort totals per eval via `--case-total-by-eval` / `--ctrl-total-by-eval` or resources JSON); null = 1.0
 - `gene_avg_auc` — per-gene AUC averaged; null = 0.5
 - `gene_avg_auprc` — per-gene AUPRC averaged
 

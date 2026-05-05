@@ -14,6 +14,8 @@ import polars as pl
 from biostat_cli.cli import (
     _compute_rows_for_prepared,
     _effective_stats_for_eval,
+    _ensure_rate_ratio_denominators,
+    _resolve_eval_totals,
     _schema_has_obs_exp,
 )
 from biostat_cli.config import (
@@ -24,6 +26,7 @@ from biostat_cli.config import (
     load_resources,
     obs_exp_column_names,
     parse_csv_arg,
+    parse_eval_totals,
     parse_stats,
     parse_thresholds,
 )
@@ -52,8 +55,8 @@ class RunArgs:
     eval_set: str | None
     filters: str | None
     thresholds: str | None
-    case_total: float | None
-    ctrl_total: float | None
+    case_total_by_eval: str | None
+    ctrl_total_by_eval: str | None
     out_fname: str
     write_missing: str
     within_gene_percentile: bool = False
@@ -70,8 +73,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-set", default=None, help="Comma-separated eval columns")
     parser.add_argument("--filters", default=None, help="Comma-separated logical filter names")
     parser.add_argument("--thresholds", default=None, help="Comma-separated percentile thresholds")
-    parser.add_argument("--case-total", type=float, default=None)
-    parser.add_argument("--ctrl-total", type=float, default=None)
+    parser.add_argument(
+        "--case-total-by-eval",
+        default=None,
+        help='Comma-separated per-eval case totals in format "eval_name:value"',
+    )
+    parser.add_argument(
+        "--ctrl-total-by-eval",
+        default=None,
+        help='Comma-separated per-eval control totals in format "eval_name:value"',
+    )
     parser.add_argument(
         "--within-gene-percentile",
         action="store_true",
@@ -337,6 +348,8 @@ def _run_eval_filter_combo(
     missing_mode: str | None,
     table_schema: set[str],
     pairwise_cols: PairwiseColumns | None,
+    eval_case_total: float | None,
+    eval_ctrl_total: float | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     combo_start = time.perf_counter()
     evaluator = _choose_evaluator(args.eval_level, source)
@@ -370,8 +383,8 @@ def _run_eval_filter_combo(
         score_cols=score_cols,
         requested_stats=eff_stats,
         thresholds=thresholds,
-        eval_case_total=args.case_total,
-        eval_ctrl_total=args.ctrl_total,
+        eval_case_total=eval_case_total,
+        eval_ctrl_total=eval_ctrl_total,
         pairwise_cols=pairwise_cols,
         within_gene_percentile=args.within_gene_percentile,
         pvalue_method=args.pvalue_method,
@@ -422,6 +435,22 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     eval_cols = _resolve_eval_cols(args.eval_set, table.evals, args.eval_level)
     filter_pairs = _resolve_filter_cols(args.filters, table.filters)
 
+    case_totals_by_eval = parse_eval_totals(args.case_total_by_eval, "--case-total-by-eval")
+    ctrl_totals_by_eval = parse_eval_totals(args.ctrl_total_by_eval, "--ctrl-total-by-eval")
+
+    totals_by_eval: dict[str, tuple[float | None, float | None]] = {}
+    for eval_col in eval_cols:
+        eff_stats = _effective_stats_for_eval(requested_stats, _schema_has_obs_exp(table_schema, eval_col))
+        eval_case_total, eval_ctrl_total = _resolve_eval_totals(
+            eval_col=eval_col,
+            table_case_totals=table.case_totals,
+            table_ctrl_totals=table.ctrl_totals,
+            cli_case_totals=case_totals_by_eval,
+            cli_ctrl_totals=ctrl_totals_by_eval,
+        )
+        _ensure_rate_ratio_denominators(eff_stats, eval_col, eval_case_total, eval_ctrl_total)
+        totals_by_eval[eval_col] = (eval_case_total, eval_ctrl_total)
+
     # Parallel work unit is one eval/filter pair, so multiple eval sets also run concurrently.
     combos = [
         (idx, eval_col, filter_name, filter_col)
@@ -438,6 +467,7 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
 
     if max_workers <= 1:
         for idx, eval_col, filter_name, filter_col in combos:
+            ect, ecf = totals_by_eval[eval_col]
             combo_rows, combo_timing, combo_missing_rows, combo_vsm_cmp = _run_eval_filter_combo(
                 args=args,
                 source=source,
@@ -450,6 +480,8 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                 missing_mode=args.write_missing if args.write_missing != "none" else None,
                 table_schema=table_schema,
                 pairwise_cols=pairwise_cols,
+                eval_case_total=ect,
+                eval_ctrl_total=ecf,
             )
             rows_by_idx[idx] = combo_rows
             timings_by_idx[idx] = combo_timing
@@ -471,6 +503,8 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                     args.write_missing if args.write_missing != "none" else None,
                     table_schema,
                     pairwise_cols,
+                    totals_by_eval[eval_col][0],
+                    totals_by_eval[eval_col][1],
                 ): idx
                 for idx, eval_col, filter_name, filter_col in combos
             }
@@ -549,8 +583,8 @@ def main() -> None:
         eval_set=ns.eval_set,
         filters=ns.filters,
         thresholds=ns.thresholds,
-        case_total=ns.case_total,
-        ctrl_total=ns.ctrl_total,
+        case_total_by_eval=ns.case_total_by_eval,
+        ctrl_total_by_eval=ns.ctrl_total_by_eval,
         within_gene_percentile=ns.within_gene_percentile,
         out_fname=ns.out_fname,
         write_missing=ns.write_missing,
