@@ -55,10 +55,14 @@ def _same_key_join(
     scores_table: str,
     evals_table: str,
     output_table: str,
+    *,
+    score_fields: list[str] | None = None,
+    eval_fields: list[str] | None = None,
+    drop_null_scores: bool = False,
 ) -> None:
     """FULL OUTER JOIN two tables that share the same analysis_level."""
-    scores_data = _data_columns(con, scores_table)
-    evals_data = _data_columns(con, evals_table)
+    scores_data = score_fields or _data_columns(con, scores_table)
+    evals_data = eval_fields or _data_columns(con, evals_table)
 
     key_coalesce = ", ".join(
         f'COALESCE(s.{k}, e.{k}) AS {k}' for k in KEY_COLS
@@ -73,11 +77,17 @@ def _same_key_join(
         select_parts.append(eval_refs)
     select_clause = ", ".join(select_parts)
 
+    where_clause = ""
+    if drop_null_scores:
+        conditions = " AND ".join(f's."{c}" IS NOT NULL' for c in scores_data)
+        where_clause = f"WHERE {conditions}"
+
     con.execute(f"""
         CREATE TABLE "{output_table}" AS
         SELECT {select_clause}
         FROM "{scores_table}" s
         FULL OUTER JOIN "{evals_table}" e ON s."key" = e."key"
+        {where_clause}
     """)
 
 
@@ -88,6 +98,10 @@ def _cross_key_join(
     output_table: str,
     linker_path: str,
     scores_level: str,
+    *,
+    score_fields: list[str] | None = None,
+    eval_fields: list[str] | None = None,
+    drop_null_scores: bool = False,
 ) -> None:
     """Join variant-level and gene-level tables via a linker Parquet."""
     parquet_columns = {
@@ -103,7 +117,6 @@ def _cross_key_join(
             f"Linker Parquet is missing required columns: {sorted(missing)}"
         )
 
-    # Determine which input is variant-level and which is gene-level
     if scores_level == "variant":
         variant_table, gene_table = scores_table, evals_table
         variant_is_scores = True
@@ -111,10 +124,15 @@ def _cross_key_join(
         variant_table, gene_table = evals_table, scores_table
         variant_is_scores = False
 
-    variant_data = _data_columns(con, variant_table)
-    gene_data = _data_columns(con, gene_table)
+    variant_data = (
+        (score_fields if variant_is_scores else eval_fields)
+        or _data_columns(con, variant_table)
+    )
+    gene_data = (
+        (eval_fields if variant_is_scores else score_fields)
+        or _data_columns(con, gene_table)
+    )
 
-    # Load linker into a temp table with a computed variant key hash
     con.execute(f"""
         CREATE TEMP TABLE _linker AS
         SELECT
@@ -124,14 +142,9 @@ def _cross_key_join(
         FROM read_parquet('{linker_path}')
     """)
 
-    # Build the three-way join:
-    # variant_table JOIN linker ON variant key -> linker provides ensg
-    # linker+variant JOIN gene_table ON ensg
     vt_data_refs = ", ".join(f'vt."{c}"' for c in variant_data)
     gt_data_refs = ", ".join(f'gt."{c}"' for c in gene_data)
 
-    # Key columns come from the linker (has both variant and gene keys)
-    # coalesce with the variant table for coverage
     key_select = (
         'COALESCE(lk.chrom, vt.chrom) AS chrom, '
         'COALESCE(lk.pos, vt.pos) AS pos, '
@@ -142,7 +155,6 @@ def _cross_key_join(
     )
 
     select_parts = [key_select]
-    # Add score columns then eval columns, regardless of which is variant/gene
     if variant_is_scores:
         if vt_data_refs:
             select_parts.append(vt_data_refs)
@@ -156,12 +168,25 @@ def _cross_key_join(
 
     select_clause = ", ".join(select_parts)
 
+    where_clause = ""
+    if drop_null_scores:
+        score_cols = score_fields or (
+            variant_data if variant_is_scores else gene_data
+        )
+        conditions = " AND ".join(
+            f'vt."{c}" IS NOT NULL' if variant_is_scores
+            else f'gt."{c}" IS NOT NULL'
+            for c in score_cols
+        )
+        where_clause = f"WHERE {conditions}"
+
     con.execute(f"""
         CREATE TABLE "{output_table}" AS
         SELECT {select_clause}
         FROM _linker lk
         LEFT JOIN "{variant_table}" vt ON lk."key" = vt."key"
         LEFT JOIN "{gene_table}" gt ON lk.ensg = gt.ensg
+        {where_clause}
     """)
 
     con.execute("DROP TABLE _linker")
@@ -173,6 +198,10 @@ def create_analysis_table(
     evals_table: str,
     output_table: str,
     linker_path: str | None = None,
+    *,
+    score_fields: list[str] | None = None,
+    eval_fields: list[str] | None = None,
+    drop_null_scores: bool = False,
 ) -> None:
     """Join a merged_scores and a merged_evals table into a merged_analysis table.
 
@@ -181,14 +210,23 @@ def create_analysis_table(
     db_path : str
         Path to the persistent ``.duckdb`` file.
     scores_table : str
-        Name of a ``merged_scores`` table.
+        Name of a ``merged_scores`` or ``score`` table.
     evals_table : str
-        Name of a ``merged_evals`` table.
+        Name of a ``merged_evals`` or ``eval`` table.
     output_table : str
         Name for the output merged analysis table.
     linker_path : str or None
         Path to a linker Parquet file (required when the two input tables
         have different ``analysis_level`` values).
+    score_fields : list[str] or None
+        Optional subset of score columns to include.  If None, all non-key
+        columns from the scores table are included.
+    eval_fields : list[str] or None
+        Optional subset of eval columns to include.  If None, all non-key
+        columns from the evals table are included.
+    drop_null_scores : bool
+        If True, rows where any selected score column is NULL are excluded
+        before the join (intersection semantics for scores).
     """
     con = duckdb.connect(db_path)
     try:
@@ -204,8 +242,27 @@ def create_analysis_table(
                 f"Output table {output_table!r} already exists."
             )
 
-        scores_level = _validate_table(con, scores_table, ("merged_scores", "score"))
-        evals_level = _validate_table(con, evals_table, "merged_evals")
+        scores_level = _validate_table(
+            con, scores_table, ("merged_scores", "score")
+        )
+        evals_level = _validate_table(
+            con, evals_table, ("merged_evals", "eval")
+        )
+
+        if score_fields:
+            available = set(_data_columns(con, scores_table))
+            bad = [f for f in score_fields if f not in available]
+            if bad:
+                raise ValueError(
+                    f"--score_fields not found in {scores_table!r}: {bad}"
+                )
+        if eval_fields:
+            available = set(_data_columns(con, evals_table))
+            bad = [f for f in eval_fields if f not in available]
+            if bad:
+                raise ValueError(
+                    f"--eval_fields not found in {evals_table!r}: {bad}"
+                )
 
         same_level = scores_level == evals_level
 
@@ -230,12 +287,20 @@ def create_analysis_table(
                 )
 
         if same_level:
-            _same_key_join(con, scores_table, evals_table, output_table)
+            _same_key_join(
+                con, scores_table, evals_table, output_table,
+                score_fields=score_fields,
+                eval_fields=eval_fields,
+                drop_null_scores=drop_null_scores,
+            )
             output_level = scores_level
         else:
             _cross_key_join(
                 con, scores_table, evals_table, output_table,
                 linker_path, scores_level,
+                score_fields=score_fields,
+                eval_fields=eval_fields,
+                drop_null_scores=drop_null_scores,
             )
             output_level = "variant"
 
@@ -254,10 +319,11 @@ def create_analysis_table(
             [scores_table],
         ).fetchall()
         scores_meta = ", ".join(r[0] for r in scores_meta_rows)
-        evals_meta = con.execute(
+        evals_meta_rows = con.execute(
             "SELECT source_column FROM metadata WHERE table_name = ?",
             [evals_table],
-        ).fetchone()[0]
+        ).fetchall()
+        evals_meta = ", ".join(r[0] for r in evals_meta_rows)
         source_names = f"{scores_meta}; {evals_meta}"
 
         con.execute(
@@ -270,10 +336,12 @@ def create_analysis_table(
         )
 
         linker_note = f", linker_path={linker_path}" if linker_path else ""
+        drop_note = ", drop_null_scores=True" if drop_null_scores else ""
         log_event(
             con, "create_analysis_table", "create_table", output_table,
             f"scores_table={scores_table}, evals_table={evals_table}, "
-            f"analysis_level={output_level}, rows={row_count}{linker_note}",
+            f"analysis_level={output_level}, rows={row_count}"
+            f"{linker_note}{drop_note}",
         )
 
         print(
@@ -299,11 +367,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--scores_table", required=True,
-        help="Name of the merged_scores table.",
+        help="Name of the merged_scores or score table.",
     )
     parser.add_argument(
         "--evals_table", required=True,
-        help="Name of the merged_evals table.",
+        help="Name of the merged_evals or eval table.",
     )
     parser.add_argument(
         "--output_table", required=True,
@@ -313,10 +381,26 @@ def main() -> None:
         "--linker_path", default=None,
         help="Path to a linker Parquet (required for cross-key joins).",
     )
+    parser.add_argument(
+        "--score_fields", nargs="+", default=None,
+        help="Optional subset of score columns to include.",
+    )
+    parser.add_argument(
+        "--eval_fields", nargs="+", default=None,
+        help="Optional subset of eval columns to include.",
+    )
+    parser.add_argument(
+        "--drop_null_scores", action="store_true",
+        help="Exclude rows where any selected score column is NULL "
+             "(intersection semantics).",
+    )
     args = parser.parse_args()
     create_analysis_table(
         args.db, args.scores_table, args.evals_table,
         args.output_table, args.linker_path,
+        score_fields=args.score_fields,
+        eval_fields=args.eval_fields,
+        drop_null_scores=args.drop_null_scores,
     )
 
 

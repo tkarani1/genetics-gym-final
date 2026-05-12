@@ -33,12 +33,14 @@ Creates a new `.duckdb` file containing two system tables:
 | `source_column` | VARCHAR | Score column name (scores), eval label (evals), or comma-separated list (merged) |
 | `source_path` | VARCHAR | Absolute path to source file, or operation name for merged tables |
 | `table_name` | VARCHAR | Internal DuckDB table name |
-| `table_type` | VARCHAR | `'score'`, `'eval'`, `'merged_scores'`, `'merged_evals'`, or `'merged_analysis'` |
+| `table_type` | VARCHAR | `'score'`, `'eval'`, `'filter'`, `'merged_scores'`, `'merged_evals'`, or `'merged_analysis'` |
 | `analysis_level` | VARCHAR | `'variant'` (chrom/pos/ref/alt) or `'gene'` (ensg) |
 | `deduped` | BOOLEAN | Whether duplicate keys have been resolved |
 | `eval_column` | VARCHAR | Source column read as `is_pos` (eval tables only, nullable) |
 | `case_column` | VARCHAR | Source column read as `n_case` (eval tables only, nullable) |
 | `ctrl_column` | VARCHAR | Source column read as `n_ctrl` (eval tables only, nullable) |
+| `observed_column` | VARCHAR | Source column read as `observed` (eval tables only, nullable) |
+| `expected_column` | VARCHAR | Source column read as `expected` (eval tables only, nullable) |
 
 Unique constraint: `(table_name, source_column)` — supports wide tables with multiple metadata rows per table.
 
@@ -137,6 +139,43 @@ python duckdb/ingest_eval.py \
   --analysis_level gene \
   --eval_column is_pos \
   --case_column n_case --ctrl_column n_ctrl
+```
+
+---
+
+### `ingest_filter.py` — Add a filter column to a wide filter table
+
+Ingests a boolean filter from a source file into a **wide filter table** (`variant_filters` or `gene_filters`). Two ingestion modes:
+
+- **Membership mode** (default): every row present in the source file is treated as TRUE for that filter. Source is collapsed to distinct keys (deduplicating from variant-transcript level to variant level).
+- **Column mode** (`--source_column`): reads a specific boolean column from the source. Only rows where that column is TRUE are marked. Used for pre-pivoted wide filter files.
+
+Wide filter table schema:
+
+| Column | Type | Description |
+|---|---|---|
+| `chrom` | VARCHAR | Chromosome (NULL for gene-keyed tables) |
+| `pos` | BIGINT | Position (NULL for gene-keyed tables) |
+| `ref` | VARCHAR | Reference allele (NULL for gene-keyed tables) |
+| `alt` | VARCHAR | Alternate allele (NULL for gene-keyed tables) |
+| `ensg` | VARCHAR | Ensembl gene ID (NULL for variant-keyed tables) |
+| `key` | UBIGINT | Hash of key columns |
+| *filter_1* | BOOLEAN | TRUE if variant/gene passes filter, NULL otherwise |
+| *filter_2* | BOOLEAN | ... |
+
+```bash
+# Variant-level: membership list (each file = one filter)
+python duckdb/ingest_filter.py --db my_data.duckdb \
+  --filter_name buried \
+  --filter_path data/filters/variant_filters_buried.tsv.gz \
+  --analysis_level variant
+
+# Gene-level: column mode (pre-pivoted wide table)
+python duckdb/ingest_filter.py --db my_data.duckdb \
+  --filter_name constraint_top_10 \
+  --filter_path data/filters/ensg_filters.tsv \
+  --analysis_level gene \
+  --source_column constraint_top_10
 ```
 
 ---
@@ -309,19 +348,35 @@ python duckdb/pairwise_percentile.py --db my_data.duckdb \
 
 ### `create_analysis_table.py` — Join scores and evals in-database
 
-Combines a scores table and a merged-evals table into a `merged_analysis` database table via FULL OUTER JOIN.
+Combines a scores table and an evals table into a `merged_analysis` database table via FULL OUTER JOIN.
 
 - **Same-level join**: Both tables share `analysis_level` → direct key join.
 - **Cross-level join** (`--linker_path`): Different levels (e.g. variant scores + gene evals) → three-way join via linker.
 
-Accepts both `score` and `merged_scores` types for the scores input.
+Accepts `score` or `merged_scores` types for scores, and `eval` or `merged_evals` types for evals.
+
+Optional flags:
+
+| Flag | Description |
+|---|---|
+| `--score_fields` | Subset of score columns to include (default: all) |
+| `--eval_fields` | Subset of eval columns to include (default: all) |
+| `--drop_null_scores` | Exclude rows where any selected score is NULL (intersection semantics) |
 
 ```bash
-# Same-level join
+# Same-level join (all columns)
 python duckdb/create_analysis_table.py --db my_data.duckdb \
   --scores_table variant_scores \
   --evals_table variant_evals_merged \
   --output_table variant_analysis
+
+# Intersection of scores + single eval
+python duckdb/create_analysis_table.py --db my_data.duckdb \
+  --scores_table variant_scores \
+  --evals_table variant_evals_merged \
+  --output_table variant_analysis_gnomad \
+  --eval_fields gnomad_indep \
+  --drop_null_scores
 
 # Cross-level join
 python duckdb/create_analysis_table.py --db my_data.duckdb \
@@ -344,6 +399,49 @@ Fills in the "other side" key columns on any merged table using a linker Parquet
 python duckdb/join_linker.py --db my_data.duckdb \
   --table_name variant_evals_merged \
   --linker_path data/linker_all.parquet
+```
+
+---
+
+### `join_filters.py` — Export with filter joins or row selection
+
+Exports an analysis table to Parquet with optional filter operations. **Does not modify the database** — filters are applied only in the exported output.
+
+Two modes:
+
+| Mode | Flag | Description |
+|---|---|---|
+| Join | `--filter_table` | LEFT JOIN all filter columns onto the output |
+| Select | `--select_filter` | Subset rows where specified filter(s) are TRUE |
+
+Select mode supports combining multiple filters with `--select_logic and|or` (default: `and`). Both modes can be combined.
+
+```bash
+# Join mode: append all variant filter columns to output
+python duckdb/join_filters.py --db my_data.duckdb \
+  --table_name variant_analysis_gnomad \
+  --output_path output/with_filters.parquet \
+  --filter_table variant_filters
+
+# Select mode: only rows where "buried" is TRUE
+python duckdb/join_filters.py --db my_data.duckdb \
+  --table_name variant_analysis_gnomad \
+  --output_path output/buried_only.parquet \
+  --select_filter buried
+
+# Select mode with AND logic (cross-level: variant + gene filters)
+python duckdb/join_filters.py --db my_data.duckdb \
+  --table_name variant_analysis_gnomad \
+  --output_path output/buried_and_constrained.parquet \
+  --select_filter buried constraint_top_10 \
+  --select_logic and
+
+# Combined: select rows where "buried", then append all filter columns
+python duckdb/join_filters.py --db my_data.duckdb \
+  --table_name variant_analysis_gnomad \
+  --output_path output/buried_with_all_filters.parquet \
+  --select_filter buried \
+  --filter_table variant_filters
 ```
 
 ---
@@ -417,6 +515,41 @@ python duckdb/ingest_score.py --db my_data.duckdb \
   --score_name AM_score --score_path data/am_v2.parquet --analysis_level variant
 ```
 
+### Analysis table with filters
+
+```bash
+# 1. Create analysis table (intersection scores + gnomAD eval)
+python duckdb/create_analysis_table.py --db my_data.duckdb \
+  --scores_table variant_scores \
+  --evals_table variant_evals \
+  --output_table variant_analysis_gnomad \
+  --eval_fields gnomad_indep \
+  --drop_null_scores
+
+# 2. Enrich with ensg (in-place, required for gene-level filters)
+python duckdb/join_linker.py --db my_data.duckdb \
+  --table_name variant_analysis_gnomad \
+  --linker_path data/linker_all.parquet
+
+# 3. Export with variant filters appended
+python duckdb/join_filters.py --db my_data.duckdb \
+  --table_name variant_analysis_gnomad \
+  --output_path output/with_variant_filters.parquet \
+  --filter_table variant_filters
+
+# 4. Export with gene filters appended
+python duckdb/join_filters.py --db my_data.duckdb \
+  --table_name variant_analysis_gnomad \
+  --output_path output/with_gene_filters.parquet \
+  --filter_table gene_filters
+
+# 5. Export only rows in "buried" residues
+python duckdb/join_filters.py --db my_data.duckdb \
+  --table_name variant_analysis_gnomad \
+  --output_path output/buried_subset.parquet \
+  --select_filter buried
+```
+
 ---
 
 ## Design Notes
@@ -430,3 +563,4 @@ python duckdb/ingest_score.py --db my_data.duckdb \
 - **Explicit eval column tracking**: Metadata records the original source column names (`eval_column`, `case_column`, `ctrl_column`) for each eval table, allowing ingestion of non-standard column names (e.g. `is_case`, `is_pos_fine_mapped`, `n_case_subset`) while normalizing to `is_pos`/`n_case`/`n_ctrl` internally.
 - **Audit log**: Every mutating operation appends to the `audit_log` table, recording the module, action, affected table, and details. This enables lineage tracking and dependency analysis.
 - **Deduplication**: Score tables are deduplicated at ingest (prefer non-null score). Eval tables require explicit deduplication via `remove_duplicates.py` before merging.
+- **Filter isolation**: Filter tables (`variant_filters`, `gene_filters`) are stored in the database as wide boolean tables but are never joined onto analysis tables in-place. Filters are applied only at export time via `join_filters.py`, keeping database tables schema-conformant and making filter operations non-destructive and repeatable.
