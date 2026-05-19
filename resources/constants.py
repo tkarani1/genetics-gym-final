@@ -26,6 +26,45 @@ SCORE_FIELDS = {
 'PRIMATEAI3D': {'score_PAI3D': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
 }
 
+JULIA_SCORE_FIELDS = {
+    "DBNSFP4": {"mcap_score": { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
+    "GMVP": {"gmvp_score": { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }}, 
+    "PHYLOP": {"phylop": { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
+    "SIFT": {"sift_score": { 'sense': Direction.HIGHER_IS_LESS_DELETERIOUS }},
+}
+
+JULIA_SCORE_FIELDS_ALL = {
+    "DBNSFP4": {"mcap_score": { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
+    "GMVP": {"gmvp_score": { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }, 
+             "mvp_score": { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
+    "PHYLOP": {"phylop": { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
+    "SIFT": {"sift_score": { 'sense': Direction.HIGHER_IS_LESS_DELETERIOUS }},
+
+    'ESM1B' : { 'esm1b': { 'sense': Direction.HIGHER_IS_LESS_DELETERIOUS }},
+    'MISFIT': {'MisFit_D': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS },
+            'MisFit_S': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
+    'CADD': {'cadd_score': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
+    'CPT': {'cpt1_score': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
+    'GPN_MSA': {'gpn_msa_score': { 'sense': Direction.HIGHER_IS_LESS_DELETERIOUS }},
+    'MPC': {'mpc': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
+    'POPEVE': {'popEVE': { 'sense': Direction.HIGHER_IS_LESS_DELETERIOUS },   ##TODO: rename popeve
+            'EVE': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS },
+            'ESM_1v': { 'sense': Direction.HIGHER_IS_LESS_DELETERIOUS }},
+    'POLYPHEN': {'polyphen_score': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
+    'PROTEINMPNN': {'proteinmpnn_llr': { 'sense': Direction.HIGHER_IS_LESS_DELETERIOUS }},  ##TODO: rename proteinmpnn_llr
+    'RASP': {'rasp_score': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }}, 
+    'REVEL': {'revel': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }}, ##TODO: rename revel
+    'AM': {'AM_score': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
+    'PRIMATEAI3D': {'score_PAI3D': { 'sense': Direction.LOWER_IS_LESS_DELETERIOUS }},
+    
+
+}
+
+
+GSM_SCORE_FIELDS = {
+    "LOEUF_V2": {"loeuf_v2_score": { 'sense': Direction.HIGHER_IS_LESS_DELETERIOUS }},
+    "LOEUF_V4": {"loeuf_v4_score": { 'sense': Direction.HIGHER_IS_LESS_DELETERIOUS }},
+}
 
 # ESM1B_SCORE_FIELD = "esm1b"
 # MISFIT_D_SCORE_FIELD = "MisFit_D"

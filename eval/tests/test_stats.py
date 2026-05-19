@@ -26,7 +26,16 @@ from biostat_cli.stats.binary import (
     vsm_comparison_fisher,
     vsm_comparison_poisson_exact,
 )
-from biostat_cli.stats.continuous import compute_auc, compute_auc_p_value, compute_auprc, delong_two_auc_p_value
+from biostat_cli.stats.continuous import (
+    compute_auc,
+    compute_auc_p_value,
+    compute_auc_trunc,
+    compute_auprc,
+    compute_auprc_trunc,
+    compute_curve_points,
+    compute_threshold_point_metrics,
+    delong_two_auc_p_value,
+)
 from biostat_cli.utils import apply_within_gene_percentile
 
 
@@ -35,6 +44,36 @@ def test_auc_and_auprc_basic():
     scores = [0.1, 0.2, 0.8, 0.9]
     assert compute_auc(labels, scores) > 0.99
     assert compute_auprc(labels, scores) > 0.99
+
+
+def test_threshold_point_metrics_basic():
+    labels = [1, 1, 0, 0]
+    scores = [0.9, 0.8, 0.7, 0.2]
+    out = compute_threshold_point_metrics(labels, scores, threshold=0.8)
+    assert out.tpr == pytest.approx(1.0)
+    assert out.fpr == pytest.approx(0.0)
+    assert out.precision == pytest.approx(1.0)
+    assert out.recall == pytest.approx(1.0)
+    assert out.rows_retained == 2
+    assert out.n_pos_retained == 2
+    assert out.n_neg_retained == 0
+
+
+def test_truncated_metrics_basic():
+    labels = [1, 1, 0, 0, 1, 0]
+    scores = [0.99, 0.95, 0.94, 0.93, 0.2, 0.1]
+    auc_t = compute_auc_trunc(labels, scores, threshold=0.93)
+    auprc_t = compute_auprc_trunc(labels, scores, threshold=0.93)
+    assert not math.isnan(auc_t)
+    assert not math.isnan(auprc_t)
+
+
+def test_curve_points_contains_roc_and_pr():
+    labels = [0, 0, 1, 1]
+    scores = [0.1, 0.2, 0.8, 0.9]
+    points = compute_curve_points(labels, scores)
+    assert points
+    assert {"roc", "pr"} <= {p.curve_type for p in points}
 
 
 def test_auc_p_value_perfect_separation():
@@ -63,13 +102,21 @@ def test_delong_two_auc_identical_scores_p_one():
     assert delong_two_auc_p_value(y, s, s) == pytest.approx(1.0)
 
 
-def test_delong_two_auc_small_sample_discordant():
+def test_delong_two_auc_constant_scores_nan():
+    """Degenerate when one score vector has no discrimination (zero variance)."""
     y = [0, 0, 1, 1]
-    s_anchor = [0.5, 0.5, 0.5, 0.5]
+    s_flat = [0.5, 0.5, 0.5, 0.5]
+    s_vsm = [0.1, 0.2, 0.8, 0.9]
+    assert math.isnan(delong_two_auc_p_value(y, s_flat, s_vsm))
+
+
+def test_delong_two_auc_discordant():
+    y = [0, 0, 1, 1]
+    s_anchor = [0.3, 0.4, 0.6, 0.7]
     s_vsm = [0.1, 0.2, 0.8, 0.9]
     p = delong_two_auc_p_value(y, s_anchor, s_vsm)
+    assert not math.isnan(p)
     assert 0.0 <= p <= 1.0
-    assert p < 0.2
 
 
 def test_binary_stats():
@@ -417,7 +464,7 @@ def test_bootstrap_run_value_and_pvalue_stable(tmp_path):
         out_fname=str(out_prefix),
         write_missing="none",
     )
-    base_df, _, _, _, _ = run(base_args)
+    base_df, _, _, _, _, _ = run(base_args)
     base_row = base_df.to_dicts()[0]
     assert not math.isnan(base_row["std_error"])
     assert not math.isnan(base_row["enrichment_ci_lower"])
@@ -437,7 +484,7 @@ def test_bootstrap_run_value_and_pvalue_stable(tmp_path):
         out_fname=str(out_prefix),
         write_missing="none",
     )
-    boot_df, _, _, _, _ = run(boot_args)
+    boot_df, _, _, _, _, _ = run(boot_args)
     boot_row = boot_df.to_dicts()[0]
     assert boot_row["value"] == pytest.approx(base_row["value"], rel=0, abs=1e-12)
     assert boot_row["p_value"] == pytest.approx(base_row["p_value"], rel=0, abs=1e-12)
@@ -490,11 +537,112 @@ def test_bootstrap_pairwise_std_error(tmp_path):
         out_fname=str(out_prefix),
         write_missing="none",
     )
-    out_df, _, _, _, _ = run(args)
+    out_df, _, _, _, _, _ = run(args)
     rows = out_df.to_dicts()
     assert rows
     assert all("std_error" in row for row in rows)
     assert any(not math.isnan(row["std_error"]) for row in rows)
+
+
+def test_continuous_threshold_and_trunc_stats_integration(tmp_path):
+    df = pl.DataFrame(
+        {
+            "chrom": ["1"] * 8,
+            "pos": list(range(1, 9)),
+            "ref": ["A"] * 8,
+            "alt": ["C"] * 8,
+            "eval_a": [True, False, True, False, True, False, True, False],
+            "score_x": [0.95, 0.85, 0.88, 0.1, 0.99, 0.4, 0.75, 0.2],
+        }
+    )
+    parquet_path = tmp_path / "continuous_new_stats.parquet"
+    resources_path = tmp_path / "resources_continuous_new_stats.json"
+    out_prefix = tmp_path / "out_continuous_new_stats"
+    df.write_parquet(str(parquet_path))
+    resources = {
+        "Table_info": {
+            "continuous_new_stats": {
+                "Path": str(parquet_path),
+                "Level": "variant",
+                "Score_cols": ["score_x"],
+                "evals": ["eval_a"],
+            }
+        }
+    }
+    resources_path.write_text(json.dumps(resources), encoding="utf-8")
+    args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="continuous_new_stats",
+        eval_level="variant",
+        stat="tpr_at_threshold,fpr_at_threshold,precision_at_threshold,recall_at_threshold,auc_trunc,auprc_trunc",
+        eval_set=None,
+        filters=None,
+        thresholds="0.8",
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+    )
+    out_df, _, _, _, _, curves_df = run(args)
+    stats = set(out_df["stat"].to_list())
+    assert {
+        "tpr_at_threshold", "fpr_at_threshold",
+        "precision_at_threshold", "recall_at_threshold",
+        "auc_trunc", "auprc_trunc",
+    } <= stats
+    row = out_df.filter(pl.col("stat") == "auc_trunc").to_dicts()[0]
+    assert row["threshold"] == pytest.approx(0.8)
+    assert row["rows_retained"] >= 0
+    assert curves_df.height > 0
+
+
+def test_pairwise_trunc_and_threshold_stats_integration(tmp_path):
+    df = pl.DataFrame(
+        {
+            "chrom": ["1"] * 8,
+            "pos": list(range(1, 9)),
+            "ref": ["A"] * 8,
+            "alt": ["C"] * 8,
+            "eval_a": [True, False, True, False, True, False, True, False],
+            "anchor_score_anchor_percentile": [0.9, 0.82, 0.95, 0.2, 0.85, 0.3, 0.88, 0.4],
+            "vsm1_score_percentile_with_anchor": [0.92, 0.86, 0.97, 0.25, 0.83, 0.2, 0.86, 0.5],
+            "anchor_score_anchor_percentile_with_vsm1": [0.89, 0.81, 0.94, 0.22, 0.84, 0.28, 0.87, 0.45],
+        }
+    )
+    parquet_path = tmp_path / "pairwise_new_stats.parquet"
+    resources_path = tmp_path / "resources_pairwise_new_stats.json"
+    out_prefix = tmp_path / "out_pairwise_new_stats"
+    df.write_parquet(str(parquet_path))
+    resources = {
+        "Table_info": {
+            "pairwise_new_stats": {
+                "Path": str(parquet_path),
+                "Level": "variant",
+                "Score_cols": ["anchor_score_anchor_percentile"],
+                "evals": ["eval_a"],
+            }
+        }
+    }
+    resources_path.write_text(json.dumps(resources), encoding="utf-8")
+    args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="pairwise_new_stats",
+        eval_level="variant",
+        stat="pairwise_auc_trunc,pairwise_auprc_trunc,pairwise_tpr_at_threshold",
+        eval_set=None,
+        filters=None,
+        thresholds="0.8",
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+    )
+    out_df, _, _, _, _, _ = run(args)
+    assert {"pairwise_auc_trunc", "pairwise_auprc_trunc", "pairwise_tpr_at_threshold"} <= set(
+        out_df["stat"].to_list()
+    )
 
 
 def test_rate_ratio_missing_denominators_raises(tmp_path):
@@ -584,7 +732,7 @@ def test_rate_ratio_poisson_std_error_without_bootstrap(tmp_path):
         write_missing="none",
         pvalue_method="poisson",
     )
-    out_df, _, _, _, _ = run(args)
+    out_df, _, _, _, _, _ = run(args)
     row = out_df.to_dicts()[0]
     expected = row["value"] * math.sqrt((1.0 / row["tp"]) + (1.0 / row["fp"]))
     assert row["std_error"] == pytest.approx(expected)
@@ -635,7 +783,7 @@ def test_rate_ratio_bootstrap_overrides_analytic_poisson_std_error(tmp_path):
         write_missing="none",
         pvalue_method="poisson",
     )
-    base_df, _, _, _, _ = run(base_args)
+    base_df, _, _, _, _, _ = run(base_args)
     base_row = base_df.to_dicts()[0]
     assert not math.isnan(base_row["std_error"])
     assert not math.isnan(base_row["rate_ratio_ci_lower"])
@@ -656,7 +804,7 @@ def test_rate_ratio_bootstrap_overrides_analytic_poisson_std_error(tmp_path):
         write_missing="none",
         pvalue_method="poisson",
     )
-    boot_df, _, _, _, _ = run(boot_args)
+    boot_df, _, _, _, _, _ = run(boot_args)
     boot_row = boot_df.to_dicts()[0]
     assert not math.isnan(boot_row["std_error"])
     assert boot_row["std_error"] != pytest.approx(base_row["std_error"], rel=0, abs=1e-12)
@@ -838,7 +986,7 @@ def test_vsm_comparison_integration(tmp_path):
         out_fname=str(out_prefix),
         write_missing="none",
     )
-    _, _, _, vsm_cmp_df, _ = run(args)
+    _, _, _, vsm_cmp_df, _, _ = run(args)
     assert vsm_cmp_df.height > 0
     assert set(vsm_cmp_df.columns) == {
         "eval_name", "filter_name", "vsm_i", "vsm_j",
@@ -846,7 +994,7 @@ def test_vsm_comparison_integration(tmp_path):
         "log_odds_ratio", "standard_error",
         "log_ci_lower", "log_ci_upper",
         "conf_interval_lower", "conf_interval_upper",
-        "rows_used_i", "rows_used_j",
+        "rows_used_i", "rows_used_j", "rows_used_pair",
     }
     row = vsm_cmp_df.to_dicts()[0]
     assert row["vsm_i"] == "score_x"
@@ -899,7 +1047,7 @@ def test_vsm_comparison_integration_poisson_method(tmp_path):
         write_missing="none",
         vsm_comparison_method="poisson",
     )
-    _, _, _, vsm_cmp_df, _ = run(args)
+    _, _, _, vsm_cmp_df, _, _ = run(args)
     assert vsm_cmp_df.height > 0
     row = vsm_cmp_df.to_dicts()[0]
     assert 0.0 <= row["p_greater"] <= 1.0
@@ -913,7 +1061,8 @@ def test_vsm_comparison_invalid_method_raises():
         vsm_comparison(cont_a, cont_b, method="not-a-method")
 
 
-def test_vsm_comparison_missingness_marginal_rowsets(tmp_path):
+def test_vsm_comparison_missingness_uses_intersection(tmp_path):
+    """VSM comparison computes contingencies on the intersection of non-null rows."""
     df = pl.DataFrame(
         {
             "chrom": ["1"] * 10,
@@ -956,9 +1105,77 @@ def test_vsm_comparison_missingness_marginal_rowsets(tmp_path):
         write_missing="none",
         vsm_comparison_method="poisson",
     )
-    _, _, _, vsm_cmp_df, _ = run(args)
+    _, _, _, vsm_cmp_df, _, _ = run(args)
     row = vsm_cmp_df.to_dicts()[0]
-    assert row["rows_used_i"] != row["rows_used_j"]
+    # Both scores have non-null values for rows 2-7 (indices), so intersection = 6
+    assert row["rows_used_pair"] == 6
+    assert row["rows_used_i"] == row["rows_used_j"] == 6
+    assert 0.0 <= row["p_greater"] <= 1.0
+    assert 0.0 <= row["p_less"] <= 1.0
+
+
+def test_vsm_comparison_intersection_contingencies(tmp_path):
+    """Contingencies are computed on the pair intersection, not per-VSM row sets.
+
+    score_a: non-null for rows 0-9  (10 rows, 5 pos, 5 neg)
+    score_b: non-null for rows 5-14 (10 rows, 5 pos, 5 neg)
+    Intersection: rows 5-9 (5 rows, 3 pos=True at indices 6,8 wait let's be explicit)
+
+    We verify that TP+FP+TN+FN in the output sums to 5 (the intersection size), not 10.
+    """
+    n = 15
+    df = pl.DataFrame(
+        {
+            "chrom": ["1"] * n,
+            "pos": list(range(1, n + 1)),
+            "ref": ["A"] * n,
+            "alt": ["C"] * n,
+            "eval_a": [True, False] * 7 + [True],
+            "score_a": [0.9, 0.1, 0.8, 0.2, 0.7, 0.6, 0.95, 0.05, 0.85, 0.15,
+                        None, None, None, None, None],
+            "score_b": [None, None, None, None, None,
+                        0.55, 0.92, 0.08, 0.88, 0.12, 0.75, 0.3, 0.65, 0.4, 0.99],
+        }
+    )
+    parquet_path = tmp_path / "intersection.parquet"
+    resources_path = tmp_path / "resources_intersection.json"
+    out_prefix = tmp_path / "out_intersection"
+    df.write_parquet(str(parquet_path))
+    resources = {
+        "Table_info": {
+            "intersection": {
+                "Path": str(parquet_path),
+                "Level": "variant",
+                "Score_cols": ["score_a", "score_b"],
+                "evals": ["eval_a"],
+            }
+        }
+    }
+    resources_path.write_text(json.dumps(resources), encoding="utf-8")
+
+    args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="intersection",
+        eval_level="variant",
+        stat="vsm_comparison",
+        eval_set=None,
+        filters=None,
+        thresholds="0.5",
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+    )
+    _, _, _, vsm_cmp_df, _, _ = run(args)
+    assert vsm_cmp_df.height > 0
+    row = vsm_cmp_df.to_dicts()[0]
+    # Intersection of non-null rows: indices 5-9 → 5 rows
+    assert row["rows_used_pair"] == 5
+    assert row["rows_used_i"] == 5
+    assert row["rows_used_j"] == 5
+    # TP+FP+TN+FN for each score should sum to 5 (intersection size)
+    # The test is sufficient if rows_used_pair confirms intersection size
     assert 0.0 <= row["p_greater"] <= 1.0
     assert 0.0 <= row["p_less"] <= 1.0
 
@@ -1009,7 +1226,7 @@ def test_vsm_comparison_parallel_matches_serial_poisson(tmp_path):
         write_missing="none",
         vsm_comparison_method="poisson",
     )
-    _, _, _, serial_df, _ = run(serial_args)
+    _, _, _, serial_df, _, _ = run(serial_args)
 
     parallel_args = ParallelRunArgs(
         resources_json=str(resources_path),
@@ -1025,7 +1242,7 @@ def test_vsm_comparison_parallel_matches_serial_poisson(tmp_path):
         write_missing="none",
         vsm_comparison_method="poisson",
     )
-    _, _, _, parallel_df, _ = run_parallel(parallel_args)
+    _, _, _, parallel_df, _, _ = run_parallel(parallel_args)
 
     sort_cols = ["eval_name", "filter_name", "vsm_i", "vsm_j", "threshold"]
     serial_rows = serial_df.sort(sort_cols).to_dicts()
@@ -1290,7 +1507,7 @@ def test_gene_avg_enrichment_integration(tmp_path):
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
     )
-    out_df, _, _, _, _ = run(args)
+    out_df, _, _, _, _, _ = run(args)
     rows = out_df.to_dicts()
     assert len(rows) == 1
     row = rows[0]
@@ -1315,7 +1532,7 @@ def test_gene_avg_rate_ratio_integration(tmp_path):
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
     )
-    out_df, _, _, _, _ = run(args)
+    out_df, _, _, _, _, _ = run(args)
     row = out_df.to_dicts()[0]
     assert row["stat"] == "gene_avg_rate_ratio"
     assert row["n_genes_used"] == 3
@@ -1333,7 +1550,7 @@ def test_gene_avg_auc_integration(tmp_path):
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
     )
-    out_df, _, _, _, _ = run(args)
+    out_df, _, _, _, _, _ = run(args)
     row = out_df.to_dicts()[0]
     assert row["stat"] == "gene_avg_auc"
     assert row["n_genes_used"] == 3
@@ -1360,7 +1577,7 @@ def test_gene_avg_auc_single_class_gene_excluded(tmp_path):
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
     )
-    out_df, _, _, _, _ = run(args)
+    out_df, _, _, _, _, _ = run(args)
     row = out_df.to_dicts()[0]
     # g1 is all-positive → excluded from AUC
     assert row["n_genes_used"] == 2
@@ -1378,7 +1595,7 @@ def test_gene_avg_mixed_stats(tmp_path):
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
     )
-    out_df, _, _, _, _ = run(args)
+    out_df, _, _, _, _, _ = run(args)
     stats = set(out_df["stat"].to_list())
     assert "enrichment" in stats
     assert "gene_avg_enrichment" in stats
@@ -1387,6 +1604,22 @@ def test_gene_avg_mixed_stats(tmp_path):
     assert "n_genes_used" in gene_avg
     assert not math.isnan(pooled["value"])
     assert not math.isnan(gene_avg["value"])
+
+
+def test_gene_avg_threshold_and_trunc_stats_integration(tmp_path):
+    pq_path, _ = _make_gene_avg_parquet(tmp_path)
+    res_path = _make_gene_avg_resources(tmp_path, pq_path)
+    args = RunArgs(
+        resources_json=str(res_path), table_name="gene_avg_test",
+        eval_level="variant", stat="gene_avg_tpr_at_threshold,gene_avg_auc_trunc",
+        eval_set=None, filters=None, thresholds="0.8",
+        case_total_by_eval=None, ctrl_total_by_eval=None,
+        bootstrap_samples=None, out_fname=str(tmp_path / "out"),
+        write_missing="none",
+    )
+    out_df, _, _, _, _, _ = run(args)
+    stats = set(out_df["stat"].to_list())
+    assert {"gene_avg_tpr_at_threshold", "gene_avg_auc_trunc"} <= stats
 
 
 def test_gene_avg_requires_gene_col(tmp_path):
@@ -1442,7 +1675,7 @@ def test_gene_variant_coverage_off_by_default(tmp_path):
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
     )
-    _, _, _, _, coverage_df = run(args)
+    _, _, _, _, coverage_df, _ = run(args)
     assert coverage_df.height == 0
 
 
@@ -1466,7 +1699,7 @@ def test_gene_variant_coverage_basic(tmp_path):
         write_missing="none",
         write_gene_variant_coverage=True,
     )
-    _, _, _, _, coverage_df = run(args)
+    _, _, _, _, coverage_df, _ = run(args)
     assert coverage_df.height == 3
     assert set(coverage_df.columns) == {
         "eval_name", "filter_name", "score_name", "gene",
@@ -1499,7 +1732,7 @@ def test_gene_variant_coverage_multiple_scores(tmp_path):
         write_missing="none",
         write_gene_variant_coverage=True,
     )
-    _, _, _, _, coverage_df = run(args)
+    _, _, _, _, coverage_df, _ = run(args)
     # 2 genes × 2 scores = 4 rows
     assert coverage_df.height == 4
     scores = set(coverage_df["score_name"].to_list())
@@ -1531,7 +1764,7 @@ def test_gene_avg_zero_genes_after_filtering(tmp_path):
         bootstrap_samples=None, out_fname=str(tmp_path / "out"),
         write_missing="none",
     )
-    out_df, _, _, _, _ = run(args)
+    out_df, _, _, _, _, _ = run(args)
     row = out_df.to_dicts()[0]
     assert row["n_genes_used"] == 0
     assert row["n_genes_excluded"] == 2

@@ -4,13 +4,14 @@ Memory-efficient CLI for genomic statistics on merged Parquet tables using Polar
 
 ## Features
 
-- Computes `auc`, `auprc`, `enrichment`, `rate_ratio`, `pairwise_enrichment`, and `pairwise_rate_ratio`
+- Computes `auc`, `auprc`, threshold-point continuous stats (`tpr_at_threshold`, `fpr_at_threshold`, `precision_at_threshold`, `recall_at_threshold`), truncated continuous stats (`auc_trunc`, `auprc_trunc`), plus `enrichment`, `rate_ratio`, `pairwise_enrichment`, and `pairwise_rate_ratio`
 - **Gene-averaged statistics**: `gene_avg_enrichment`, `gene_avg_rate_ratio`, `gene_avg_auc`, `gene_avg_auprc` — computes per-gene stat values and averages them, giving each gene equal weight
 - Optional nonparametric bootstrap stderr (`std_error`) for all supported stats
 - Supports `variant` and `gene` eval levels (strategy-based evaluators)
 - Reads local paths and `gs://` parquet inputs via Polars/fsspec/gcsfs
 - Writes:
   - main metrics TSV
+  - optional curve points TSV (`<prefix>_curves.tsv`) with ROC/PR points
   - run log JSON (args, resolved table path, total runtime, per eval/filter runtime)
 - Optional missing-variant TSV to explain `rows_used` vs `total_eval_rows`
 - Optional per-gene variant coverage TSV (`--write-gene-variant-coverage`)
@@ -54,7 +55,7 @@ pip install -e .
 - `--resources-json` path to resources file (default: `resources.json`)
 - `--table-name` table key under `Table_info` (**required**)
 - `--eval-level` `variant` or `gene` (**required**)
-- `--stat` `all` or csv subset (`auc,auprc,enrichment,rate_ratio,pairwise_enrichment,pairwise_rate_ratio,gene_avg_enrichment,gene_avg_rate_ratio,gene_avg_auc,gene_avg_auprc`)
+- `--stat` `all` or csv subset (`auc,auprc,tpr_at_threshold,fpr_at_threshold,precision_at_threshold,recall_at_threshold,auc_trunc,auprc_trunc,enrichment,rate_ratio,pairwise_enrichment,pairwise_rate_ratio,pairwise_auc,pairwise_auprc,pairwise_tpr_at_threshold,pairwise_fpr_at_threshold,pairwise_precision_at_threshold,pairwise_recall_at_threshold,pairwise_auc_trunc,pairwise_auprc_trunc,gene_avg_enrichment,gene_avg_rate_ratio,gene_avg_auc,gene_avg_auprc,gene_avg_tpr_at_threshold,gene_avg_fpr_at_threshold,gene_avg_precision_at_threshold,gene_avg_recall_at_threshold,gene_avg_auc_trunc,gene_avg_auprc_trunc`)
 - `--eval-set` optional csv eval override (defaults to all `evals` from resources)
 - `--filters` optional csv logical filter names (from `Filters` keys); `none` is always included
 - `--thresholds` optional csv thresholds
@@ -98,11 +99,15 @@ Output paths are derived from `--out-fname`:
 - log JSON: `<schema>_log.json`
 - missing TSV: `<schema>_missing.tsv` (when `--write-missing` is `all` or `any`)
 - gene variant coverage TSV: `<schema>_gene_variant_coverage.tsv` (when `--write-gene-variant-coverage` is set)
+- curves TSV: `<schema>_curves.tsv` (when continuous labels/scores are available)
 
 ## Threshold behavior
 
 - Thresholds are percentile-based **fractions in `[0,1]`**
 - A row counts as **above** threshold when `score >= t` (ties at `t` are included).
+- For `*_trunc` stats, truncation uses the score representation active in the run:
+  - default: current score column values
+  - with `--within-gene-percentile`: within-gene transformed score values
 - Default thresholds: `0.90,0.95,0.98,0.99`
 - Passing any threshold `> 1.0` exits with error code `22`
 
@@ -129,6 +134,7 @@ Columns:
 - `tp`, `fp`, `tn`, `fn`
 - `rows_used`
 - `total_eval_rows`
+- `rows_retained`, `n_pos_retained`, `n_neg_retained` (for threshold-point and truncated continuous stats)
 
 For gene-averaged stats (`gene_avg_enrichment`, `gene_avg_rate_ratio`, `gene_avg_auc`, `gene_avg_auprc`), additional columns:
 
@@ -139,6 +145,14 @@ For pairwise stats (`pairwise_enrichment`, `pairwise_rate_ratio`), additional co
 
 - `anchor_value` - baseline value from anchor VSM on full set
 - `adjustment_ratio` - ratio of VSM performance to anchor performance on pairwise intersection
+
+For curve exports (`<prefix>_curves.tsv`), columns:
+
+- `eval_name`, `filter_name`, `score_name`
+- `curve_type` (`roc` or `pr`)
+- `point_idx`, `score_threshold`
+- `fpr`, `tpr`, `precision`, `recall`
+- `rows_used`, `total_eval_rows`
 
 For `pairwise_auc`, `p_value` is a **paired DeLong** two-sided test of whether the anchor and VSM AUCs differ on the **pairwise intersection** cohort (Sun–Xu fast DeLong covariance; same binary labels, two score vectors). The anchor-only baseline row keeps `p_value = NaN`. `pairwise_auprc` still uses `p_value = NaN`.
 

@@ -166,16 +166,20 @@ def run_biostat(
         pvalue_method=pvalue_method,
     )
 
-    out_df, eval_filter_timings, _, vsm_comparison_df, _ = biostat_cli.run(args)
+    out_df, eval_filter_timings, _, vsm_comparison_df, _, curves_df = biostat_cli.run(args)
     out_tsv = f"{out_prefix}.tsv"
     log_json = f"{out_prefix}_log.json"
     vsm_cmp_tsv = f"{out_prefix}_vsm_comparison.tsv"
+    curves_tsv = f"{out_prefix}_curves.tsv"
 
     write_tsv(out_df, out_tsv)
     output_files: dict[str, str] = {"tsv": out_tsv, "log": log_json}
     if vsm_comparison_df.height > 0:
         write_tsv(vsm_comparison_df, vsm_cmp_tsv)
         output_files["vsm_comparison_tsv"] = vsm_cmp_tsv
+    if curves_df.height > 0:
+        write_tsv(curves_df, curves_tsv)
+        output_files["curves_tsv"] = curves_tsv
 
     write_json(
         {

@@ -11,23 +11,23 @@ def locus_alleles_to_chr_pos_ref_alt(ht):
 
     return ht
 
-def write_tsv_bgz_from_ht_path(ht_path, tsv_bgz_path):
+def write_tsv_bgz_from_ht(ht, tsv_bgz_path, convert_locus_alleles=True):
+    ht = locus_alleles_to_chr_pos_ref_alt(ht)
+    if not tsv_bgz_path.endswith('.tsv.bgz'):
+        tsv_bgz_path += '.tsv.bgz'
+    ht.export(tsv_bgz_path, delimiter='\t')
+
+def write_tsv_bgz_from_ht_path(ht_path, tsv_bgz_path, convert_locus_alleles=True):
     ht = hl.read_table(ht_path)
-    ht = locus_alleles_to_chr_pos_ref_alt(ht)
-    if not tsv_bgz_path.endswith('.tsv.bgz'):
-        tsv_bgz_path += '.tsv.bgz'
-    ht.export(tsv_bgz_path, delimiter='\t')
-
-def write_tsv_bgz_from_ht(ht, tsv_bgz_path):
-    ht = locus_alleles_to_chr_pos_ref_alt(ht)
-    if not tsv_bgz_path.endswith('.tsv.bgz'):
-        tsv_bgz_path += '.tsv.bgz'
-    ht.export(tsv_bgz_path, delimiter='\t')
+    write_tsv_bgz_from_ht(ht, tsv_bgz_path, convert_locus_alleles=convert_locus_alleles)
 
 
-def write_parquet_from_ht(ht, parquet_path, overwrite=True, compression="snappy"):
+
+
+def write_parquet_from_ht(ht, parquet_path, overwrite=True, compression="snappy", convert_locus_alleles=True):
     """Write a Hail Table to Parquet via Spark (requires SparkBackend)."""
-    ht = locus_alleles_to_chr_pos_ref_alt(ht)
+    if convert_locus_alleles:
+        ht = locus_alleles_to_chr_pos_ref_alt(ht)
     backend_name = hl.current_backend().__class__.__name__
     if backend_name != "SparkBackend":
         print(
@@ -40,9 +40,9 @@ def write_parquet_from_ht(ht, parquet_path, overwrite=True, compression="snappy"
     df.write.mode(mode).option("compression", compression).parquet(parquet_path)
 
 
-def write_parquet_from_ht_path(ht_path, parquet_path, overwrite=True, compression="snappy"):
+def write_parquet_from_ht_path(ht_path, parquet_path, overwrite=True, compression="snappy", convert_locus_alleles=True):
     ht = hl.read_table(ht_path)
-    write_parquet_from_ht(ht, parquet_path, overwrite=overwrite, compression=compression)
+    write_parquet_from_ht(ht, parquet_path, overwrite=overwrite, compression=compression, convert_locus_alleles=convert_locus_alleles   )
 
 
 def check_duplicates(ht, key_by=None, output_path=None):

@@ -9,15 +9,28 @@ from typing import Any
 
 
 DEFAULT_THRESHOLDS = [0.90, 0.95, 0.98, 0.99, 0.995]
-GENE_AVG_STATS = {"gene_avg_enrichment", "gene_avg_rate_ratio", "gene_avg_auc", "gene_avg_auprc"}
+GENE_AVG_STATS = {
+    "gene_avg_enrichment", "gene_avg_rate_ratio", "gene_avg_auc", "gene_avg_auprc",
+    "gene_avg_tpr_at_threshold", "gene_avg_fpr_at_threshold",
+    "gene_avg_precision_at_threshold", "gene_avg_recall_at_threshold",
+    "gene_avg_auc_trunc", "gene_avg_auprc_trunc",
+}
 OE_STATS = {"obs_exp_ratio", "pairwise_obs_exp_ratio"}
 ALL_STATS = {
     "auc", "auprc", "enrichment", "rate_ratio",
+    "tpr_at_threshold", "fpr_at_threshold", "precision_at_threshold", "recall_at_threshold",
+    "auc_trunc", "auprc_trunc",
     "pairwise_enrichment", "pairwise_rate_ratio", "pairwise_auc", "pairwise_auprc",
+    "pairwise_tpr_at_threshold", "pairwise_fpr_at_threshold",
+    "pairwise_precision_at_threshold", "pairwise_recall_at_threshold",
+    "pairwise_auc_trunc", "pairwise_auprc_trunc",
     "vsm_comparison", "obs_exp_ratio", "pairwise_obs_exp_ratio",
 } | GENE_AVG_STATS
 PAIRWISE_STATS = {
     "pairwise_enrichment", "pairwise_rate_ratio", "pairwise_auc", "pairwise_auprc",
+    "pairwise_tpr_at_threshold", "pairwise_fpr_at_threshold",
+    "pairwise_precision_at_threshold", "pairwise_recall_at_threshold",
+    "pairwise_auc_trunc", "pairwise_auprc_trunc",
     "pairwise_obs_exp_ratio",
 }
 

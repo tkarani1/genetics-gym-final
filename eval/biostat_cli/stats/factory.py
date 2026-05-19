@@ -16,7 +16,16 @@ from biostat_cli.stats.binary import (
     rate_ratio_batch,
     vsm_comparison,
 )
-from biostat_cli.stats.continuous import compute_auc, compute_auc_p_value, compute_auprc, pairwise_continuous_adjust
+from biostat_cli.stats.continuous import (
+    compute_auc,
+    compute_auc_p_value,
+    compute_auc_trunc,
+    compute_auprc,
+    compute_auprc_trunc,
+    compute_threshold_point_metrics,
+    pairwise_continuous_adjust,
+    truncate_counts,
+)
 from biostat_cli.stats.gene_averaged import (
     GeneAvgResult,
     gene_avg_auc,
@@ -36,6 +45,9 @@ class StatOutput:
     enrichment_ci_upper: float = math.nan
     rate_ratio_ci_lower: float = math.nan
     rate_ratio_ci_upper: float = math.nan
+    rows_retained: float = math.nan
+    n_pos_retained: float = math.nan
+    n_neg_retained: float = math.nan
 
 
 @dataclass(frozen=True)
@@ -76,6 +88,96 @@ class StatFactory:
         if labels is None or scores is None:
             return StatOutput(stat="auprc", value=math.nan, p_value=math.nan, std_error=math.nan)
         return StatOutput(stat="auprc", value=compute_auprc(labels, scores), p_value=math.nan, std_error=math.nan)
+
+    @staticmethod
+    def tpr_at_threshold(labels: list[int] | None, scores: list[float] | None, threshold: float) -> StatOutput:
+        if labels is None or scores is None:
+            return StatOutput(stat="tpr_at_threshold", value=math.nan, p_value=math.nan, std_error=math.nan)
+        out = compute_threshold_point_metrics(labels, scores, threshold)
+        return StatOutput(
+            stat="tpr_at_threshold",
+            value=out.tpr,
+            p_value=math.nan,
+            std_error=math.nan,
+            rows_retained=out.rows_retained,
+            n_pos_retained=out.n_pos_retained,
+            n_neg_retained=out.n_neg_retained,
+        )
+
+    @staticmethod
+    def fpr_at_threshold(labels: list[int] | None, scores: list[float] | None, threshold: float) -> StatOutput:
+        if labels is None or scores is None:
+            return StatOutput(stat="fpr_at_threshold", value=math.nan, p_value=math.nan, std_error=math.nan)
+        out = compute_threshold_point_metrics(labels, scores, threshold)
+        return StatOutput(
+            stat="fpr_at_threshold",
+            value=out.fpr,
+            p_value=math.nan,
+            std_error=math.nan,
+            rows_retained=out.rows_retained,
+            n_pos_retained=out.n_pos_retained,
+            n_neg_retained=out.n_neg_retained,
+        )
+
+    @staticmethod
+    def precision_at_threshold(labels: list[int] | None, scores: list[float] | None, threshold: float) -> StatOutput:
+        if labels is None or scores is None:
+            return StatOutput(stat="precision_at_threshold", value=math.nan, p_value=math.nan, std_error=math.nan)
+        out = compute_threshold_point_metrics(labels, scores, threshold)
+        return StatOutput(
+            stat="precision_at_threshold",
+            value=out.precision,
+            p_value=math.nan,
+            std_error=math.nan,
+            rows_retained=out.rows_retained,
+            n_pos_retained=out.n_pos_retained,
+            n_neg_retained=out.n_neg_retained,
+        )
+
+    @staticmethod
+    def recall_at_threshold(labels: list[int] | None, scores: list[float] | None, threshold: float) -> StatOutput:
+        if labels is None or scores is None:
+            return StatOutput(stat="recall_at_threshold", value=math.nan, p_value=math.nan, std_error=math.nan)
+        out = compute_threshold_point_metrics(labels, scores, threshold)
+        return StatOutput(
+            stat="recall_at_threshold",
+            value=out.recall,
+            p_value=math.nan,
+            std_error=math.nan,
+            rows_retained=out.rows_retained,
+            n_pos_retained=out.n_pos_retained,
+            n_neg_retained=out.n_neg_retained,
+        )
+
+    @staticmethod
+    def auc_trunc(labels: list[int] | None, scores: list[float] | None, threshold: float) -> StatOutput:
+        if labels is None or scores is None:
+            return StatOutput(stat="auc_trunc", value=math.nan, p_value=math.nan, std_error=math.nan)
+        n_total, n_pos, n_neg = truncate_counts(labels, scores, threshold)
+        return StatOutput(
+            stat="auc_trunc",
+            value=compute_auc_trunc(labels, scores, threshold),
+            p_value=math.nan,
+            std_error=math.nan,
+            rows_retained=float(n_total),
+            n_pos_retained=float(n_pos),
+            n_neg_retained=float(n_neg),
+        )
+
+    @staticmethod
+    def auprc_trunc(labels: list[int] | None, scores: list[float] | None, threshold: float) -> StatOutput:
+        if labels is None or scores is None:
+            return StatOutput(stat="auprc_trunc", value=math.nan, p_value=math.nan, std_error=math.nan)
+        n_total, n_pos, n_neg = truncate_counts(labels, scores, threshold)
+        return StatOutput(
+            stat="auprc_trunc",
+            value=compute_auprc_trunc(labels, scores, threshold),
+            p_value=math.nan,
+            std_error=math.nan,
+            rows_retained=float(n_total),
+            n_pos_retained=float(n_pos),
+            n_neg_retained=float(n_neg),
+        )
 
     @staticmethod
     def enrichment(cont: Contingency, pvalue_method: str = DEFAULT_PVALUE_METHOD) -> StatOutput:

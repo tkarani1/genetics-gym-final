@@ -40,7 +40,7 @@ from biostat_cli.stats.binary import (
     PVALUE_METHODS,
     VSM_COMPARISON_METHODS,
 )
-from biostat_cli.stats.factory import StatFactory
+
 from biostat_cli.utils import WITHIN_GENE_COL
 
 ERROR_INVALID_THRESHOLD = 22
@@ -152,6 +152,7 @@ def _resolve_output_paths(out_fname: str) -> dict[str, str]:
         "log": f"{prefix}_log.json",
         "missing_tsv": f"{prefix}_missing.tsv",
         "vsm_comparison_tsv": f"{prefix}_vsm_comparison.tsv",
+        "curves_tsv": f"{prefix}_curves.tsv",
     }
 
 
@@ -298,42 +299,8 @@ def _build_missing_variant_rows(
     return report.select(out_cols).collect(streaming=True).to_dicts()
 
 
-def _compute_vsm_comparison_parallel(
-    conts_by_score: dict[str, tuple[list, int]],
-    eval_col: str,
-    filter_name: str,
-    thresholds: list[float],
-    method: str = DEFAULT_VSM_COMPARISON_METHOD,
-) -> list[dict[str, Any]]:
-    """All-pairs VSM comparison test using TP/FP counts."""
-    score_cols = list(conts_by_score.keys())
-    rows: list[dict[str, Any]] = []
-    for idx_i in range(len(score_cols)):
-        for idx_j in range(idx_i + 1, len(score_cols)):
-            col_i, col_j = score_cols[idx_i], score_cols[idx_j]
-            conts_i, rows_used_i = conts_by_score[col_i]
-            conts_j, rows_used_j = conts_by_score[col_j]
-            for t_idx, threshold in enumerate(thresholds):
-                result = StatFactory.vsm_comparison(conts_i[t_idx], conts_j[t_idx], method=method)
-                rows.append({
-                    "eval_name": eval_col,
-                    "filter_name": filter_name,
-                    "vsm_i": col_i,
-                    "vsm_j": col_j,
-                    "threshold": threshold,
-                    "odds_ratio": result.odds_ratio,
-                    "p_greater": result.p_greater,
-                    "p_less": result.p_less,
-                    "log_odds_ratio": result.log_odds_ratio,
-                    "standard_error": result.standard_error,
-                    "log_ci_lower": result.log_ci_lower,
-                    "log_ci_upper": result.log_ci_upper,
-                    "conf_interval_lower": result.conf_interval_lower,
-                    "conf_interval_upper": result.conf_interval_upper,
-                    "rows_used_i": rows_used_i,
-                    "rows_used_j": rows_used_j,
-                })
-    return rows
+
+
 
 
 def _run_eval_filter_combo(
@@ -350,7 +317,7 @@ def _run_eval_filter_combo(
     pairwise_cols: PairwiseColumns | None,
     eval_case_total: float | None,
     eval_ctrl_total: float | None,
-) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     combo_start = time.perf_counter()
     evaluator = _choose_evaluator(args.eval_level, source)
     obs_exp_columns: tuple[str, str] | None = None
@@ -374,7 +341,7 @@ def _run_eval_filter_combo(
             mode=missing_mode,
         )
 
-    combo_rows, vsm_cmp_rows = _compute_rows_for_prepared(
+    combo_rows, vsm_cmp_rows, curve_rows = _compute_rows_for_prepared(
         evaluator=evaluator,
         prepared=prepared,
         eval_col=eval_col,
@@ -398,10 +365,12 @@ def _run_eval_filter_combo(
         "filter_name": filter_name,
         "elapsed_seconds": time.perf_counter() - combo_start,
     }
-    return combo_rows, timing, combo_missing_rows, vsm_cmp_rows
+    return combo_rows, timing, combo_missing_rows, vsm_cmp_rows, curve_rows
 
 
-def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+def run(
+    args: RunArgs,
+) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     resources = load_resources(args.resources_json)
     table = get_table_config(resources, args.table_name)
     thresholds = parse_thresholds(args.thresholds)
@@ -463,12 +432,13 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     timings_by_idx: dict[int, dict[str, Any]] = {}
     missing_by_idx: dict[int, list[dict[str, Any]]] = {}
     vsm_cmp_by_idx: dict[int, list[dict[str, Any]]] = {}
+    curve_by_idx: dict[int, list[dict[str, Any]]] = {}
     max_workers = min(len(combos), os.cpu_count() or 1)
 
     if max_workers <= 1:
         for idx, eval_col, filter_name, filter_col in combos:
             ect, ecf = totals_by_eval[eval_col]
-            combo_rows, combo_timing, combo_missing_rows, combo_vsm_cmp = _run_eval_filter_combo(
+            combo_rows, combo_timing, combo_missing_rows, combo_vsm_cmp, combo_curves = _run_eval_filter_combo(
                 args=args,
                 source=source,
                 score_cols=table.score_cols,
@@ -487,6 +457,7 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
             timings_by_idx[idx] = combo_timing
             missing_by_idx[idx] = combo_missing_rows
             vsm_cmp_by_idx[idx] = combo_vsm_cmp
+            curve_by_idx[idx] = combo_curves
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
@@ -510,11 +481,12 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
             }
             for future in as_completed(future_map):
                 idx = future_map[future]
-                combo_rows, combo_timing, combo_missing_rows, combo_vsm_cmp = future.result()
+                combo_rows, combo_timing, combo_missing_rows, combo_vsm_cmp, combo_curves = future.result()
                 rows_by_idx[idx] = combo_rows
                 timings_by_idx[idx] = combo_timing
                 missing_by_idx[idx] = combo_missing_rows
                 vsm_cmp_by_idx[idx] = combo_vsm_cmp
+                curve_by_idx[idx] = combo_curves
 
     rows: list[dict[str, Any]] = []
     for idx in sorted(rows_by_idx.keys()):
@@ -526,6 +498,9 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     all_vsm_cmp_rows: list[dict[str, Any]] = []
     for idx in sorted(vsm_cmp_by_idx.keys()):
         all_vsm_cmp_rows.extend(vsm_cmp_by_idx[idx])
+    all_curve_rows: list[dict[str, Any]] = []
+    for idx in sorted(curve_by_idx.keys()):
+        all_curve_rows.extend(curve_by_idx[idx])
     if missing_rows:
         missing_df = _sort_missing_df(pl.DataFrame(missing_rows))
     else:
@@ -556,6 +531,7 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
             "conf_interval_upper": pl.Float64,
             "rows_used_i": pl.Int64,
             "rows_used_j": pl.Int64,
+            "rows_used_pair": pl.Int64,
         }
     )
     empty_coverage_df = pl.DataFrame(
@@ -569,7 +545,23 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
             "n_variants_total": pl.Int64,
         }
     )
-    return pl.DataFrame(rows), timings, missing_df, vsm_comparison_df, empty_coverage_df
+    curves_df = pl.DataFrame(all_curve_rows) if all_curve_rows else pl.DataFrame(
+        schema={
+            "eval_name": pl.String,
+            "filter_name": pl.String,
+            "score_name": pl.String,
+            "curve_type": pl.String,
+            "point_idx": pl.Int64,
+            "score_threshold": pl.Float64,
+            "fpr": pl.Float64,
+            "tpr": pl.Float64,
+            "precision": pl.Float64,
+            "recall": pl.Float64,
+            "rows_used": pl.Int64,
+            "total_eval_rows": pl.Int64,
+        }
+    )
+    return pl.DataFrame(rows), timings, missing_df, vsm_comparison_df, empty_coverage_df, curves_df
 
 
 def main() -> None:
@@ -594,12 +586,14 @@ def main() -> None:
     try:
         output_paths = _resolve_output_paths(args.out_fname)
         start = time.perf_counter()
-        out, eval_filter_timings, missing_df, vsm_comparison_df, _ = run(args)
+        out, eval_filter_timings, missing_df, vsm_comparison_df, _, curves_df = run(args)
         write_tsv(out, output_paths["tsv"])
         if args.write_missing != "none":
             write_tsv(missing_df, output_paths["missing_tsv"])
         if vsm_comparison_df.height > 0:
             write_tsv(vsm_comparison_df, output_paths["vsm_comparison_tsv"])
+        if curves_df.height > 0:
+            write_tsv(curves_df, output_paths["curves_tsv"])
         elapsed_seconds = time.perf_counter() - start
         write_json(
             {
