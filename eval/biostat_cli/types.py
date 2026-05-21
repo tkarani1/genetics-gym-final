@@ -12,13 +12,37 @@ class StatType(str, Enum):
 
     AUC = "auc"
     AUPRC = "auprc"
+    TPR_AT_THRESHOLD = "tpr_at_threshold"
+    FPR_AT_THRESHOLD = "fpr_at_threshold"
+    PRECISION_AT_THRESHOLD = "precision_at_threshold"
+    RECALL_AT_THRESHOLD = "recall_at_threshold"
+    AUC_TRUNC = "auc_trunc"
+    AUPRC_TRUNC = "auprc_trunc"
     ENRICHMENT = "enrichment"
     RATE_RATIO = "rate_ratio"
     PAIRWISE_ENRICHMENT = "pairwise_enrichment"
     PAIRWISE_RATE_RATIO = "pairwise_rate_ratio"
     PAIRWISE_AUC = "pairwise_auc"
     PAIRWISE_AUPRC = "pairwise_auprc"
+    PAIRWISE_TPR_AT_THRESHOLD = "pairwise_tpr_at_threshold"
+    PAIRWISE_FPR_AT_THRESHOLD = "pairwise_fpr_at_threshold"
+    PAIRWISE_PRECISION_AT_THRESHOLD = "pairwise_precision_at_threshold"
+    PAIRWISE_RECALL_AT_THRESHOLD = "pairwise_recall_at_threshold"
+    PAIRWISE_AUC_TRUNC = "pairwise_auc_trunc"
+    PAIRWISE_AUPRC_TRUNC = "pairwise_auprc_trunc"
     VSM_COMPARISON = "vsm_comparison"
+    OBS_EXP_RATIO = "obs_exp_ratio"
+    PAIRWISE_OBS_EXP_RATIO = "pairwise_obs_exp_ratio"
+    GENE_AVG_ENRICHMENT = "gene_avg_enrichment"
+    GENE_AVG_RATE_RATIO = "gene_avg_rate_ratio"
+    GENE_AVG_AUC = "gene_avg_auc"
+    GENE_AVG_AUPRC = "gene_avg_auprc"
+    GENE_AVG_TPR_AT_THRESHOLD = "gene_avg_tpr_at_threshold"
+    GENE_AVG_FPR_AT_THRESHOLD = "gene_avg_fpr_at_threshold"
+    GENE_AVG_PRECISION_AT_THRESHOLD = "gene_avg_precision_at_threshold"
+    GENE_AVG_RECALL_AT_THRESHOLD = "gene_avg_recall_at_threshold"
+    GENE_AVG_AUC_TRUNC = "gene_avg_auc_trunc"
+    GENE_AVG_AUPRC_TRUNC = "gene_avg_auprc_trunc"
 
     @classmethod
     def all(cls) -> set[str]:
@@ -29,15 +53,34 @@ class StatType(str, Enum):
         return {
             cls.PAIRWISE_ENRICHMENT.value, cls.PAIRWISE_RATE_RATIO.value,
             cls.PAIRWISE_AUC.value, cls.PAIRWISE_AUPRC.value,
+            cls.PAIRWISE_TPR_AT_THRESHOLD.value, cls.PAIRWISE_FPR_AT_THRESHOLD.value,
+            cls.PAIRWISE_PRECISION_AT_THRESHOLD.value, cls.PAIRWISE_RECALL_AT_THRESHOLD.value,
+            cls.PAIRWISE_AUC_TRUNC.value, cls.PAIRWISE_AUPRC_TRUNC.value,
+            cls.PAIRWISE_OBS_EXP_RATIO.value,
         }
 
     @classmethod
     def continuous(cls) -> set[str]:
-        return {cls.AUC.value, cls.AUPRC.value}
+        return {
+            cls.AUC.value, cls.AUPRC.value,
+            cls.TPR_AT_THRESHOLD.value, cls.FPR_AT_THRESHOLD.value,
+            cls.PRECISION_AT_THRESHOLD.value, cls.RECALL_AT_THRESHOLD.value,
+            cls.AUC_TRUNC.value, cls.AUPRC_TRUNC.value,
+        }
 
     @classmethod
     def binary(cls) -> set[str]:
         return {cls.ENRICHMENT.value, cls.RATE_RATIO.value}
+
+    @classmethod
+    def gene_averaged(cls) -> set[str]:
+        return {
+            cls.GENE_AVG_ENRICHMENT.value, cls.GENE_AVG_RATE_RATIO.value,
+            cls.GENE_AVG_AUC.value, cls.GENE_AVG_AUPRC.value,
+            cls.GENE_AVG_TPR_AT_THRESHOLD.value, cls.GENE_AVG_FPR_AT_THRESHOLD.value,
+            cls.GENE_AVG_PRECISION_AT_THRESHOLD.value, cls.GENE_AVG_RECALL_AT_THRESHOLD.value,
+            cls.GENE_AVG_AUC_TRUNC.value, cls.GENE_AVG_AUPRC_TRUNC.value,
+        }
 
 
 class EvalLevel(str, Enum):

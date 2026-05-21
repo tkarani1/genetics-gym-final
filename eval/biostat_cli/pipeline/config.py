@@ -22,7 +22,7 @@ FIGURE1_RAW_TABLE_KEY = "FIGURE1_RAW"
 FIGURE1_PAIRWISE_TABLE_KEY = "FIGURE1_PAIRWISE"
 
 DEFAULT_THRESHOLD = 0.95
-DEFAULT_THRESHOLDS = [0.90, 0.95, 0.98, 0.99]
+DEFAULT_THRESHOLDS = [0.90, 0.95, 0.98, 0.99, 0.995]
 DEFAULT_FILTER_NAME = "none"
 
 
@@ -239,20 +239,33 @@ def validate_pipeline_config(
     return errors, warnings
 
 
+def _format_eval_title(eval_name: str) -> str:
+    """Convert boolean eval column names into readable panel titles."""
+    title = eval_name
+    for prefix in ("is_pos_", "is_case_", "is_pos", "is_case"):
+        if title.startswith(prefix):
+            title = title[len(prefix):]
+            break
+    title = title.strip("_")
+    return title.replace("_", " ").title() if title else eval_name
+
+
 def discover_is_pos_evals(parquet_path: str) -> list[str]:
     """
-    Discover all is_pos_* columns in a parquet file.
+    Discover boolean eval columns in a parquet file.
 
     Args:
         parquet_path: Path to parquet file (local only).
 
     Returns:
-        Sorted list of is_pos_* column names.
+        Sorted list of `is_pos_*` plus `is_case` / `is_case_*` column names.
     """
     if parquet_path.startswith("gs://"):
         return []
     cols = pl.scan_parquet(parquet_path).collect_schema().names()
-    return sorted([c for c in cols if c.startswith("is_pos_")])
+    return sorted(
+        [c for c in cols if c.startswith("is_pos_") or c == "is_case" or c.startswith("is_case_")]
+    )
 
 
 def resolve_eval_set(
@@ -274,7 +287,7 @@ def resolve_eval_set(
     if args.eval_set_override:
         evals = [e.strip() for e in args.eval_set_override.split(",") if e.strip()]
         panel_eval_map = {e: e for e in evals}
-        panel_titles = {e: e.replace("is_pos_", "").replace("_", " ").title() for e in evals}
+        panel_titles = {e: _format_eval_title(e) for e in evals}
         default_raw_stat = config.panel_metrics.get(
             list(config.panel_metrics.keys())[0] if config.panel_metrics else "", {}
         ).get("raw", "enrichment")
@@ -304,7 +317,9 @@ def resolve_eval_set(
     discovered = sorted(set(discovered))
 
     if not discovered:
-        warnings.append("all_variant profile: no is_pos_* columns found; falling back to config eval_set.")
+        warnings.append(
+            "all_variant profile: no is_pos_* or is_case* columns found; falling back to config eval_set."
+        )
         return config.eval_set, config.panel_layout, warnings
 
     default_raw_stat = "enrichment"
@@ -317,7 +332,7 @@ def resolve_eval_set(
     panel_layout = PanelLayoutConfig(
         panel_order=discovered,
         panel_eval_map={e: e for e in discovered},
-        panel_titles={e: e.replace("is_pos_", "").replace("_", " ").title() for e in discovered},
+        panel_titles={e: _format_eval_title(e) for e in discovered},
         panel_metrics={e: {"raw": default_raw_stat, "pairwise": default_pairwise_stat} for e in discovered},
     )
 

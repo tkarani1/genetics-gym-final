@@ -12,26 +12,56 @@ import numpy as np
 import polars as pl
 
 from biostat_cli.config import (
+    GENE_AVG_STATS,
+    OE_STATS,
     PAIRWISE_STATS,
     PairwiseColumns,
     detect_pairwise_columns,
     get_table_config,
     load_resources,
+    obs_exp_column_names,
     parse_csv_arg,
     parse_eval_totals,
     parse_stats,
     parse_thresholds,
 )
-from biostat_cli.stats.binary import DEFAULT_PVALUE_METHOD, PVALUE_METHODS
-from biostat_cli.stats.continuous import compute_auc, compute_auprc
+from biostat_cli.stats.binary import (
+    DEFAULT_PVALUE_METHOD,
+    DEFAULT_VSM_COMPARISON_METHOD,
+    PVALUE_METHODS,
+    VSM_COMPARISON_METHODS,
+)
+from biostat_cli.stats.continuous import (
+    compute_auc,
+    compute_auc_trunc,
+    compute_auprc,
+    compute_auprc_trunc,
+    compute_curve_points,
+    compute_threshold_point_metrics,
+    delong_two_auc_p_value,
+    truncate_counts,
+)
 from biostat_cli.utils import WITHIN_GENE_COL, missing_category_sort_expr, normalize_chromosome_sort_expr
-from biostat_cli.evaluators.base import BaseEvaluator, Contingency, PreparedFrame
+from biostat_cli.evaluators.base import BaseEvaluator, Contingency, PreparedFrame, slice_prepared_for_score
 from biostat_cli.evaluators.gene import GeneEvaluator, SUM_VARIANTS_SENTINEL
 from biostat_cli.evaluators.variant import VariantEvaluator
 from biostat_cli.io import scan_table, write_json, write_tsv
-from biostat_cli.stats.factory import PairwiseStatOutput, StatFactory
+from biostat_cli.stats.binary import _compute_enrichment_value, _compute_rate_ratio_value
+from biostat_cli.stats.continuous import compute_auc as _raw_auc, compute_auprc as _raw_auprc
+from biostat_cli.stats.factory import GeneAvgStatOutput, PairwiseStatOutput, StatFactory
+from biostat_cli.stats.obs_exp import obs_exp_ratio_value
 
 ERROR_INVALID_THRESHOLD = 22
+CONTINUOUS_BASE_STATS = {
+    "auc", "auprc", "tpr_at_threshold", "fpr_at_threshold",
+    "precision_at_threshold", "recall_at_threshold", "auc_trunc", "auprc_trunc",
+}
+PAIRWISE_CONTINUOUS_STATS = {
+    "pairwise_auc", "pairwise_auprc",
+    "pairwise_tpr_at_threshold", "pairwise_fpr_at_threshold",
+    "pairwise_precision_at_threshold", "pairwise_recall_at_threshold",
+    "pairwise_auc_trunc", "pairwise_auprc_trunc",
+}
 
 
 @dataclass(frozen=True)
@@ -43,8 +73,6 @@ class RunArgs:
     eval_set: str | None
     filters: str | None
     thresholds: str | None
-    case_total: float | None
-    ctrl_total: float | None
     case_total_by_eval: str | None
     ctrl_total_by_eval: str | None
     bootstrap_samples: int | None
@@ -52,6 +80,9 @@ class RunArgs:
     write_missing: str
     within_gene_percentile: bool = False
     pvalue_method: str = DEFAULT_PVALUE_METHOD
+    vsm_comparison_method: str = DEFAULT_VSM_COMPARISON_METHOD
+    gene_col: str = "ensg"
+    write_gene_variant_coverage: bool = False
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -63,8 +94,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-set", default=None, help="Comma-separated eval columns")
     parser.add_argument("--filters", default=None, help="Comma-separated logical filter names")
     parser.add_argument("--thresholds", default=None, help="Comma-separated percentile thresholds")
-    parser.add_argument("--case-total", type=float, default=None)
-    parser.add_argument("--ctrl-total", type=float, default=None)
     parser.add_argument(
         "--case-total-by-eval",
         default=None,
@@ -96,9 +125,119 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_PVALUE_METHOD,
         help=f"P-value calculation method (default: {DEFAULT_PVALUE_METHOD})",
     )
+    parser.add_argument(
+        "--vsm-comparison-method",
+        choices=list(VSM_COMPARISON_METHODS),
+        default=DEFAULT_VSM_COMPARISON_METHOD,
+        help="VSM pairwise comparison method for vsm_comparison output (default: fisher)",
+    )
+    parser.add_argument(
+        "--gene-col",
+        default="ensg",
+        help="Gene identifier column for gene-averaged stats (default: ensg)",
+    )
+    parser.add_argument(
+        "--write-gene-variant-coverage",
+        action="store_true",
+        default=False,
+        help="Write per-gene variant coverage report as a separate TSV",
+    )
     parser.add_argument("--out-fname", required=True)
     parser.add_argument("--write-missing", choices=["none", "all", "any"], default="none")
     return parser
+
+
+def _schema_has_obs_exp(schema_names: set[str], eval_stem: str) -> bool:
+    obs_c, exp_c = obs_exp_column_names(eval_stem)
+    return obs_c in schema_names and exp_c in schema_names
+
+
+def _effective_stats_for_eval(requested_stats: set[str], is_obs_exp_eval: bool) -> set[str]:
+    """Restrict stats to those valid for a boolean-labeled eval vs. an obs/expected eval."""
+    if is_obs_exp_eval:
+        eff = requested_stats & OE_STATS
+        if not eff:
+            raise ValueError(
+                f"Table has {OE_STATS!r} columns for this eval stem, but --stat does not request any of "
+                f"those. Requested: {sorted(requested_stats)}."
+            )
+        return eff
+    eff = requested_stats - OE_STATS
+    if not eff and (requested_stats & OE_STATS):
+        raise ValueError(
+            f"obs_exp_ratio / pairwise_obs_exp_ratio need {{eval_stem}}_observed and {{eval_stem}}_expected. "
+            f"Requested: {sorted(requested_stats)}."
+        )
+    return eff
+
+
+def _oe_ratio_tail(
+    table: pl.DataFrame, score: str, obs: str, exp: str, threshold: float
+) -> float:
+    s = table.filter(pl.col(score) >= threshold)
+    if s.height == 0:
+        return float("nan")
+    return obs_exp_ratio_value(
+        float(s[obs].sum()), float(s[exp].sum()),
+    )
+
+
+def _oe_ratio_for_thresholds(
+    score_frame: Any, score_col: str, obs_col: str, exp_col: str, thresholds: list[float]
+) -> list[float]:
+    df = score_frame.frame.select([pl.col(score_col), pl.col(obs_col), pl.col(exp_col)]).collect(streaming=True)
+    if df.height == 0:
+        return [float("nan")] * len(thresholds)
+    return [_oe_ratio_tail(df, score_col, obs_col, exp_col, t) for t in thresholds]
+
+
+def _append_obs_exp_row(
+    rows: list[dict[str, Any]],
+    eval_name: str,
+    filter_name: str,
+    score_name: str,
+    threshold: float,
+    value: float,
+    rows_used: int,
+    total_eval_rows: int,
+) -> None:
+    _append_binary_row(
+        rows=rows,
+        eval_name=eval_name,
+        filter_name=filter_name,
+        score_name=score_name,
+        threshold=threshold,
+        stat_name="obs_exp_ratio",
+        value=value,
+        p_value=float("nan"),
+        std_error=float("nan"),
+        tp=float("nan"),
+        fp=float("nan"),
+        tn=float("nan"),
+        fn=float("nan"),
+        rows_used=rows_used,
+        total_eval_rows=total_eval_rows,
+    )
+
+
+def _compute_obs_exp_ratio_stats(
+    rows: list[dict[str, Any]],
+    score_frame: Any,
+    eval_stem: str,
+    filter_name: str,
+    score_col: str,
+    obs_col: str,
+    exp_col: str,
+    thresholds: list[float],
+    total_eval_rows: int,
+) -> None:
+    if not thresholds:
+        return
+    ratios = _oe_ratio_for_thresholds(score_frame, score_col, obs_col, exp_col, thresholds)
+    for t, v in zip(thresholds, ratios):
+        _append_obs_exp_row(
+            rows, eval_stem, filter_name, score_col, t, v, score_frame.rows_used, total_eval_rows,
+        )
 
 
 def _choose_evaluator(eval_level: str, source: pl.LazyFrame) -> BaseEvaluator:
@@ -146,12 +285,21 @@ def _append_binary_row(
     stat_name: str,
     value: float,
     p_value: float,
+    std_error: float,
     tp: float,
     fp: float,
     tn: float,
     fn: float,
     rows_used: int,
     total_eval_rows: int,
+    *,
+    enrichment_ci_lower: float = float("nan"),
+    enrichment_ci_upper: float = float("nan"),
+    rate_ratio_ci_lower: float = float("nan"),
+    rate_ratio_ci_upper: float = float("nan"),
+    rows_retained: float = float("nan"),
+    n_pos_retained: float = float("nan"),
+    n_neg_retained: float = float("nan"),
 ) -> None:
     rows.append(
         {
@@ -162,12 +310,20 @@ def _append_binary_row(
             "stat": stat_name,
             "value": value,
             "p_value": p_value,
+            "std_error": std_error,
+            "enrichment_ci_lower": enrichment_ci_lower,
+            "enrichment_ci_upper": enrichment_ci_upper,
+            "rate_ratio_ci_lower": rate_ratio_ci_lower,
+            "rate_ratio_ci_upper": rate_ratio_ci_upper,
             "tp": tp,
             "fp": fp,
             "tn": tn,
             "fn": fn,
             "rows_used": rows_used,
             "total_eval_rows": total_eval_rows,
+            "rows_retained": rows_retained,
+            "n_pos_retained": n_pos_retained,
+            "n_neg_retained": n_neg_retained,
         }
     )
 
@@ -182,6 +338,10 @@ def _append_pairwise_row(
     cont: Contingency,
     rows_used: int,
     total_eval_rows: int,
+    *,
+    rows_retained: float = float("nan"),
+    n_pos_retained: float = float("nan"),
+    n_neg_retained: float = float("nan"),
 ) -> None:
     rows.append(
         {
@@ -194,12 +354,19 @@ def _append_pairwise_row(
             "p_value": out.p_value,
             "anchor_value": out.anchor_value,
             "adjustment_ratio": out.adjustment_ratio,
+            "enrichment_ci_lower": float("nan"),
+            "enrichment_ci_upper": float("nan"),
+            "rate_ratio_ci_lower": float("nan"),
+            "rate_ratio_ci_upper": float("nan"),
             "tp": cont.tp,
             "fp": cont.fp,
             "tn": cont.tn,
             "fn": cont.fn,
             "rows_used": rows_used,
             "total_eval_rows": total_eval_rows,
+            "rows_retained": rows_retained,
+            "n_pos_retained": n_pos_retained,
+            "n_neg_retained": n_neg_retained,
         }
     )
 
@@ -210,20 +377,38 @@ def _resolve_eval_totals(
     table_ctrl_totals: dict[str, float],
     cli_case_totals: dict[str, float],
     cli_ctrl_totals: dict[str, float],
-    global_case_total: float | None,
-    global_ctrl_total: float | None,
 ) -> tuple[float | None, float | None]:
     """
     Resolve denominators for a specific eval column.
 
     Priority (high -> low):
-    1) per-eval CLI override
-    2) per-eval values from resources JSON
-    3) global CLI --case-total/--ctrl-total
+    1) per-eval CLI (--case-total-by-eval / --ctrl-total-by-eval)
+    2) per-eval values from resources JSON (Case_totals / Ctrl_totals)
     """
-    case_total = cli_case_totals.get(eval_col, table_case_totals.get(eval_col, global_case_total))
-    ctrl_total = cli_ctrl_totals.get(eval_col, table_ctrl_totals.get(eval_col, global_ctrl_total))
+    case_total = cli_case_totals.get(eval_col, table_case_totals.get(eval_col))
+    ctrl_total = cli_ctrl_totals.get(eval_col, table_ctrl_totals.get(eval_col))
     return case_total, ctrl_total
+
+
+STATS_REQUIRING_COHORT_TOTALS = frozenset({"rate_ratio", "pairwise_rate_ratio", "gene_avg_rate_ratio"})
+
+
+def _ensure_rate_ratio_denominators(
+    eff_stats: set[str],
+    eval_col: str,
+    case_total: float | None,
+    ctrl_total: float | None,
+) -> None:
+    """Fail fast when rate-ratio stats are requested but cohort denominators are missing."""
+    if not (eff_stats & STATS_REQUIRING_COHORT_TOTALS):
+        return
+    if case_total is None or ctrl_total is None:
+        raise ValueError(
+            f"Cohort denominators are required for rate ratio statistics on eval `{eval_col}`, "
+            f"but resolved case_total={case_total!r}, ctrl_total={ctrl_total!r}. "
+            "Provide --case-total-by-eval and --ctrl-total-by-eval as eval:value,... pairs, "
+            "or per-eval Case_totals and Ctrl_totals in the resources JSON Table_info entry."
+        )
 
 
 def _threshold_key(value: float) -> str:
@@ -264,6 +449,8 @@ def _resolve_output_paths(out_fname: str) -> dict[str, str]:
         "log": f"{prefix}_log.json",
         "missing_tsv": f"{prefix}_missing.tsv",
         "vsm_comparison_tsv": f"{prefix}_vsm_comparison.tsv",
+        "gene_variant_coverage_tsv": f"{prefix}_gene_variant_coverage.tsv",
+        "curves_tsv": f"{prefix}_curves.tsv",
     }
 
 
@@ -390,15 +577,17 @@ def _build_missing_variant_rows(
 
 def _compute_continuous_stats(
     rows: list[dict[str, Any]],
+    curve_rows: list[dict[str, Any]],
     evaluator: BaseEvaluator,
     score_frame: Any,
     eval_col: str,
     filter_name: str,
     score_col: str,
     requested_stats: set[str],
+    thresholds: list[float],
     total_eval_rows: int,
 ) -> None:
-    """Compute AUC and AUPRC statistics."""
+    """Compute full, threshold-point, truncated continuous statistics and curves."""
     labels_scores = evaluator.labels_and_scores(score_frame, eval_col=eval_col, score_col=score_col)
     labels = labels_scores[0] if labels_scores else None
     scores = labels_scores[1] if labels_scores else None
@@ -416,12 +605,96 @@ def _compute_continuous_stats(
             stat_name=out.stat,
             value=out.value,
             p_value=out.p_value,
+            std_error=out.std_error,
             tp=float("nan"),
             fp=float("nan"),
             tn=float("nan"),
             fn=float("nan"),
             rows_used=score_frame.rows_used,
             total_eval_rows=total_eval_rows,
+            enrichment_ci_lower=float("nan"),
+            enrichment_ci_upper=float("nan"),
+            rate_ratio_ci_lower=float("nan"),
+            rate_ratio_ci_upper=float("nan"),
+        )
+    if labels is None or scores is None:
+        return
+
+    for threshold in thresholds:
+        point = compute_threshold_point_metrics(labels, scores, threshold)
+        point_map = {
+            "tpr_at_threshold": point.tpr,
+            "fpr_at_threshold": point.fpr,
+            "precision_at_threshold": point.precision,
+            "recall_at_threshold": point.recall,
+        }
+        for stat_name, value in point_map.items():
+            if stat_name not in requested_stats:
+                continue
+            _append_binary_row(
+                rows=rows,
+                eval_name=eval_col,
+                filter_name=filter_name,
+                score_name=score_col,
+                threshold=threshold,
+                stat_name=stat_name,
+                value=value,
+                p_value=float("nan"),
+                std_error=float("nan"),
+                tp=float("nan"),
+                fp=float("nan"),
+                tn=float("nan"),
+                fn=float("nan"),
+                rows_used=score_frame.rows_used,
+                total_eval_rows=total_eval_rows,
+                rows_retained=float(point.rows_retained),
+                n_pos_retained=float(point.n_pos_retained),
+                n_neg_retained=float(point.n_neg_retained),
+            )
+        trunc_map = {
+            "auc_trunc": compute_auc_trunc(labels, scores, threshold),
+            "auprc_trunc": compute_auprc_trunc(labels, scores, threshold),
+        }
+        n_total, n_pos, n_neg = truncate_counts(labels, scores, threshold)
+        for stat_name, value in trunc_map.items():
+            if stat_name not in requested_stats:
+                continue
+            _append_binary_row(
+                rows=rows,
+                eval_name=eval_col,
+                filter_name=filter_name,
+                score_name=score_col,
+                threshold=threshold,
+                stat_name=stat_name,
+                value=value,
+                p_value=float("nan"),
+                std_error=float("nan"),
+                tp=float("nan"),
+                fp=float("nan"),
+                tn=float("nan"),
+                fn=float("nan"),
+                rows_used=score_frame.rows_used,
+                total_eval_rows=total_eval_rows,
+                rows_retained=float(n_total),
+                n_pos_retained=float(n_pos),
+                n_neg_retained=float(n_neg),
+            )
+    for point in compute_curve_points(labels, scores):
+        curve_rows.append(
+            {
+                "eval_name": eval_col,
+                "filter_name": filter_name,
+                "score_name": score_col,
+                "curve_type": point.curve_type,
+                "point_idx": point.point_idx,
+                "score_threshold": point.score_threshold,
+                "fpr": point.fpr,
+                "tpr": point.tpr,
+                "precision": point.precision,
+                "recall": point.recall,
+                "rows_used": score_frame.rows_used,
+                "total_eval_rows": total_eval_rows,
+            }
         )
 
 
@@ -458,12 +731,17 @@ def _compute_binary_stats(
                 stat_name=out.stat,
                 value=out.value,
                 p_value=out.p_value,
+                std_error=out.std_error,
                 tp=cont.tp,
                 fp=cont.fp,
                 tn=cont.tn,
                 fn=cont.fn,
                 rows_used=score_frame.rows_used,
                 total_eval_rows=total_eval_rows,
+                enrichment_ci_lower=out.enrichment_ci_lower,
+                enrichment_ci_upper=out.enrichment_ci_upper,
+                rate_ratio_ci_lower=float("nan"),
+                rate_ratio_ci_upper=float("nan"),
             )
 
     if "rate_ratio" in requested_stats:
@@ -480,15 +758,247 @@ def _compute_binary_stats(
                 stat_name=out.stat,
                 value=out.value,
                 p_value=out.p_value,
+                std_error=out.std_error,
                 tp=cont.tp,
                 fp=cont.fp,
                 tn=cont.tn,
                 fn=cont.fn,
                 rows_used=score_frame.rows_used,
                 total_eval_rows=total_eval_rows,
+                enrichment_ci_lower=float("nan"),
+                enrichment_ci_upper=float("nan"),
+                rate_ratio_ci_lower=out.rate_ratio_ci_lower,
+                rate_ratio_ci_upper=out.rate_ratio_ci_upper,
             )
 
     return conts
+
+
+def _append_gene_avg_row(
+    rows: list[dict[str, Any]],
+    eval_name: str,
+    filter_name: str,
+    score_name: str,
+    threshold: float,
+    out: GeneAvgStatOutput,
+    rows_used: int,
+    total_eval_rows: int,
+    *,
+    rows_retained: float = float("nan"),
+    n_pos_retained: float = float("nan"),
+    n_neg_retained: float = float("nan"),
+) -> None:
+    rows.append(
+        {
+            "eval_name": eval_name,
+            "filter_name": filter_name,
+            "score_name": score_name,
+            "threshold": threshold,
+            "stat": out.stat,
+            "value": out.value,
+            "p_value": out.p_value,
+            "std_error": out.std_error,
+            "enrichment_ci_lower": float("nan"),
+            "enrichment_ci_upper": float("nan"),
+            "rate_ratio_ci_lower": float("nan"),
+            "rate_ratio_ci_upper": float("nan"),
+            "tp": float("nan"),
+            "fp": float("nan"),
+            "tn": float("nan"),
+            "fn": float("nan"),
+            "rows_used": rows_used,
+            "total_eval_rows": total_eval_rows,
+            "rows_retained": rows_retained,
+            "n_pos_retained": n_pos_retained,
+            "n_neg_retained": n_neg_retained,
+            "n_genes_used": out.n_genes_used,
+            "n_genes_excluded": out.n_genes_excluded,
+        }
+    )
+
+
+def _compute_gene_averaged_stats(
+    rows: list[dict[str, Any]],
+    evaluator: BaseEvaluator,
+    score_frame: Any,
+    eval_col: str,
+    filter_name: str,
+    score_col: str,
+    requested_stats: set[str],
+    thresholds: list[float],
+    eval_case_total: float | None,
+    eval_ctrl_total: float | None,
+    total_eval_rows: int,
+    gene_col: str,
+) -> None:
+    need_binary_ga = "gene_avg_enrichment" in requested_stats or "gene_avg_rate_ratio" in requested_stats
+    need_continuous_ga = bool(
+        requested_stats
+        & {
+            "gene_avg_auc", "gene_avg_auprc",
+            "gene_avg_tpr_at_threshold", "gene_avg_fpr_at_threshold",
+            "gene_avg_precision_at_threshold", "gene_avg_recall_at_threshold",
+            "gene_avg_auc_trunc", "gene_avg_auprc_trunc",
+        }
+    )
+
+    if need_binary_ga and thresholds:
+        gene_conts = evaluator.contingency_by_gene_batch(
+            score_frame, eval_col=eval_col, score_col=score_col,
+            thresholds=thresholds, gene_col=gene_col,
+        )
+        n_total_genes = len(gene_conts)
+        for t_idx, threshold in enumerate(thresholds):
+            if "gene_avg_enrichment" in requested_stats:
+                per_gene = [_compute_enrichment_value(conts[t_idx]) for conts in gene_conts.values()]
+                out = StatFactory.gene_avg_enrichment_stat(per_gene, n_total_genes)
+                _append_gene_avg_row(
+                    rows, eval_col, filter_name, score_col, threshold, out,
+                    score_frame.rows_used, total_eval_rows,
+                )
+            if "gene_avg_rate_ratio" in requested_stats:
+                if eval_case_total is not None and eval_ctrl_total is not None:
+                    per_gene = [
+                        _compute_rate_ratio_value(conts[t_idx], eval_case_total, eval_ctrl_total)
+                        for conts in gene_conts.values()
+                    ]
+                else:
+                    per_gene = [math.nan for _ in gene_conts]
+                out = StatFactory.gene_avg_rate_ratio_stat(per_gene, n_total_genes)
+                _append_gene_avg_row(
+                    rows, eval_col, filter_name, score_col, threshold, out,
+                    score_frame.rows_used, total_eval_rows,
+                )
+
+    if need_continuous_ga:
+        gene_ls = evaluator.labels_and_scores_by_gene(
+            score_frame, eval_col=eval_col, score_col=score_col, gene_col=gene_col,
+        )
+        n_total_genes = len(gene_ls)
+        if "gene_avg_auc" in requested_stats:
+            per_gene = [_raw_auc(labels, scores) for labels, scores in gene_ls.values()]
+            out = StatFactory.gene_avg_auc_stat(per_gene, n_total_genes)
+            _append_gene_avg_row(
+                rows, eval_col, filter_name, score_col, float("nan"), out,
+                score_frame.rows_used, total_eval_rows,
+            )
+        if "gene_avg_auprc" in requested_stats:
+            per_gene = [_raw_auprc(labels, scores) for labels, scores in gene_ls.values()]
+            out = StatFactory.gene_avg_auprc_stat(per_gene, n_total_genes)
+            _append_gene_avg_row(
+                rows, eval_col, filter_name, score_col, float("nan"), out,
+                score_frame.rows_used, total_eval_rows,
+            )
+        if thresholds:
+            for threshold in thresholds:
+                if "gene_avg_tpr_at_threshold" in requested_stats:
+                    per_gene = [
+                        compute_threshold_point_metrics(labels, scores, threshold).tpr
+                        for labels, scores in gene_ls.values()
+                    ]
+                    out = StatFactory.gene_avg_auc_stat(per_gene, n_total_genes)
+                    _append_gene_avg_row(
+                        rows, eval_col, filter_name, score_col, threshold,
+                        GeneAvgStatOutput(
+                            stat="gene_avg_tpr_at_threshold",
+                            value=out.value,
+                            p_value=math.nan,
+                            std_error=out.std_error,
+                            n_genes_used=out.n_genes_used,
+                            n_genes_excluded=out.n_genes_excluded,
+                        ),
+                        score_frame.rows_used, total_eval_rows,
+                    )
+                if "gene_avg_fpr_at_threshold" in requested_stats:
+                    per_gene = [
+                        compute_threshold_point_metrics(labels, scores, threshold).fpr
+                        for labels, scores in gene_ls.values()
+                    ]
+                    out = StatFactory.gene_avg_auc_stat(per_gene, n_total_genes)
+                    _append_gene_avg_row(
+                        rows, eval_col, filter_name, score_col, threshold,
+                        GeneAvgStatOutput(
+                            stat="gene_avg_fpr_at_threshold",
+                            value=out.value,
+                            p_value=math.nan,
+                            std_error=out.std_error,
+                            n_genes_used=out.n_genes_used,
+                            n_genes_excluded=out.n_genes_excluded,
+                        ),
+                        score_frame.rows_used, total_eval_rows,
+                    )
+                if "gene_avg_precision_at_threshold" in requested_stats:
+                    per_gene = [
+                        compute_threshold_point_metrics(labels, scores, threshold).precision
+                        for labels, scores in gene_ls.values()
+                    ]
+                    out = StatFactory.gene_avg_auc_stat(per_gene, n_total_genes)
+                    _append_gene_avg_row(
+                        rows, eval_col, filter_name, score_col, threshold,
+                        GeneAvgStatOutput(
+                            stat="gene_avg_precision_at_threshold",
+                            value=out.value,
+                            p_value=math.nan,
+                            std_error=out.std_error,
+                            n_genes_used=out.n_genes_used,
+                            n_genes_excluded=out.n_genes_excluded,
+                        ),
+                        score_frame.rows_used, total_eval_rows,
+                    )
+                if "gene_avg_recall_at_threshold" in requested_stats:
+                    per_gene = [
+                        compute_threshold_point_metrics(labels, scores, threshold).recall
+                        for labels, scores in gene_ls.values()
+                    ]
+                    out = StatFactory.gene_avg_auc_stat(per_gene, n_total_genes)
+                    _append_gene_avg_row(
+                        rows, eval_col, filter_name, score_col, threshold,
+                        GeneAvgStatOutput(
+                            stat="gene_avg_recall_at_threshold",
+                            value=out.value,
+                            p_value=math.nan,
+                            std_error=out.std_error,
+                            n_genes_used=out.n_genes_used,
+                            n_genes_excluded=out.n_genes_excluded,
+                        ),
+                        score_frame.rows_used, total_eval_rows,
+                    )
+                if "gene_avg_auc_trunc" in requested_stats:
+                    per_gene = [
+                        compute_auc_trunc(labels, scores, threshold)
+                        for labels, scores in gene_ls.values()
+                    ]
+                    out = StatFactory.gene_avg_auc_stat(per_gene, n_total_genes)
+                    _append_gene_avg_row(
+                        rows, eval_col, filter_name, score_col, threshold,
+                        GeneAvgStatOutput(
+                            stat="gene_avg_auc_trunc",
+                            value=out.value,
+                            p_value=math.nan,
+                            std_error=out.std_error,
+                            n_genes_used=out.n_genes_used,
+                            n_genes_excluded=out.n_genes_excluded,
+                        ),
+                        score_frame.rows_used, total_eval_rows,
+                    )
+                if "gene_avg_auprc_trunc" in requested_stats:
+                    per_gene = [
+                        compute_auprc_trunc(labels, scores, threshold)
+                        for labels, scores in gene_ls.values()
+                    ]
+                    out = StatFactory.gene_avg_auprc_stat(per_gene, n_total_genes)
+                    _append_gene_avg_row(
+                        rows, eval_col, filter_name, score_col, threshold,
+                        GeneAvgStatOutput(
+                            stat="gene_avg_auprc_trunc",
+                            value=out.value,
+                            p_value=math.nan,
+                            std_error=out.std_error,
+                            n_genes_used=out.n_genes_used,
+                            n_genes_excluded=out.n_genes_excluded,
+                        ),
+                        score_frame.rows_used, total_eval_rows,
+                    )
 
 
 _NAN_CONTINGENCY = Contingency(tp=float("nan"), fp=float("nan"), tn=float("nan"), fn=float("nan"))
@@ -508,10 +1018,12 @@ def _compute_pairwise_stats(
     *,
     within_gene_percentile: bool = False,
     pvalue_method: str = DEFAULT_PVALUE_METHOD,
+    obs_exp_columns: tuple[str, str] | None = None,
 ) -> None:
-    """Compute pairwise statistics (enrichment, rate_ratio, AUC, AUPRC)."""
+    """Compute pairwise statistics (enrichment, rate_ratio, AUC, AUPRC, O/E)."""
     need_pw_binary = bool(requested_stats & {"pairwise_enrichment", "pairwise_rate_ratio"})
-    need_pw_continuous = bool(requested_stats & {"pairwise_auc", "pairwise_auprc"})
+    need_pw_continuous = bool(requested_stats & PAIRWISE_CONTINUOUS_STATS)
+    need_pairwise_oe = "pairwise_obs_exp_ratio" in requested_stats and obs_exp_columns is not None
 
     anchor_score_frame = evaluator.prepare_score_frame(
         prepared, score_col=pairwise_cols.anchor_full_col, within_gene_percentile=within_gene_percentile,
@@ -525,6 +1037,9 @@ def _compute_pairwise_stats(
 
     anchor_full_auc = math.nan
     anchor_full_auprc = math.nan
+    anchor_full_point_by_t: dict[float, dict[str, float]] = {}
+    anchor_full_trunc_by_t: dict[float, dict[str, float]] = {}
+    anchor_full_counts_by_t: dict[float, tuple[int, int, int]] = {}
     if need_pw_continuous:
         anchor_full_ls = evaluator.labels_and_scores(
             anchor_score_frame, eval_col=eval_col, score_col=pairwise_cols.anchor_full_col,
@@ -534,6 +1049,26 @@ def _compute_pairwise_stats(
                 anchor_full_auc = compute_auc(anchor_full_ls[0], anchor_full_ls[1])
             if "pairwise_auprc" in requested_stats:
                 anchor_full_auprc = compute_auprc(anchor_full_ls[0], anchor_full_ls[1])
+            for threshold in thresholds:
+                point = compute_threshold_point_metrics(anchor_full_ls[0], anchor_full_ls[1], threshold)
+                anchor_full_point_by_t[threshold] = {
+                    "pairwise_tpr_at_threshold": point.tpr,
+                    "pairwise_fpr_at_threshold": point.fpr,
+                    "pairwise_precision_at_threshold": point.precision,
+                    "pairwise_recall_at_threshold": point.recall,
+                }
+                anchor_full_trunc_by_t[threshold] = {
+                    "pairwise_auc_trunc": compute_auc_trunc(anchor_full_ls[0], anchor_full_ls[1], threshold),
+                    "pairwise_auprc_trunc": compute_auprc_trunc(anchor_full_ls[0], anchor_full_ls[1], threshold),
+                }
+                anchor_full_counts_by_t[threshold] = truncate_counts(anchor_full_ls[0], anchor_full_ls[1], threshold)
+
+    r_full_by_t: list[float] = []
+    if need_pairwise_oe and obs_exp_columns is not None and thresholds:
+        o_c, e_c = obs_exp_columns
+        r_full_by_t = _oe_ratio_for_thresholds(
+            anchor_score_frame, pairwise_cols.anchor_full_col, o_c, e_c, thresholds,
+        )
 
     # Process each VSM pair
     for vsm_base, vsm_col, anchor_pairwise_col in pairwise_cols.vsm_pairs:
@@ -586,18 +1121,117 @@ def _compute_pairwise_stats(
             vsm_pw_ls = evaluator.labels_and_scores(vsm_pw_sf, eval_col=eval_col, score_col=vsm_col)
             anchor_pw_ls = evaluator.labels_and_scores(anchor_pw_sf, eval_col=eval_col, score_col=anchor_pairwise_col)
 
-            for stat_name, anchor_full_val, metric_fn, factory_fn in [
-                ("pairwise_auc", anchor_full_auc, compute_auc, StatFactory.pairwise_auc),
-                ("pairwise_auprc", anchor_full_auprc, compute_auprc, StatFactory.pairwise_auprc),
-            ]:
-                if stat_name not in requested_stats:
-                    continue
-                vsm_pw_val = metric_fn(vsm_pw_ls[0], vsm_pw_ls[1]) if vsm_pw_ls else math.nan
-                anchor_pw_val = metric_fn(anchor_pw_ls[0], anchor_pw_ls[1]) if anchor_pw_ls else math.nan
-                out = factory_fn(anchor_full_val, anchor_pw_val, vsm_pw_val)
+            if "pairwise_auc" in requested_stats:
+                vsm_pw_val = compute_auc(vsm_pw_ls[0], vsm_pw_ls[1]) if vsm_pw_ls else math.nan
+                anchor_pw_val = compute_auc(anchor_pw_ls[0], anchor_pw_ls[1]) if anchor_pw_ls else math.nan
+                p_delong = math.nan
+                if anchor_pw_ls and vsm_pw_ls:
+                    la, sa = anchor_pw_ls
+                    lb, sb = vsm_pw_ls
+                    if len(la) == len(lb) and all(int(a) == int(b) for a, b in zip(la, lb)):
+                        p_delong = delong_two_auc_p_value(la, sa, sb)
+                out = StatFactory.pairwise_auc(
+                    anchor_full_auc, anchor_pw_val, vsm_pw_val, delong_p_value=p_delong,
+                )
                 _append_pairwise_row(
                     rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=vsm_base,
                     threshold=float("nan"), out=out, cont=_NAN_CONTINGENCY,
+                    rows_used=pairwise_rows_used, total_eval_rows=prepared.total_eval_rows,
+                )
+
+            if "pairwise_auprc" in requested_stats:
+                vsm_pw_val = compute_auprc(vsm_pw_ls[0], vsm_pw_ls[1]) if vsm_pw_ls else math.nan
+                anchor_pw_val = compute_auprc(anchor_pw_ls[0], anchor_pw_ls[1]) if anchor_pw_ls else math.nan
+                out = StatFactory.pairwise_auprc(anchor_full_auprc, anchor_pw_val, vsm_pw_val)
+                _append_pairwise_row(
+                    rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=vsm_base,
+                    threshold=float("nan"), out=out, cont=_NAN_CONTINGENCY,
+                    rows_used=pairwise_rows_used, total_eval_rows=prepared.total_eval_rows,
+                )
+            if vsm_pw_ls and anchor_pw_ls and thresholds:
+                for threshold in thresholds:
+                    v_point = compute_threshold_point_metrics(vsm_pw_ls[0], vsm_pw_ls[1], threshold)
+                    a_point = compute_threshold_point_metrics(anchor_pw_ls[0], anchor_pw_ls[1], threshold)
+                    point_pairs = {
+                        "pairwise_tpr_at_threshold": (v_point.tpr, a_point.tpr),
+                        "pairwise_fpr_at_threshold": (v_point.fpr, a_point.fpr),
+                        "pairwise_precision_at_threshold": (v_point.precision, a_point.precision),
+                        "pairwise_recall_at_threshold": (v_point.recall, a_point.recall),
+                    }
+                    for stat_name, (v_value, a_value) in point_pairs.items():
+                        if stat_name not in requested_stats:
+                            continue
+                        anchor_full_value = anchor_full_point_by_t.get(threshold, {}).get(stat_name, math.nan)
+                        adjusted = StatFactory.pairwise_obs_exp_ratio(anchor_full_value, v_value, a_value)
+                        _append_pairwise_row(
+                            rows=rows,
+                            eval_name=eval_col,
+                            filter_name=filter_name,
+                            score_name=vsm_base,
+                            threshold=threshold,
+                            out=PairwiseStatOutput(
+                                stat=stat_name,
+                                value=adjusted.value,
+                                p_value=math.nan,
+                                anchor_value=adjusted.anchor_value,
+                                adjustment_ratio=adjusted.adjustment_ratio,
+                            ),
+                            cont=_NAN_CONTINGENCY,
+                            rows_used=pairwise_rows_used,
+                            total_eval_rows=prepared.total_eval_rows,
+                            rows_retained=float(v_point.rows_retained),
+                            n_pos_retained=float(v_point.n_pos_retained),
+                            n_neg_retained=float(v_point.n_neg_retained),
+                        )
+                    v_trunc = {
+                        "pairwise_auc_trunc": compute_auc_trunc(vsm_pw_ls[0], vsm_pw_ls[1], threshold),
+                        "pairwise_auprc_trunc": compute_auprc_trunc(vsm_pw_ls[0], vsm_pw_ls[1], threshold),
+                    }
+                    a_trunc = {
+                        "pairwise_auc_trunc": compute_auc_trunc(anchor_pw_ls[0], anchor_pw_ls[1], threshold),
+                        "pairwise_auprc_trunc": compute_auprc_trunc(anchor_pw_ls[0], anchor_pw_ls[1], threshold),
+                    }
+                    n_total, n_pos, n_neg = truncate_counts(vsm_pw_ls[0], vsm_pw_ls[1], threshold)
+                    for stat_name in ["pairwise_auc_trunc", "pairwise_auprc_trunc"]:
+                        if stat_name not in requested_stats:
+                            continue
+                        anchor_full_value = anchor_full_trunc_by_t.get(threshold, {}).get(stat_name, math.nan)
+                        adjusted = StatFactory.pairwise_obs_exp_ratio(
+                            anchor_full_value,
+                            v_trunc.get(stat_name, math.nan),
+                            a_trunc.get(stat_name, math.nan),
+                        )
+                        _append_pairwise_row(
+                            rows=rows,
+                            eval_name=eval_col,
+                            filter_name=filter_name,
+                            score_name=vsm_base,
+                            threshold=threshold,
+                            out=PairwiseStatOutput(
+                                stat=stat_name,
+                                value=adjusted.value,
+                                p_value=math.nan,
+                                anchor_value=adjusted.anchor_value,
+                                adjustment_ratio=adjusted.adjustment_ratio,
+                            ),
+                            cont=_NAN_CONTINGENCY,
+                            rows_used=pairwise_rows_used,
+                            total_eval_rows=prepared.total_eval_rows,
+                            rows_retained=float(n_total),
+                            n_pos_retained=float(n_pos),
+                            n_neg_retained=float(n_neg),
+                        )
+
+        if need_pairwise_oe and obs_exp_columns is not None and thresholds:
+            o_c, e_c = obs_exp_columns
+            for t_i, threshold in enumerate(thresholds):
+                r_f = r_full_by_t[t_i] if t_i < len(r_full_by_t) else float("nan")
+                r_v = _oe_ratio_tail(pairwise_df, vsm_col, o_c, e_c, threshold)
+                r_a = _oe_ratio_tail(pairwise_df, anchor_pairwise_col, o_c, e_c, threshold)
+                out = StatFactory.pairwise_obs_exp_ratio(r_f, r_v, r_a)
+                _append_pairwise_row(
+                    rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=vsm_base,
+                    threshold=threshold, out=out, cont=_NAN_CONTINGENCY,
                     rows_used=pairwise_rows_used, total_eval_rows=prepared.total_eval_rows,
                 )
 
@@ -637,24 +1271,94 @@ def _compute_pairwise_stats(
                 threshold=float("nan"), out=out, cont=_NAN_CONTINGENCY,
                 rows_used=anchor_score_frame.rows_used, total_eval_rows=prepared.total_eval_rows,
             )
+        if thresholds:
+            for threshold in thresholds:
+                for stat_name in [
+                    "pairwise_tpr_at_threshold", "pairwise_fpr_at_threshold",
+                    "pairwise_precision_at_threshold", "pairwise_recall_at_threshold",
+                ]:
+                    if stat_name not in requested_stats:
+                        continue
+                    anchor_val = anchor_full_point_by_t.get(threshold, {}).get(stat_name, math.nan)
+                    out = PairwiseStatOutput(
+                        stat=stat_name,
+                        value=anchor_val,
+                        p_value=math.nan,
+                        anchor_value=anchor_val,
+                        adjustment_ratio=1.0,
+                    )
+                    n_total, n_pos, n_neg = anchor_full_counts_by_t.get(threshold, (0, 0, 0))
+                    _append_pairwise_row(
+                        rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=pairwise_cols.anchor_base,
+                        threshold=threshold, out=out, cont=_NAN_CONTINGENCY,
+                        rows_used=anchor_score_frame.rows_used, total_eval_rows=prepared.total_eval_rows,
+                        rows_retained=float(n_total), n_pos_retained=float(n_pos), n_neg_retained=float(n_neg),
+                    )
+                for stat_name in ["pairwise_auc_trunc", "pairwise_auprc_trunc"]:
+                    if stat_name not in requested_stats:
+                        continue
+                    anchor_val = anchor_full_trunc_by_t.get(threshold, {}).get(stat_name, math.nan)
+                    out = PairwiseStatOutput(
+                        stat=stat_name,
+                        value=anchor_val,
+                        p_value=math.nan,
+                        anchor_value=anchor_val,
+                        adjustment_ratio=1.0,
+                    )
+                    n_total, n_pos, n_neg = anchor_full_counts_by_t.get(threshold, (0, 0, 0))
+                    _append_pairwise_row(
+                        rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=pairwise_cols.anchor_base,
+                        threshold=threshold, out=out, cont=_NAN_CONTINGENCY,
+                        rows_used=anchor_score_frame.rows_used, total_eval_rows=prepared.total_eval_rows,
+                        rows_retained=float(n_total), n_pos_retained=float(n_pos), n_neg_retained=float(n_neg),
+                    )
+
+    if need_pairwise_oe and obs_exp_columns is not None and thresholds:
+        for t_i, threshold in enumerate(thresholds):
+            r = r_full_by_t[t_i] if t_i < len(r_full_by_t) else float("nan")
+            out = StatFactory.pairwise_obs_exp_ratio(r, r, r)
+            _append_pairwise_row(
+                rows=rows, eval_name=eval_col, filter_name=filter_name, score_name=pairwise_cols.anchor_base,
+                threshold=threshold, out=out, cont=_NAN_CONTINGENCY,
+                rows_used=anchor_score_frame.rows_used, total_eval_rows=prepared.total_eval_rows,
+            )
 
 
 def _compute_vsm_comparison(
-    conts_by_score: dict[str, tuple[list[Contingency], int]],
+    evaluator: BaseEvaluator,
+    prepared: PreparedFrame,
     eval_col: str,
     filter_name: str,
+    score_cols: list[str],
     thresholds: list[float],
+    method: str = DEFAULT_VSM_COMPARISON_METHOD,
+    *,
+    within_gene_percentile: bool = False,
 ) -> list[dict[str, Any]]:
-    """All-pairs Fisher exact test comparing VSMs via their TP/FP counts."""
-    score_cols = list(conts_by_score.keys())
+    """All-pairs VSM comparison test using TP/FP counts on pair intersections."""
     rows: list[dict[str, Any]] = []
     for idx_i in range(len(score_cols)):
         for idx_j in range(idx_i + 1, len(score_cols)):
             col_i, col_j = score_cols[idx_i], score_cols[idx_j]
-            conts_i, rows_used_i = conts_by_score[col_i]
-            conts_j, rows_used_j = conts_by_score[col_j]
+            pair_df = (
+                prepared.frame
+                .filter(pl.col(col_i).is_not_null() & pl.col(col_j).is_not_null())
+                .collect(streaming=True)
+            )
+            rows_used_pair = pair_df.height
+            if rows_used_pair == 0:
+                continue
+            pair_prepared = PreparedFrame(frame=pair_df.lazy(), total_eval_rows=rows_used_pair)
+            sf_i = evaluator.prepare_score_frame(
+                pair_prepared, score_col=col_i, within_gene_percentile=within_gene_percentile,
+            )
+            sf_j = evaluator.prepare_score_frame(
+                pair_prepared, score_col=col_j, within_gene_percentile=within_gene_percentile,
+            )
+            conts_i = evaluator.contingency_batch(sf_i, eval_col=eval_col, score_col=col_i, thresholds=thresholds)
+            conts_j = evaluator.contingency_batch(sf_j, eval_col=eval_col, score_col=col_j, thresholds=thresholds)
             for t_idx, threshold in enumerate(thresholds):
-                result = StatFactory.vsm_comparison(conts_i[t_idx], conts_j[t_idx])
+                result = StatFactory.vsm_comparison(conts_i[t_idx], conts_j[t_idx], method=method)
                 rows.append({
                     "eval_name": eval_col,
                     "filter_name": filter_name,
@@ -670,8 +1374,9 @@ def _compute_vsm_comparison(
                     "log_ci_upper": result.log_ci_upper,
                     "conf_interval_lower": result.conf_interval_lower,
                     "conf_interval_upper": result.conf_interval_upper,
-                    "rows_used_i": rows_used_i,
-                    "rows_used_j": rows_used_j,
+                    "rows_used_i": rows_used_pair,
+                    "rows_used_j": rows_used_pair,
+                    "rows_used_pair": rows_used_pair,
                 })
     return rows
 
@@ -681,6 +1386,7 @@ def _compute_rows_for_prepared(
     prepared: PreparedFrame,
     eval_col: str,
     filter_name: str,
+    filter_col: str | None,
     score_cols: list[str],
     requested_stats: set[str],
     thresholds: list[float],
@@ -690,41 +1396,72 @@ def _compute_rows_for_prepared(
     *,
     within_gene_percentile: bool = False,
     pvalue_method: str = DEFAULT_PVALUE_METHOD,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    vsm_comparison_method: str = DEFAULT_VSM_COMPARISON_METHOD,
+    gene_col: str | None = None,
+    obs_exp_columns: tuple[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """
     Compute all requested statistics for a prepared frame.
 
-    Delegates to specialized functions for continuous, binary, and pairwise stats.
+    Delegates to specialized functions for continuous, binary, pairwise, and
+    gene-averaged stats.
 
-    Returns (rows, vsm_comparison_rows).
+    Returns (rows, vsm_comparison_rows, curve_rows).
     """
     rows: list[dict[str, Any]] = []
-    need_continuous = "auc" in requested_stats or "auprc" in requested_stats
-    need_binary = "enrichment" in requested_stats or "rate_ratio" in requested_stats
+    curve_rows: list[dict[str, Any]] = []
+    is_obs_exp = obs_exp_columns is not None
+    need_oe = "obs_exp_ratio" in requested_stats and is_obs_exp
+    need_continuous = (not is_obs_exp) and bool(requested_stats & CONTINUOUS_BASE_STATS)
+    need_binary = (not is_obs_exp) and (
+        "enrichment" in requested_stats or "rate_ratio" in requested_stats
+    )
     need_pairwise = bool(requested_stats & PAIRWISE_STATS)
-    need_vsm_comparison = "vsm_comparison" in requested_stats
+    need_vsm_comparison = (not is_obs_exp) and "vsm_comparison" in requested_stats
+    need_gene_avg = (not is_obs_exp) and bool(requested_stats & GENE_AVG_STATS)
 
-    conts_by_score: dict[str, tuple[list[Contingency], int]] = {}
+    prepared_schema = set(prepared.frame.collect_schema().names())
 
     for score_col in score_cols:
-        score_frame = evaluator.prepare_score_frame(
-            prepared, score_col=score_col, within_gene_percentile=within_gene_percentile,
+        sub_prepared = slice_prepared_for_score(
+            prepared,
+            eval_col=eval_col,
+            filter_col=filter_col,
+            score_col=score_col,
+            within_gene_percentile=within_gene_percentile,
+            gene_col=gene_col,
+            schema_names=prepared_schema,
+            obs_exp_columns=obs_exp_columns,
         )
+        score_frame = evaluator.prepare_score_frame(
+            sub_prepared, score_col=score_col, within_gene_percentile=within_gene_percentile,
+        )
+
+        if need_oe and obs_exp_columns is not None and thresholds:
+            oc, ec = obs_exp_columns
+            _compute_obs_exp_ratio_stats(
+                rows, score_frame, eval_col, filter_name, score_col, oc, ec, thresholds, prepared.total_eval_rows,
+            )
 
         if need_continuous:
             _compute_continuous_stats(
-                rows, evaluator, score_frame, eval_col, filter_name, score_col,
-                requested_stats, prepared.total_eval_rows,
+                rows, curve_rows, evaluator, score_frame, eval_col, filter_name, score_col,
+                requested_stats, thresholds, prepared.total_eval_rows,
             )
 
-        if (need_binary or need_vsm_comparison) and thresholds:
-            conts = _compute_binary_stats(
+        if need_binary and thresholds:
+            _compute_binary_stats(
                 rows, evaluator, score_frame, eval_col, filter_name, score_col,
                 requested_stats, thresholds, eval_case_total, eval_ctrl_total, prepared.total_eval_rows,
                 pvalue_method=pvalue_method,
             )
-            if need_vsm_comparison:
-                conts_by_score[score_col] = (conts, score_frame.rows_used)
+
+        if need_gene_avg and gene_col is not None:
+            _compute_gene_averaged_stats(
+                rows, evaluator, score_frame, eval_col, filter_name, score_col,
+                requested_stats, thresholds, eval_case_total, eval_ctrl_total,
+                prepared.total_eval_rows, gene_col=gene_col,
+            )
 
     if need_pairwise and pairwise_cols is not None:
         _compute_pairwise_stats(
@@ -732,18 +1469,22 @@ def _compute_rows_for_prepared(
             requested_stats, thresholds, eval_case_total, eval_ctrl_total, pairwise_cols,
             within_gene_percentile=within_gene_percentile,
             pvalue_method=pvalue_method,
+            obs_exp_columns=obs_exp_columns,
         )
 
     vsm_comparison_rows: list[dict[str, Any]] = []
-    if need_vsm_comparison and len(conts_by_score) >= 2 and thresholds:
+    if need_vsm_comparison and len(score_cols) >= 2 and thresholds:
         vsm_comparison_rows = _compute_vsm_comparison(
-            conts_by_score, eval_col, filter_name, thresholds,
+            evaluator, prepared, eval_col, filter_name, score_cols, thresholds,
+            method=vsm_comparison_method, within_gene_percentile=within_gene_percentile,
         )
 
-    return rows, vsm_comparison_rows
+    return rows, vsm_comparison_rows, curve_rows
 
 
-def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame, pl.DataFrame]:
+def run(
+    args: RunArgs,
+) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     _validate_bootstrap_args(args)
     resources = load_resources(args.resources_json)
     table = get_table_config(resources, args.table_name)
@@ -751,6 +1492,7 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     requested_stats = parse_stats(args.stat)
 
     source = scan_table(table.path)
+    table_schema = set(source.collect_schema().names())
 
     if args.within_gene_percentile:
         if args.eval_level == "gene":
@@ -768,6 +1510,21 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     case_totals_by_eval = parse_eval_totals(args.case_total_by_eval, "--case-total-by-eval")
     ctrl_totals_by_eval = parse_eval_totals(args.ctrl_total_by_eval, "--ctrl-total-by-eval")
 
+    # Validate gene-averaged stats (only when at least one eval is not obs/expected-only)
+    need_gene_avg = bool(requested_stats & GENE_AVG_STATS)
+    any_non_oe_eval = any(not _schema_has_obs_exp(table_schema, e) for e in eval_cols)
+    gene_col: str | None = None
+    if need_gene_avg and any_non_oe_eval:
+        if args.eval_level == "gene":
+            raise ValueError("Gene-averaged stats are not compatible with --eval-level gene.")
+        if args.gene_col not in table_schema:
+            raise ValueError(
+                f"Gene-averaged stats require column '{args.gene_col}' "
+                f"but it is not present in {table.path}. "
+                f"Use --gene-col to specify the gene identifier column."
+            )
+        gene_col = args.gene_col
+
     # Detect pairwise columns if pairwise stats are requested
     need_pairwise = bool(requested_stats & PAIRWISE_STATS)
     pairwise_cols: PairwiseColumns | None = None
@@ -783,22 +1540,35 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
 
     rows: list[dict[str, Any]] = []
     all_vsm_comparison_rows: list[dict[str, Any]] = []
+    all_curve_rows: list[dict[str, Any]] = []
     eval_filter_timings: list[dict[str, Any]] = []
     missing_rows: list[dict[str, Any]] = []
+    coverage_rows: list[dict[str, Any]] = []
 
     for eval_col in eval_cols:
+        eff_stats = _effective_stats_for_eval(
+            requested_stats, _schema_has_obs_exp(table_schema, eval_col),
+        )
+        obs_exp_columns: tuple[str, str] | None = None
+        if _schema_has_obs_exp(table_schema, eval_col):
+            if args.eval_level == "gene":
+                raise ValueError(
+                    "Obs/expected evals require --eval-level variant (use <eval_stem>_observed and <eval_stem>_expected columns)."
+                )
+            obs_exp_columns = obs_exp_column_names(eval_col)
         eval_case_total, eval_ctrl_total = _resolve_eval_totals(
             eval_col=eval_col,
             table_case_totals=table.case_totals,
             table_ctrl_totals=table.ctrl_totals,
             cli_case_totals=case_totals_by_eval,
             cli_ctrl_totals=ctrl_totals_by_eval,
-            global_case_total=args.case_total,
-            global_ctrl_total=args.ctrl_total,
         )
+        _ensure_rate_ratio_denominators(eff_stats, eval_col, eval_case_total, eval_ctrl_total)
         for filter_name, filter_col in filter_pairs:
             combo_start = time.perf_counter()
-            prepared = evaluator.prepare_eval_frame(eval_col=eval_col, filter_col=filter_col)
+            prepared = evaluator.prepare_eval_frame(
+                eval_col=eval_col, filter_col=filter_col, obs_exp_columns=obs_exp_columns,
+            )
             if args.write_missing != "none":
                 missing_rows.extend(
                     _build_missing_variant_rows(
@@ -809,21 +1579,48 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                         mode=args.write_missing,
                     )
                 )
-            combo_rows, vsm_cmp_rows = _compute_rows_for_prepared(
+            if args.write_gene_variant_coverage and gene_col is not None:
+                for sc in table.score_cols:
+                    cov = (
+                        prepared.frame
+                        .group_by(gene_col)
+                        .agg([
+                            pl.col(sc).is_not_null().sum().cast(pl.Int64).alias("n_variants_used"),
+                            pl.col(sc).is_null().sum().cast(pl.Int64).alias("n_variants_excluded"),
+                            pl.len().cast(pl.Int64).alias("n_variants_total"),
+                        ])
+                        .collect(streaming=True)
+                        .with_columns([
+                            pl.lit(eval_col).alias("eval_name"),
+                            pl.lit(filter_name).alias("filter_name"),
+                            pl.lit(sc).alias("score_name"),
+                        ])
+                        .rename({gene_col: "gene"})
+                        .select(["eval_name", "filter_name", "score_name", "gene",
+                                 "n_variants_used", "n_variants_excluded", "n_variants_total"])
+                    )
+                    coverage_rows.extend(cov.to_dicts())
+
+            combo_rows, vsm_cmp_rows, combo_curve_rows = _compute_rows_for_prepared(
                 evaluator=evaluator,
                 prepared=prepared,
                 eval_col=eval_col,
                 filter_name=filter_name,
+                filter_col=filter_col,
                 score_cols=table.score_cols,
-                requested_stats=requested_stats,
+                requested_stats=eff_stats,
                 thresholds=thresholds,
                 eval_case_total=eval_case_total,
                 eval_ctrl_total=eval_ctrl_total,
                 pairwise_cols=pairwise_cols,
                 within_gene_percentile=args.within_gene_percentile,
                 pvalue_method=args.pvalue_method,
+                vsm_comparison_method=args.vsm_comparison_method,
+                gene_col=gene_col,
+                obs_exp_columns=obs_exp_columns,
             )
             all_vsm_comparison_rows.extend(vsm_cmp_rows)
+            all_curve_rows.extend(combo_curve_rows)
 
             # Bootstrap std_error is computed from replicate values only; point value/p_value stay from combo_rows.
             if args.bootstrap_samples is not None and combo_rows:
@@ -836,28 +1633,38 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                         sampled_df = base_df.sample(n=n_rows, with_replacement=True, shuffle=False, seed=int(rng.integers(0, 2**31 - 1)))
                         sample_prepared = PreparedFrame(frame=sampled_df.lazy(), total_eval_rows=sampled_df.height)
                         sample_evaluator = _choose_evaluator(args.eval_level, sample_prepared.frame)
-                        sample_rows, _ = _compute_rows_for_prepared(
+                        sample_rows, _, _ = _compute_rows_for_prepared(
                             evaluator=sample_evaluator,
                             prepared=sample_prepared,
                             eval_col=eval_col,
                             filter_name=filter_name,
+                            filter_col=filter_col,
                             score_cols=table.score_cols,
-                            requested_stats=requested_stats,
+                            requested_stats=eff_stats,
                             thresholds=thresholds,
                             eval_case_total=eval_case_total,
                             eval_ctrl_total=eval_ctrl_total,
                             pairwise_cols=pairwise_cols,
                             within_gene_percentile=args.within_gene_percentile,
                             pvalue_method=args.pvalue_method,
+                            vsm_comparison_method=args.vsm_comparison_method,
+                            gene_col=gene_col,
+                            obs_exp_columns=obs_exp_columns,
                         )
                         for row in sample_rows:
                             key = _row_identity_key(row)
                             bootstrap_values_by_key.setdefault(key, []).append(float(row["value"]))
                 for row in combo_rows:
                     row["std_error"] = _compute_std_error(bootstrap_values_by_key.get(_row_identity_key(row), []))
+                    if row.get("stat") == "enrichment":
+                        row["enrichment_ci_lower"] = float("nan")
+                        row["enrichment_ci_upper"] = float("nan")
+                    if row.get("stat") == "rate_ratio":
+                        row["rate_ratio_ci_lower"] = float("nan")
+                        row["rate_ratio_ci_upper"] = float("nan")
             else:
                 for row in combo_rows:
-                    row["std_error"] = math.nan
+                    row["std_error"] = float(row.get("std_error", math.nan))
             rows.extend(combo_rows)
 
             eval_filter_timings.append(
@@ -897,9 +1704,37 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
             "conf_interval_upper": pl.Float64,
             "rows_used_i": pl.Int64,
             "rows_used_j": pl.Int64,
+            "rows_used_pair": pl.Int64,
         }
     )
-    return pl.DataFrame(rows), eval_filter_timings, missing_df, vsm_comparison_df
+    coverage_df = pl.DataFrame(coverage_rows) if coverage_rows else pl.DataFrame(
+        schema={
+            "eval_name": pl.String,
+            "filter_name": pl.String,
+            "score_name": pl.String,
+            "gene": pl.String,
+            "n_variants_used": pl.Int64,
+            "n_variants_excluded": pl.Int64,
+            "n_variants_total": pl.Int64,
+        }
+    )
+    curves_df = pl.DataFrame(all_curve_rows) if all_curve_rows else pl.DataFrame(
+        schema={
+            "eval_name": pl.String,
+            "filter_name": pl.String,
+            "score_name": pl.String,
+            "curve_type": pl.String,
+            "point_idx": pl.Int64,
+            "score_threshold": pl.Float64,
+            "fpr": pl.Float64,
+            "tpr": pl.Float64,
+            "precision": pl.Float64,
+            "recall": pl.Float64,
+            "rows_used": pl.Int64,
+            "total_eval_rows": pl.Int64,
+        }
+    )
+    return pl.DataFrame(rows), eval_filter_timings, missing_df, vsm_comparison_df, coverage_df, curves_df
 
 
 def main() -> None:
@@ -913,8 +1748,6 @@ def main() -> None:
         eval_set=ns.eval_set,
         filters=ns.filters,
         thresholds=ns.thresholds,
-        case_total=ns.case_total,
-        ctrl_total=ns.ctrl_total,
         case_total_by_eval=ns.case_total_by_eval,
         ctrl_total_by_eval=ns.ctrl_total_by_eval,
         bootstrap_samples=ns.bootstrap,
@@ -922,16 +1755,23 @@ def main() -> None:
         out_fname=ns.out_fname,
         write_missing=ns.write_missing,
         pvalue_method=ns.pvalue_method,
+        vsm_comparison_method=ns.vsm_comparison_method,
+        gene_col=ns.gene_col,
+        write_gene_variant_coverage=ns.write_gene_variant_coverage,
     )
     try:
         output_paths = _resolve_output_paths(args.out_fname)
         start = time.perf_counter()
-        out, eval_filter_timings, missing_df, vsm_comparison_df = run(args)
+        out, eval_filter_timings, missing_df, vsm_comparison_df, coverage_df, curves_df = run(args)
         write_tsv(out, output_paths["tsv"])
         if args.write_missing != "none":
             write_tsv(missing_df, output_paths["missing_tsv"])
         if vsm_comparison_df.height > 0:
             write_tsv(vsm_comparison_df, output_paths["vsm_comparison_tsv"])
+        if coverage_df.height > 0:
+            write_tsv(coverage_df, output_paths["gene_variant_coverage_tsv"])
+        if curves_df.height > 0:
+            write_tsv(curves_df, output_paths["curves_tsv"])
         elapsed_seconds = time.perf_counter() - start
         write_json(
             {

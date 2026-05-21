@@ -15,6 +15,42 @@ if TYPE_CHECKING:
     from biostat_cli.pipeline.config import PipelineConfig
 
 
+def _finite_num(x: object) -> bool:
+    return x is not None and isinstance(x, (int, float)) and not (isinstance(x, float) and math.isnan(x))
+
+
+def _value_ci_yerr_arrays(
+    values: list[float],
+    lows: list[float] | None,
+    highs: list[float] | None,
+    stderrs: list[float],
+) -> tuple[list[float], list[float]]:
+    """Asymmetric (lower, upper) errors on the value scale for matplotlib errorbar."""
+    yerr_lo: list[float] = []
+    yerr_hi: list[float] = []
+    for i, v in enumerate(values):
+        lo = lows[i] if lows is not None else float("nan")
+        hi = highs[i] if highs is not None else float("nan")
+        se = stderrs[i]
+        if _finite_num(lo) and _finite_num(hi) and _finite_num(v):
+            yerr_lo_v = float(v) - float(lo)
+            yerr_hi_v = float(hi) - float(v)
+            if yerr_lo_v >= 0 and yerr_hi_v >= 0:
+                yerr_lo.append(yerr_lo_v)
+                yerr_hi.append(yerr_hi_v)
+            else:
+                yerr_lo.append(float("nan"))
+                yerr_hi.append(float("nan"))
+        elif _finite_num(se) and _finite_num(v):
+            s = float(se)
+            yerr_lo.append(s)
+            yerr_hi.append(s)
+        else:
+            yerr_lo.append(float("nan"))
+            yerr_hi.append(float("nan"))
+    return yerr_lo, yerr_hi
+
+
 def format_method_tick(method_label: str, rows_used_frac: float | None) -> str:
     """Format method label with optional coverage percentage."""
     if rows_used_frac is None or (isinstance(rows_used_frac, float) and math.isnan(rows_used_frac)):
@@ -76,7 +112,28 @@ def render_mode_figure(
         rows_used_frac = sub["rows_used_frac"].to_list()
 
         x = list(range(len(methods)))
-        yerr = [float("nan") if (v is None or (isinstance(v, float) and math.isnan(v))) else v for v in stderrs]
+        cols = set(sub.columns)
+        use_ci = False
+        if panel_stat == "enrichment" and "enrichment_ci_lower" in cols and "enrichment_ci_upper" in cols:
+            ylo, yhi = _value_ci_yerr_arrays(
+                values,
+                sub["enrichment_ci_lower"].to_list(),
+                sub["enrichment_ci_upper"].to_list(),
+                stderrs,
+            )
+            yerr = [ylo, yhi]
+            use_ci = True
+        elif panel_stat == "rate_ratio" and "rate_ratio_ci_lower" in cols and "rate_ratio_ci_upper" in cols:
+            ylo, yhi = _value_ci_yerr_arrays(
+                values,
+                sub["rate_ratio_ci_lower"].to_list(),
+                sub["rate_ratio_ci_upper"].to_list(),
+                stderrs,
+            )
+            yerr = [ylo, yhi]
+            use_ci = True
+        if not use_ci:
+            yerr = [float("nan") if (v is None or (isinstance(v, float) and math.isnan(v))) else v for v in stderrs]
 
         ax.errorbar(x, values, yerr=yerr, fmt="o", capsize=3)
         ax.axhline(1.0, linestyle="--", linewidth=1)

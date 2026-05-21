@@ -11,13 +11,36 @@ from typing import Any
 
 import polars as pl
 
-from biostat_cli.config import get_table_config, load_resources, parse_csv_arg, parse_stats, parse_thresholds
+from biostat_cli.cli import (
+    _compute_rows_for_prepared,
+    _effective_stats_for_eval,
+    _ensure_rate_ratio_denominators,
+    _resolve_eval_totals,
+    _schema_has_obs_exp,
+)
+from biostat_cli.config import (
+    PAIRWISE_STATS,
+    PairwiseColumns,
+    detect_pairwise_columns,
+    get_table_config,
+    load_resources,
+    obs_exp_column_names,
+    parse_csv_arg,
+    parse_eval_totals,
+    parse_stats,
+    parse_thresholds,
+)
 from biostat_cli.evaluators.base import BaseEvaluator
 from biostat_cli.evaluators.gene import GeneEvaluator, SUM_VARIANTS_SENTINEL
 from biostat_cli.evaluators.variant import VariantEvaluator
 from biostat_cli.io import scan_table, write_json, write_tsv
-from biostat_cli.stats.binary import DEFAULT_PVALUE_METHOD, PVALUE_METHODS
-from biostat_cli.stats.factory import StatFactory
+from biostat_cli.stats.binary import (
+    DEFAULT_PVALUE_METHOD,
+    DEFAULT_VSM_COMPARISON_METHOD,
+    PVALUE_METHODS,
+    VSM_COMPARISON_METHODS,
+)
+
 from biostat_cli.utils import WITHIN_GENE_COL
 
 ERROR_INVALID_THRESHOLD = 22
@@ -32,12 +55,13 @@ class RunArgs:
     eval_set: str | None
     filters: str | None
     thresholds: str | None
-    case_total: float | None
-    ctrl_total: float | None
+    case_total_by_eval: str | None
+    ctrl_total_by_eval: str | None
     out_fname: str
     write_missing: str
     within_gene_percentile: bool = False
     pvalue_method: str = DEFAULT_PVALUE_METHOD
+    vsm_comparison_method: str = DEFAULT_VSM_COMPARISON_METHOD
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -49,8 +73,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-set", default=None, help="Comma-separated eval columns")
     parser.add_argument("--filters", default=None, help="Comma-separated logical filter names")
     parser.add_argument("--thresholds", default=None, help="Comma-separated percentile thresholds")
-    parser.add_argument("--case-total", type=float, default=None)
-    parser.add_argument("--ctrl-total", type=float, default=None)
+    parser.add_argument(
+        "--case-total-by-eval",
+        default=None,
+        help='Comma-separated per-eval case totals in format "eval_name:value"',
+    )
+    parser.add_argument(
+        "--ctrl-total-by-eval",
+        default=None,
+        help='Comma-separated per-eval control totals in format "eval_name:value"',
+    )
     parser.add_argument(
         "--within-gene-percentile",
         action="store_true",
@@ -62,6 +94,12 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=list(PVALUE_METHODS),
         default=DEFAULT_PVALUE_METHOD,
         help=f"P-value calculation method (default: {DEFAULT_PVALUE_METHOD})",
+    )
+    parser.add_argument(
+        "--vsm-comparison-method",
+        choices=list(VSM_COMPARISON_METHODS),
+        default=DEFAULT_VSM_COMPARISON_METHOD,
+        help="VSM pairwise comparison method for vsm_comparison output (default: fisher)",
     )
     parser.add_argument("--out-fname", required=True)
     parser.add_argument("--write-missing", choices=["none", "all", "any"], default="none")
@@ -104,41 +142,6 @@ def _resolve_filter_cols(raw: str | None, metadata_filters: dict[str, str]) -> l
     return [("none", None), *pairs]
 
 
-def _append_binary_row(
-    rows: list[dict[str, Any]],
-    eval_name: str,
-    filter_name: str,
-    score_name: str,
-    threshold: float,
-    stat_name: str,
-    value: float,
-    p_value: float,
-    tp: float,
-    fp: float,
-    tn: float,
-    fn: float,
-    rows_used: int,
-    total_eval_rows: int,
-) -> None:
-    rows.append(
-        {
-            "eval_name": eval_name,
-            "filter_name": filter_name,
-            "score_name": score_name,
-            "threshold": threshold,
-            "stat": stat_name,
-            "value": value,
-            "p_value": p_value,
-            "tp": tp,
-            "fp": fp,
-            "tn": tn,
-            "fn": fn,
-            "rows_used": rows_used,
-            "total_eval_rows": total_eval_rows,
-        }
-    )
-
-
 def _resolve_output_paths(out_fname: str) -> dict[str, str]:
     base = Path(out_fname)
     if base.suffix:
@@ -149,6 +152,7 @@ def _resolve_output_paths(out_fname: str) -> dict[str, str]:
         "log": f"{prefix}_log.json",
         "missing_tsv": f"{prefix}_missing.tsv",
         "vsm_comparison_tsv": f"{prefix}_vsm_comparison.tsv",
+        "curves_tsv": f"{prefix}_curves.tsv",
     }
 
 
@@ -295,41 +299,8 @@ def _build_missing_variant_rows(
     return report.select(out_cols).collect(streaming=True).to_dicts()
 
 
-def _compute_vsm_comparison_parallel(
-    conts_by_score: dict[str, tuple[list, int]],
-    eval_col: str,
-    filter_name: str,
-    thresholds: list[float],
-) -> list[dict[str, Any]]:
-    """All-pairs Fisher exact test comparing VSMs via their TP/FP counts."""
-    score_cols = list(conts_by_score.keys())
-    rows: list[dict[str, Any]] = []
-    for idx_i in range(len(score_cols)):
-        for idx_j in range(idx_i + 1, len(score_cols)):
-            col_i, col_j = score_cols[idx_i], score_cols[idx_j]
-            conts_i, rows_used_i = conts_by_score[col_i]
-            conts_j, rows_used_j = conts_by_score[col_j]
-            for t_idx, threshold in enumerate(thresholds):
-                result = StatFactory.vsm_comparison(conts_i[t_idx], conts_j[t_idx])
-                rows.append({
-                    "eval_name": eval_col,
-                    "filter_name": filter_name,
-                    "vsm_i": col_i,
-                    "vsm_j": col_j,
-                    "threshold": threshold,
-                    "odds_ratio": result.odds_ratio,
-                    "p_greater": result.p_greater,
-                    "p_less": result.p_less,
-                    "log_odds_ratio": result.log_odds_ratio,
-                    "standard_error": result.standard_error,
-                    "log_ci_lower": result.log_ci_lower,
-                    "log_ci_upper": result.log_ci_upper,
-                    "conf_interval_lower": result.conf_interval_lower,
-                    "conf_interval_upper": result.conf_interval_upper,
-                    "rows_used_i": rows_used_i,
-                    "rows_used_j": rows_used_j,
-                })
-    return rows
+
+
 
 
 def _run_eval_filter_combo(
@@ -342,10 +313,24 @@ def _run_eval_filter_combo(
     filter_name: str,
     filter_col: str | None,
     missing_mode: str | None,
-) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    table_schema: set[str],
+    pairwise_cols: PairwiseColumns | None,
+    eval_case_total: float | None,
+    eval_ctrl_total: float | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     combo_start = time.perf_counter()
     evaluator = _choose_evaluator(args.eval_level, source)
-    prepared = evaluator.prepare_eval_frame(eval_col=eval_col, filter_col=filter_col)
+    obs_exp_columns: tuple[str, str] | None = None
+    if _schema_has_obs_exp(table_schema, eval_col):
+        if args.eval_level == "gene":
+            raise ValueError(
+                "Obs/expected evals ({stem}_observed / {stem}_expected) require --eval-level variant."
+            )
+        obs_exp_columns = obs_exp_column_names(eval_col)
+    eff_stats = _effective_stats_for_eval(requested_stats, obs_exp_columns is not None)
+    prepared = evaluator.prepare_eval_frame(
+        eval_col=eval_col, filter_col=filter_col, obs_exp_columns=obs_exp_columns,
+    )
     combo_missing_rows: list[dict[str, Any]] = []
     if missing_mode is not None:
         combo_missing_rows = _build_missing_variant_rows(
@@ -356,122 +341,36 @@ def _run_eval_filter_combo(
             mode=missing_mode,
         )
 
-    need_labels = "auc" in requested_stats or "auprc" in requested_stats
-    need_cont = "enrichment" in requested_stats or "rate_ratio" in requested_stats
-    need_vsm_comparison = "vsm_comparison" in requested_stats
-
-    conts_by_score: dict[str, tuple[list, int]] = {}
-
-    combo_rows: list[dict[str, Any]] = []
-    for score_col in score_cols:
-        score_frame = evaluator.prepare_score_frame(
-            prepared, score_col=score_col, within_gene_percentile=args.within_gene_percentile,
-        )
-
-        if need_labels:
-            labels_scores = evaluator.labels_and_scores(score_frame, eval_col=eval_col, score_col=score_col)
-            labels = labels_scores[0] if labels_scores else None
-            scores = labels_scores[1] if labels_scores else None
-            if "auc" in requested_stats:
-                out = StatFactory.auc(labels, scores)
-                _append_binary_row(
-                    rows=combo_rows,
-                    eval_name=eval_col,
-                    filter_name=filter_name,
-                    score_name=score_col,
-                    threshold=float("nan"),
-                    stat_name=out.stat,
-                    value=out.value,
-                    p_value=out.p_value,
-                    tp=float("nan"),
-                    fp=float("nan"),
-                    tn=float("nan"),
-                    fn=float("nan"),
-                    rows_used=score_frame.rows_used,
-                    total_eval_rows=prepared.total_eval_rows,
-                )
-            if "auprc" in requested_stats:
-                out = StatFactory.auprc(labels, scores)
-                _append_binary_row(
-                    rows=combo_rows,
-                    eval_name=eval_col,
-                    filter_name=filter_name,
-                    score_name=score_col,
-                    threshold=float("nan"),
-                    stat_name=out.stat,
-                    value=out.value,
-                    p_value=out.p_value,
-                    tp=float("nan"),
-                    fp=float("nan"),
-                    tn=float("nan"),
-                    fn=float("nan"),
-                    rows_used=score_frame.rows_used,
-                    total_eval_rows=prepared.total_eval_rows,
-                )
-
-        if (need_cont or need_vsm_comparison) and thresholds:
-            conts = evaluator.contingency_batch(
-                score_frame, eval_col=eval_col, score_col=score_col, thresholds=thresholds
-            )
-            if need_vsm_comparison:
-                conts_by_score[score_col] = (conts, score_frame.rows_used)
-            if "enrichment" in requested_stats:
-                enr_results = StatFactory.enrichment_batch(conts, pvalue_method=args.pvalue_method)
-                for threshold, cont, out in zip(thresholds, conts, enr_results):
-                    _append_binary_row(
-                        rows=combo_rows,
-                        eval_name=eval_col,
-                        filter_name=filter_name,
-                        score_name=score_col,
-                        threshold=threshold,
-                        stat_name=out.stat,
-                        value=out.value,
-                        p_value=out.p_value,
-                        tp=cont.tp,
-                        fp=cont.fp,
-                        tn=cont.tn,
-                        fn=cont.fn,
-                        rows_used=score_frame.rows_used,
-                        total_eval_rows=prepared.total_eval_rows,
-                    )
-            if "rate_ratio" in requested_stats:
-                rr_results = StatFactory.rate_ratio_batch(
-                    conts, case_total=args.case_total, ctrl_total=args.ctrl_total,
-                    pvalue_method=args.pvalue_method,
-                )
-                for threshold, cont, out in zip(thresholds, conts, rr_results):
-                    _append_binary_row(
-                        rows=combo_rows,
-                        eval_name=eval_col,
-                        filter_name=filter_name,
-                        score_name=score_col,
-                        threshold=threshold,
-                        stat_name=out.stat,
-                        value=out.value,
-                        p_value=out.p_value,
-                        tp=cont.tp,
-                        fp=cont.fp,
-                        tn=cont.tn,
-                        fn=cont.fn,
-                        rows_used=score_frame.rows_used,
-                        total_eval_rows=prepared.total_eval_rows,
-                    )
-
-    vsm_cmp_rows: list[dict[str, Any]] = []
-    if need_vsm_comparison and len(conts_by_score) >= 2 and thresholds:
-        vsm_cmp_rows = _compute_vsm_comparison_parallel(
-            conts_by_score, eval_col, filter_name, thresholds,
-        )
+    combo_rows, vsm_cmp_rows, curve_rows = _compute_rows_for_prepared(
+        evaluator=evaluator,
+        prepared=prepared,
+        eval_col=eval_col,
+        filter_name=filter_name,
+        filter_col=filter_col,
+        score_cols=score_cols,
+        requested_stats=eff_stats,
+        thresholds=thresholds,
+        eval_case_total=eval_case_total,
+        eval_ctrl_total=eval_ctrl_total,
+        pairwise_cols=pairwise_cols,
+        within_gene_percentile=args.within_gene_percentile,
+        pvalue_method=args.pvalue_method,
+        vsm_comparison_method=args.vsm_comparison_method,
+        gene_col=None,
+        obs_exp_columns=obs_exp_columns,
+    )
 
     timing = {
         "eval_name": eval_col,
         "filter_name": filter_name,
         "elapsed_seconds": time.perf_counter() - combo_start,
     }
-    return combo_rows, timing, combo_missing_rows, vsm_cmp_rows
+    return combo_rows, timing, combo_missing_rows, vsm_cmp_rows, curve_rows
 
 
-def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame, pl.DataFrame]:
+def run(
+    args: RunArgs,
+) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     resources = load_resources(args.resources_json)
     table = get_table_config(resources, args.table_name)
     thresholds = parse_thresholds(args.thresholds)
@@ -479,6 +378,19 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
 
     # Share a single LazyFrame across all workers so parquet metadata is read once.
     source = scan_table(table.path)
+    table_column_names = source.collect_schema().names()
+    table_schema = set(table_column_names)
+
+    need_pairwise = bool(requested_stats & PAIRWISE_STATS)
+    pairwise_cols: PairwiseColumns | None = None
+    if need_pairwise:
+        pairwise_cols = detect_pairwise_columns(table_column_names)
+        if pairwise_cols is None:
+            raise ValueError(
+                "Pairwise stats requested but pairwise column structure not detected. "
+                "Expected columns: {anchor}_anchor_percentile, {vsm}_percentile_with_anchor, "
+                "{anchor}_anchor_percentile_with_{vsm}"
+            )
 
     if args.within_gene_percentile:
         if args.eval_level == "gene":
@@ -492,6 +404,22 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     eval_cols = _resolve_eval_cols(args.eval_set, table.evals, args.eval_level)
     filter_pairs = _resolve_filter_cols(args.filters, table.filters)
 
+    case_totals_by_eval = parse_eval_totals(args.case_total_by_eval, "--case-total-by-eval")
+    ctrl_totals_by_eval = parse_eval_totals(args.ctrl_total_by_eval, "--ctrl-total-by-eval")
+
+    totals_by_eval: dict[str, tuple[float | None, float | None]] = {}
+    for eval_col in eval_cols:
+        eff_stats = _effective_stats_for_eval(requested_stats, _schema_has_obs_exp(table_schema, eval_col))
+        eval_case_total, eval_ctrl_total = _resolve_eval_totals(
+            eval_col=eval_col,
+            table_case_totals=table.case_totals,
+            table_ctrl_totals=table.ctrl_totals,
+            cli_case_totals=case_totals_by_eval,
+            cli_ctrl_totals=ctrl_totals_by_eval,
+        )
+        _ensure_rate_ratio_denominators(eff_stats, eval_col, eval_case_total, eval_ctrl_total)
+        totals_by_eval[eval_col] = (eval_case_total, eval_ctrl_total)
+
     # Parallel work unit is one eval/filter pair, so multiple eval sets also run concurrently.
     combos = [
         (idx, eval_col, filter_name, filter_col)
@@ -504,11 +432,13 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     timings_by_idx: dict[int, dict[str, Any]] = {}
     missing_by_idx: dict[int, list[dict[str, Any]]] = {}
     vsm_cmp_by_idx: dict[int, list[dict[str, Any]]] = {}
+    curve_by_idx: dict[int, list[dict[str, Any]]] = {}
     max_workers = min(len(combos), os.cpu_count() or 1)
 
     if max_workers <= 1:
         for idx, eval_col, filter_name, filter_col in combos:
-            combo_rows, combo_timing, combo_missing_rows, combo_vsm_cmp = _run_eval_filter_combo(
+            ect, ecf = totals_by_eval[eval_col]
+            combo_rows, combo_timing, combo_missing_rows, combo_vsm_cmp, combo_curves = _run_eval_filter_combo(
                 args=args,
                 source=source,
                 score_cols=table.score_cols,
@@ -518,11 +448,16 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                 filter_name=filter_name,
                 filter_col=filter_col,
                 missing_mode=args.write_missing if args.write_missing != "none" else None,
+                table_schema=table_schema,
+                pairwise_cols=pairwise_cols,
+                eval_case_total=ect,
+                eval_ctrl_total=ecf,
             )
             rows_by_idx[idx] = combo_rows
             timings_by_idx[idx] = combo_timing
             missing_by_idx[idx] = combo_missing_rows
             vsm_cmp_by_idx[idx] = combo_vsm_cmp
+            curve_by_idx[idx] = combo_curves
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
@@ -537,16 +472,21 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
                     filter_name,
                     filter_col,
                     args.write_missing if args.write_missing != "none" else None,
+                    table_schema,
+                    pairwise_cols,
+                    totals_by_eval[eval_col][0],
+                    totals_by_eval[eval_col][1],
                 ): idx
                 for idx, eval_col, filter_name, filter_col in combos
             }
             for future in as_completed(future_map):
                 idx = future_map[future]
-                combo_rows, combo_timing, combo_missing_rows, combo_vsm_cmp = future.result()
+                combo_rows, combo_timing, combo_missing_rows, combo_vsm_cmp, combo_curves = future.result()
                 rows_by_idx[idx] = combo_rows
                 timings_by_idx[idx] = combo_timing
                 missing_by_idx[idx] = combo_missing_rows
                 vsm_cmp_by_idx[idx] = combo_vsm_cmp
+                curve_by_idx[idx] = combo_curves
 
     rows: list[dict[str, Any]] = []
     for idx in sorted(rows_by_idx.keys()):
@@ -558,6 +498,9 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
     all_vsm_cmp_rows: list[dict[str, Any]] = []
     for idx in sorted(vsm_cmp_by_idx.keys()):
         all_vsm_cmp_rows.extend(vsm_cmp_by_idx[idx])
+    all_curve_rows: list[dict[str, Any]] = []
+    for idx in sorted(curve_by_idx.keys()):
+        all_curve_rows.extend(curve_by_idx[idx])
     if missing_rows:
         missing_df = _sort_missing_df(pl.DataFrame(missing_rows))
     else:
@@ -588,9 +531,37 @@ def run(args: RunArgs) -> tuple[pl.DataFrame, list[dict[str, Any]], pl.DataFrame
             "conf_interval_upper": pl.Float64,
             "rows_used_i": pl.Int64,
             "rows_used_j": pl.Int64,
+            "rows_used_pair": pl.Int64,
         }
     )
-    return pl.DataFrame(rows), timings, missing_df, vsm_comparison_df
+    empty_coverage_df = pl.DataFrame(
+        schema={
+            "eval_name": pl.String,
+            "filter_name": pl.String,
+            "score_name": pl.String,
+            "gene": pl.String,
+            "n_variants_used": pl.Int64,
+            "n_variants_excluded": pl.Int64,
+            "n_variants_total": pl.Int64,
+        }
+    )
+    curves_df = pl.DataFrame(all_curve_rows) if all_curve_rows else pl.DataFrame(
+        schema={
+            "eval_name": pl.String,
+            "filter_name": pl.String,
+            "score_name": pl.String,
+            "curve_type": pl.String,
+            "point_idx": pl.Int64,
+            "score_threshold": pl.Float64,
+            "fpr": pl.Float64,
+            "tpr": pl.Float64,
+            "precision": pl.Float64,
+            "recall": pl.Float64,
+            "rows_used": pl.Int64,
+            "total_eval_rows": pl.Int64,
+        }
+    )
+    return pl.DataFrame(rows), timings, missing_df, vsm_comparison_df, empty_coverage_df, curves_df
 
 
 def main() -> None:
@@ -604,22 +575,25 @@ def main() -> None:
         eval_set=ns.eval_set,
         filters=ns.filters,
         thresholds=ns.thresholds,
-        case_total=ns.case_total,
-        ctrl_total=ns.ctrl_total,
+        case_total_by_eval=ns.case_total_by_eval,
+        ctrl_total_by_eval=ns.ctrl_total_by_eval,
         within_gene_percentile=ns.within_gene_percentile,
         out_fname=ns.out_fname,
         write_missing=ns.write_missing,
         pvalue_method=ns.pvalue_method,
+        vsm_comparison_method=ns.vsm_comparison_method,
     )
     try:
         output_paths = _resolve_output_paths(args.out_fname)
         start = time.perf_counter()
-        out, eval_filter_timings, missing_df, vsm_comparison_df = run(args)
+        out, eval_filter_timings, missing_df, vsm_comparison_df, _, curves_df = run(args)
         write_tsv(out, output_paths["tsv"])
         if args.write_missing != "none":
             write_tsv(missing_df, output_paths["missing_tsv"])
         if vsm_comparison_df.height > 0:
             write_tsv(vsm_comparison_df, output_paths["vsm_comparison_tsv"])
+        if curves_df.height > 0:
+            write_tsv(curves_df, output_paths["curves_tsv"])
         elapsed_seconds = time.perf_counter() - start
         write_json(
             {

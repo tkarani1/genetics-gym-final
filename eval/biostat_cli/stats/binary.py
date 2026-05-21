@@ -4,18 +4,28 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.stats import fisher_exact, poisson
+from scipy.stats import binom, fisher_exact, poisson
 
 from biostat_cli.evaluators.base import Contingency
 
 PVALUE_METHODS = ("fisher", "poisson")
 DEFAULT_PVALUE_METHOD = "fisher"
+VSM_COMPARISON_METHODS = ("fisher", "poisson")
+DEFAULT_VSM_COMPARISON_METHOD = "fisher"
+
+# 95% Wald intervals: exp(log(metric) ± z * SE(log metric)).
+_LOG_RATIO_CI_Z = 1.96
 
 
 @dataclass(frozen=True)
 class BinaryStatResult:
     value: float
     p_value: float
+    std_error: float = math.nan
+    enrichment_ci_lower: float = math.nan
+    enrichment_ci_upper: float = math.nan
+    rate_ratio_ci_lower: float = math.nan
+    rate_ratio_ci_upper: float = math.nan
 
 
 @dataclass(frozen=True)
@@ -34,6 +44,47 @@ def _safe_div(num: float, den: float) -> float:
     return num / den
 
 
+def _enrichment_stderr_ci_from_cells(tp: float, fp: float, fn: float, tn: float) -> tuple[float, float, float]:
+    """SE(ln LR+) and 95% CI bounds on LR+ scale for one 2×2 table.
+
+    LR+ = (TP/(TP+FN)) / (FP/(FP+TN));
+    SE(ln LR+) = sqrt((1/TP - 1/(TP+FN)) + (1/FP - 1/(FP+TN))).
+    Returns (nan, nan, nan) if undefined.
+    """
+    pos_d = tp + fn
+    neg_d = fp + tn
+    if tp <= 0 or fp <= 0 or pos_d <= 0 or neg_d <= 0:
+        return math.nan, math.nan, math.nan
+    term_pos = (1.0 / tp) - (1.0 / pos_d)
+    term_neg = (1.0 / fp) - (1.0 / neg_d)
+    if term_pos < 0 or term_neg < 0:
+        return math.nan, math.nan, math.nan
+    rad = term_pos + term_neg
+    if rad < 0:
+        return math.nan, math.nan, math.nan
+    se = math.sqrt(rad)
+    case_r = tp / pos_d
+    ctrl_r = fp / neg_d
+    if ctrl_r <= 0:
+        return math.nan, math.nan, math.nan
+    lr = case_r / ctrl_r
+    if lr <= 0 or math.isnan(lr):
+        return math.nan, math.nan, math.nan
+    log_lr = math.log(lr)
+    margin = _LOG_RATIO_CI_Z * se
+    return se, math.exp(log_lr - margin), math.exp(log_lr + margin)
+
+
+def enrichment_log_lr_stderr_ci(cont: Contingency) -> tuple[float, float, float]:
+    """Analytic SE(ln LR+) and 95% CI on LR+; raw cells first, else +0.5 to all four cells."""
+    se, lo, hi = _enrichment_stderr_ci_from_cells(cont.tp, cont.fp, cont.fn, cont.tn)
+    if not math.isnan(se):
+        return se, lo, hi
+    return _enrichment_stderr_ci_from_cells(
+        cont.tp + 0.5, cont.fp + 0.5, cont.fn + 0.5, cont.tn + 0.5,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Single-contingency helpers (kept for backward compatibility)
 # ---------------------------------------------------------------------------
@@ -42,7 +93,33 @@ def enrichment(cont: Contingency, pvalue_method: str = DEFAULT_PVALUE_METHOD) ->
     case_rate = _safe_div(cont.tp, cont.tp + cont.fn)
     ctrl_rate = _safe_div(cont.fp, cont.fp + cont.tn)
     value = _safe_div(case_rate, ctrl_rate) if not math.isnan(case_rate) and not math.isnan(ctrl_rate) else math.nan
-    return BinaryStatResult(value=value, p_value=compute_p_value(cont, pvalue_method))
+    se, ci_lo, ci_hi = enrichment_log_lr_stderr_ci(cont)
+    return BinaryStatResult(
+        value=value,
+        p_value=compute_p_value(cont, pvalue_method),
+        std_error=se,
+        enrichment_ci_lower=ci_lo,
+        enrichment_ci_upper=ci_hi,
+    )
+
+
+def enrichment_fisher_std_error(cont: Contingency) -> float:
+    """Analytic stderr proxy for Fisher enrichment using log(OR) Wald SE.
+
+    Uses Haldane-Anscombe correction and returns the standard error on the
+    log-odds-ratio scale:
+      SE(log(OR)) = sqrt(1/a + 1/b + 1/c + 1/d)
+    where a,b,c,d are TP,FP,FN,TN cells with +0.5 correction.
+    """
+    above_total = cont.tp + cont.fp
+    below_total = cont.fn + cont.tn
+    if above_total <= 0 or below_total <= 0:
+        return math.nan
+    a = float(cont.tp) + 0.5
+    b = float(cont.fp) + 0.5
+    c = float(cont.fn) + 0.5
+    d = float(cont.tn) + 0.5
+    return math.sqrt((1.0 / a) + (1.0 / b) + (1.0 / c) + (1.0 / d))
 
 
 def rate_ratio(
@@ -50,11 +127,45 @@ def rate_ratio(
     pvalue_method: str = DEFAULT_PVALUE_METHOD,
 ) -> BinaryStatResult:
     if case_total is None or ctrl_total is None:
-        return BinaryStatResult(value=math.nan, p_value=compute_p_value(cont, pvalue_method))
+        return BinaryStatResult(value=math.nan, p_value=compute_p_value(cont, pvalue_method), std_error=math.nan)
     case_rate = _safe_div(cont.tp, case_total)
     ctrl_rate = _safe_div(cont.fp, ctrl_total)
     value = _safe_div(case_rate, ctrl_rate) if not math.isnan(case_rate) and not math.isnan(ctrl_rate) else math.nan
-    return BinaryStatResult(value=value, p_value=compute_p_value(cont, pvalue_method))
+    std_error = rate_ratio_poisson_std_error(cont, value) if pvalue_method == "poisson" else math.nan
+    rr_lo, rr_hi = rate_ratio_log_rr_ci_bounds(cont, value)
+    return BinaryStatResult(
+        value=value,
+        p_value=compute_p_value(cont, pvalue_method),
+        std_error=std_error,
+        rate_ratio_ci_lower=rr_lo,
+        rate_ratio_ci_upper=rr_hi,
+    )
+
+
+def rate_ratio_poisson_std_error(cont: Contingency, value: float) -> float:
+    """Analytic stderr of RR on RR scale under Poisson approximation.
+
+    Uses SE(log(RR)) = sqrt(1/TP + 1/FP), then converts via RR * SE(log(RR)).
+    Returns NaN when TP or FP is non-positive.
+    """
+    tp = float(cont.tp)
+    fp = float(cont.fp)
+    if tp <= 0 or fp <= 0 or math.isnan(value):
+        return math.nan
+    se_log_rr = math.sqrt((1.0 / tp) + (1.0 / fp))
+    return value * se_log_rr
+
+
+def rate_ratio_log_rr_ci_bounds(cont: Contingency, value: float) -> tuple[float, float]:
+    """95% Wald CI on the RR scale: exp(log(RR) ± z * SE(log RR)) with SE = sqrt(1/TP + 1/FP)."""
+    tp = float(cont.tp)
+    fp = float(cont.fp)
+    if tp <= 0 or fp <= 0 or math.isnan(value) or value <= 0:
+        return math.nan, math.nan
+    se_log_rr = math.sqrt((1.0 / tp) + (1.0 / fp))
+    log_rr = math.log(value)
+    margin = _LOG_RATIO_CI_Z * se_log_rr
+    return math.exp(log_rr - margin), math.exp(log_rr + margin)
 
 
 def poisson_p_value(cont: Contingency) -> float:
@@ -153,7 +264,16 @@ def enrichment_batch(
             case_rate / ctrl_rate,
         )
     p_values = compute_p_values_batch(conts, pvalue_method)
-    return [BinaryStatResult(value=float(values[i]), p_value=float(p_values[i])) for i in range(len(conts))]
+    return [
+        BinaryStatResult(
+            value=float(values[i]),
+            p_value=float(p_values[i]),
+            std_error=se,
+            enrichment_ci_lower=lo,
+            enrichment_ci_upper=hi,
+        )
+        for i, (se, lo, hi) in enumerate(enrichment_log_lr_stderr_ci(c) for c in conts)
+    ]
 
 
 def rate_ratio_batch(
@@ -165,7 +285,10 @@ def rate_ratio_batch(
         return []
     p_values = compute_p_values_batch(conts, pvalue_method)
     if case_total is None or ctrl_total is None:
-        return [BinaryStatResult(value=math.nan, p_value=float(p_values[i])) for i in range(len(conts))]
+        return [
+            BinaryStatResult(value=math.nan, p_value=float(p_values[i]), std_error=math.nan)
+            for i in range(len(conts))
+        ]
     tp, fp, _tn, _fn = _conts_to_arrays(conts)
     with np.errstate(divide="ignore", invalid="ignore"):
         case_rate = np.where(case_total == 0, np.nan, tp / case_total)
@@ -175,7 +298,24 @@ def rate_ratio_batch(
             np.nan,
             case_rate / ctrl_rate,
         )
-    return [BinaryStatResult(value=float(values[i]), p_value=float(p_values[i])) for i in range(len(conts))]
+        se_log_rr = np.sqrt((1.0 / tp) + (1.0 / fp))
+        poisson_std_errors = np.where((tp > 0) & (fp > 0) & ~np.isnan(values), values * se_log_rr, np.nan)
+        valid_ci = (tp > 0) & (fp > 0) & ~np.isnan(values) & (values > 0)
+        log_rr = np.log(np.where(valid_ci, values, np.nan))
+        margin = _LOG_RATIO_CI_Z * se_log_rr
+        rr_ci_lo = np.exp(np.where(valid_ci, log_rr - margin, np.nan))
+        rr_ci_hi = np.exp(np.where(valid_ci, log_rr + margin, np.nan))
+    std_errors = poisson_std_errors if pvalue_method == "poisson" else np.full(len(conts), np.nan)
+    return [
+        BinaryStatResult(
+            value=float(values[i]),
+            p_value=float(p_values[i]),
+            std_error=float(std_errors[i]),
+            rate_ratio_ci_lower=float(rr_ci_lo[i]),
+            rate_ratio_ci_upper=float(rr_ci_hi[i]),
+        )
+        for i in range(len(conts))
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +393,79 @@ def vsm_comparison_fisher(cont_a: Contingency, cont_b: Contingency) -> VsmCompar
         log_ci_upper=float(log_ci_upper),
         conf_interval_lower=float(math.exp(log_ci_lower)),
         conf_interval_upper=float(math.exp(log_ci_upper)),
+    )
+
+
+def vsm_comparison_poisson_exact(cont_a: Contingency, cont_b: Contingency) -> VsmComparisonResult:
+    """Exact conditional Poisson test using full 2x2 TP/FP counts.
+
+    The test compares model-specific TP rates with FP counts as exposures:
+      rate_a = TP_a / FP_a and rate_b = TP_b / FP_b.
+    Under H0 (rate_a == rate_b), conditioning on TP_a + TP_b gives:
+      TP_a ~ Binomial(TP_a + TP_b, p0 = FP_a / (FP_a + FP_b)).
+    """
+    nan_full = VsmComparisonResult(
+        odds_ratio=math.nan,
+        p_greater=math.nan,
+        p_less=math.nan,
+        log_odds_ratio=math.nan,
+        standard_error=math.nan,
+        log_ci_lower=math.nan,
+        log_ci_upper=math.nan,
+        conf_interval_lower=math.nan,
+        conf_interval_upper=math.nan,
+    )
+
+    tp_a = int(round(cont_a.tp))
+    tp_b = int(round(cont_b.tp))
+    fp_a = int(round(cont_a.fp))
+    fp_b = int(round(cont_b.fp))
+
+    if tp_a + fp_a == 0 or tp_b + fp_b == 0:
+        return nan_full
+
+    total_tp = tp_a + tp_b
+    total_fp = fp_a + fp_b
+    if total_tp <= 0 or total_fp <= 0:
+        return nan_full
+
+    p0 = fp_a / total_fp
+    p_greater = float(binom.sf(tp_a - 1, total_tp, p0))
+    p_less = float(binom.cdf(tp_a, total_tp, p0))
+
+    # Haldane-Anscombe correction for stable log-ratio summaries.
+    a, b, c, d = tp_a + 0.5, tp_b + 0.5, fp_a + 0.5, fp_b + 0.5
+    ratio = (a * d) / (b * c)
+    log_ratio = math.log(ratio)
+    standard_error = math.sqrt((1.0 / a) + (1.0 / b) + (1.0 / c) + (1.0 / d))
+    margin = _LOG_OR_CI_Z * standard_error
+    log_ci_lower = log_ratio - margin
+    log_ci_upper = log_ratio + margin
+
+    return VsmComparisonResult(
+        odds_ratio=float(ratio),
+        p_greater=p_greater,
+        p_less=p_less,
+        log_odds_ratio=float(log_ratio),
+        standard_error=float(standard_error),
+        log_ci_lower=float(log_ci_lower),
+        log_ci_upper=float(log_ci_upper),
+        conf_interval_lower=float(math.exp(log_ci_lower)),
+        conf_interval_upper=float(math.exp(log_ci_upper)),
+    )
+
+
+def vsm_comparison(
+    cont_a: Contingency,
+    cont_b: Contingency,
+    method: str = DEFAULT_VSM_COMPARISON_METHOD,
+) -> VsmComparisonResult:
+    if method == "fisher":
+        return vsm_comparison_fisher(cont_a, cont_b)
+    if method == "poisson":
+        return vsm_comparison_poisson_exact(cont_a, cont_b)
+    raise ValueError(
+        f"Unknown vsm comparison method: {method!r}. Must be one of {VSM_COMPARISON_METHODS}."
     )
 
 

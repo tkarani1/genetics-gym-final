@@ -46,6 +46,7 @@ LINKER_PATHS = {
     "MISSENSE_ENST_TRANSCRIPT_AA": "gs://genetics-gym/linkers/linker_missense_enst_transcript_aa.ht",
     "MISSENSE_ENST_TRANSCRIPT_AA_UNIPROT": "gs://genetics-gym/linkers/linker_missense_enst_transcript_aa_uniprot.ht",
     "MISSENSE_REFSEQ_TRANSCRIPT_AA": "gs://genetics-gym/linkers/linker_missense_refseq_transcript_aa.ht",
+    "ENSEMBL_TRANSCRIPT_TO_GENE": "gs://genetics-gym/linkers/linker_enst_ensg.ht"
 }
 
 ########################################################################################
@@ -107,6 +108,48 @@ VSM_COLUMN_NAMES = { ##TODO: update these
 }
 VSM_COUNTS_BASE = "gs://genetics-gym/vsm-tables/counts"
 
+JULIA_VSM_LINKER_BASE = "gs://genetics-gym-not-public/Julia/combined_vsm/"
+JULIA_VSM_NAMES = {
+    "AM": "alphamissense",
+    "CADD": "cadd",
+    "CPT": "cpt",
+    "DBNSFP4": "dbnsfp4_variant",
+    "ESM1B": "esm1b",
+    "MISFIT": "misfit",
+    "GMVP": "gmvp",
+    "GPN_MSA": "gpn_msa",
+    "MISFIT": "misfit",
+    "MPC": "mpc",
+    "PRIMATEAI3D": "pai3d",
+    "PHYLOP": "phylop",
+    "POLYPHEN": "polyphen",
+    "POPEVE": "popeve",
+    "PROTEINMPNN": "protein_mpnn",
+    "RASP": "rasp",
+    "REVEL": "revel",
+    "SIFT": "sift"
+}
+JULIA_VSM_LINKER_TABLE_PATHS = {
+    "AM": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['AM']}_only.ht",
+    "CADD": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['CADD']}_only.ht",
+    "CPT": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['CPT']}_only.ht",
+    "DBNSFP4": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['DBNSFP4']}_only.ht",
+    "ESM1B": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['ESM1B']}_only.ht",
+    "MISFIT": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['MISFIT']}_only.ht",
+    "GMVP": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['GMVP']}_only.ht",
+    "GPN_MSA": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['GPN_MSA']}_only.ht",
+    "MISFIT": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['MISFIT']}_only.ht",
+    "MPC": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['MPC']}_only.ht",
+    "PRIMATEAI3D": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['PRIMATEAI3D']}_only.ht",
+    "PHYLOP": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['PHYLOP']}_only.ht",
+    "POLYPHEN": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['POLYPHEN']}_only.ht",
+    "POPEVE": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['POPEVE']}_only.ht",
+    "PROTEINMPNN": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['PROTEINMPNN']}_only.ht",
+    "RASP": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['RASP']}_only.ht",
+    "REVEL": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['REVEL']}_only.ht",
+    "SIFT": f"{JULIA_VSM_LINKER_BASE}{JULIA_VSM_NAMES['SIFT']}_only.ht",
+}
+WRITE_COALESCED_JULIA_VSM_BASE = "gs://genetics-gym-not-public/Trisha/Julia_tables/"
 # VSM_COUNTS_FILE = f'{WRITE_VSM_LINKER_TABLES_PATH}/VSM_counts.json'
 
 WRITE_SNP_COALESCED_VSM_BASE = "gs://genetics-gym/vsm-tables/coalesced/coalesced_snp_"
@@ -150,4 +193,13 @@ EVALUATION_RESOURCE_PATHS = {
     # "DD": "gs://genetics-gym/raw_data/kaplanis_variants_annotated_2024-05-15.txt",
     # "CHD": "gs://genetics-gym/raw_data/chd_variants_annotated_2024-05-15.txt",
     # "ASD": "gs://genetics-gym/raw_data/asd_variants_annotated_2024-05-15.txt",
+}
+
+########################################################################################
+# LOF score resource paths
+########################################################################################
+LOF_SCORE_RESOURCE_PATHS = {
+    "LOEUF_V2": {"path": "gs://gcp-public-data--gnomad/release/2.1.1/constraint/gnomad.v2.1.1.lof_metrics.by_transcript.ht", "score_cols": {"loeuf_v2_score": "oe_lof_upper"}},
+    "LOEUF_V4": {"path": "gs://gcp-public-data--gnomad/release/4.1/constraint/gnomad.v4.1.constraint_metrics.ht", "score_cols": {"loeuf_v4_score": "lof.oe_ci.upper"}}
+
 }

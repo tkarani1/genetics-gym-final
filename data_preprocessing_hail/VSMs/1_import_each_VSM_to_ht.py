@@ -1,5 +1,6 @@
 import hail as hl
-hl.init(worker_memory="highmem", driver_memory='highmem') 
+hl.init(backend='spark', worker_memory="highmem", driver_memory='highmem') 
+from resources.functions import write_parquet_from_ht
 
 # # ESM1b
 # esm1b_ht = hl.import_table(
@@ -184,53 +185,54 @@ hl.init(worker_memory="highmem", driver_memory='highmem')
 # ht.write('gs://genetics-gym-not-public/Trisha/hail_VSM_tables_updated/PAI3D.ht')
 
 # ## Polyphen2
-# ht = hl.read_table('gs://gcp-public-data--gnomad/resources/context/grch38_context_vep_annotated.v105.ht/')
-# ht = ht.explode(ht.vep.transcript_consequences)
-# ht = ht.filter(ht.vep.transcript_consequences.transcript_id.startswith('ENST') )
-# ht = ht.annotate(
-#     polyphen_score = ht.vep.transcript_consequences.polyphen_score, 
-#     enst = ht.vep.transcript_consequences.transcript_id, 
-#     ensg = ht.vep.transcript_consequences.gene_id, 
-#     gene_symbol = ht.ranscript_consequences.gene_symbol)
-# ht = ht.select(ht.enst, ht.polyphen_score, ht.ensg, ht.gene_symbol)
-# ht = ht.filter(hl.is_defined(ht.polyphen_score))
-# ht.write('gs://genetics-gym-not-public/Trisha/hail_VSM_tables_updated/polyphen.ht')
+ht = hl.read_table('gs://gcp-public-data--gnomad/resources/context/grch38_context_vep_annotated.v105.ht/')
+ht = ht.explode(ht.vep.transcript_consequences)
+ht = ht.filter(ht.vep.transcript_consequences.transcript_id.startswith('ENST') )
+ht = ht.annotate(
+    polyphen_score = ht.vep.transcript_consequences.polyphen_score, 
+    enst = ht.vep.transcript_consequences.transcript_id, 
+    ensg = ht.vep.transcript_consequences.gene_id, 
+    gene_symbol = ht.vep.transcript_consequences.gene_symbol)
+ht = ht.select(ht.enst, ht.polyphen_score, ht.ensg, ht.gene_symbol)
+ht = ht.filter(hl.is_defined(ht.polyphen_score))
+ht.write('gs://genetics-gym-not-public/Trisha/hail_VSM_tables_updated/polyphen.ht')
+# write_parquet_from_ht(ht,'gs://genetics-gym-not-public/Trisha/hail_VSM_tables_updated/polyphen.parquet', convert_locus_alleles=True)
 
-## CADD
-ht = hl.import_table('gs://genetics-gym-not-public/Trisha/whole_genome_SNVs.tsv.gz', 
-            filter = '##', delimiter = '\t', force_bgz =True)
-ht = ht.select(
-    chrom = ht['#Chrom'], 
-    pos = hl.int(ht['Pos']),
-    ref = ht['Ref'], 
-    alt = ht['Alt'], 
-    raw_score = hl.float(ht['RawScore']), 
+# ## CADD
+# ht = hl.import_table('gs://genetics-gym-not-public/Trisha/whole_genome_SNVs.tsv.gz', 
+#             filter = '##', delimiter = '\t', force_bgz =True)
+# ht = ht.select(
+#     chrom = ht['#Chrom'], 
+#     pos = hl.int(ht['Pos']),
+#     ref = ht['Ref'], 
+#     alt = ht['Alt'], 
+#     raw_score = hl.float(ht['RawScore']), 
     
-)
-ht = ht.select(
-    locus = hl.locus('chr' + ht['chrom'],ht['pos'], reference_genome='GRCh38'),
-    alleles = [ht['ref'], ht['alt']],
-    cadd_score = ht['raw_score']
-)
-ht = ht.key_by('locus', 'alleles')
-ht = ht.filter(hl.is_defined(ht.cadd_score))
-ht.write('gs://genetics-gym-not-public/Trisha/hail_VSM_tables_updated/cadd.ht', overwrite=True)
+# )
+# ht = ht.select(
+#     locus = hl.locus('chr' + ht['chrom'],ht['pos'], reference_genome='GRCh38'),
+#     alleles = [ht['ref'], ht['alt']],
+#     cadd_score = ht['raw_score']
+# )
+# ht = ht.key_by('locus', 'alleles')
+# ht = ht.filter(hl.is_defined(ht.cadd_score))
+# ht.write('gs://genetics-gym-not-public/Trisha/hail_VSM_tables_updated/cadd.ht', overwrite=True)
 
 
-## GPN-MSA
-ht = hl.import_table('gs://missense-scoring/GPN-MSA/scores.tsv.bgz', delimiter='\t', force_bgz=True, no_header=True)
-ht = ht.annotate(
-    chr = 'chr'+ht.f0, 
-    pos = hl.int(ht.f1), 
-    alleles=[ht.f2, ht.f3], 
-    gpn_msa_score = hl.float(ht.f4)
-    )
-ht = ht.annotate(
-    locus = hl.locus(ht.chr, ht.pos, reference_genome='GRCh38'),
-)
-ht = ht.select(ht.locus, ht.alleles, ht.gpn_msa_score)
-ht = ht.key_by('locus', 'alleles')
-ht.write('gs://genetics-gym-not-public/Trisha/hail_VSM_tables_updated/gpn_msa.ht')
+# ## GPN-MSA
+# ht = hl.import_table('gs://missense-scoring/GPN-MSA/scores.tsv.bgz', delimiter='\t', force_bgz=True, no_header=True)
+# ht = ht.annotate(
+#     chr = 'chr'+ht.f0, 
+#     pos = hl.int(ht.f1), 
+#     alleles=[ht.f2, ht.f3], 
+#     gpn_msa_score = hl.float(ht.f4)
+#     )
+# ht = ht.annotate(
+#     locus = hl.locus(ht.chr, ht.pos, reference_genome='GRCh38'),
+# )
+# ht = ht.select(ht.locus, ht.alleles, ht.gpn_msa_score)
+# ht = ht.key_by('locus', 'alleles')
+# ht.write('gs://genetics-gym-not-public/Trisha/hail_VSM_tables_updated/gpn_msa.ht')
 
 
 

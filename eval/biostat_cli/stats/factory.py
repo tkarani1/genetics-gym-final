@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from biostat_cli.evaluators.base import Contingency
 from biostat_cli.stats.binary import (
     DEFAULT_PVALUE_METHOD,
+    DEFAULT_VSM_COMPARISON_METHOD,
     VsmComparisonResult,
     enrichment,
     enrichment_batch,
@@ -13,9 +14,25 @@ from biostat_cli.stats.binary import (
     pairwise_rate_ratio,
     rate_ratio,
     rate_ratio_batch,
-    vsm_comparison_fisher,
+    vsm_comparison,
 )
-from biostat_cli.stats.continuous import compute_auc, compute_auprc, pairwise_continuous_adjust
+from biostat_cli.stats.continuous import (
+    compute_auc,
+    compute_auc_p_value,
+    compute_auc_trunc,
+    compute_auprc,
+    compute_auprc_trunc,
+    compute_threshold_point_metrics,
+    pairwise_continuous_adjust,
+    truncate_counts,
+)
+from biostat_cli.stats.gene_averaged import (
+    GeneAvgResult,
+    gene_avg_auc,
+    gene_avg_auprc,
+    gene_avg_enrichment,
+    gene_avg_rate_ratio,
+)
 
 
 @dataclass(frozen=True)
@@ -23,6 +40,14 @@ class StatOutput:
     stat: str
     value: float
     p_value: float
+    std_error: float = math.nan
+    enrichment_ci_lower: float = math.nan
+    enrichment_ci_upper: float = math.nan
+    rate_ratio_ci_lower: float = math.nan
+    rate_ratio_ci_upper: float = math.nan
+    rows_retained: float = math.nan
+    n_pos_retained: float = math.nan
+    n_neg_retained: float = math.nan
 
 
 @dataclass(frozen=True)
@@ -36,23 +61,135 @@ class PairwiseStatOutput:
     adjustment_ratio: float
 
 
+@dataclass(frozen=True)
+class GeneAvgStatOutput:
+    stat: str
+    value: float
+    p_value: float
+    std_error: float
+    n_genes_used: int
+    n_genes_excluded: int
+
+
 class StatFactory:
     @staticmethod
     def auc(labels: list[int] | None, scores: list[float] | None) -> StatOutput:
         if labels is None or scores is None:
-            return StatOutput(stat="auc", value=math.nan, p_value=math.nan)
-        return StatOutput(stat="auc", value=compute_auc(labels, scores), p_value=math.nan)
+            return StatOutput(stat="auc", value=math.nan, p_value=math.nan, std_error=math.nan)
+        return StatOutput(
+            stat="auc",
+            value=compute_auc(labels, scores),
+            p_value=compute_auc_p_value(labels, scores),
+            std_error=math.nan,
+        )
 
     @staticmethod
     def auprc(labels: list[int] | None, scores: list[float] | None) -> StatOutput:
         if labels is None or scores is None:
-            return StatOutput(stat="auprc", value=math.nan, p_value=math.nan)
-        return StatOutput(stat="auprc", value=compute_auprc(labels, scores), p_value=math.nan)
+            return StatOutput(stat="auprc", value=math.nan, p_value=math.nan, std_error=math.nan)
+        return StatOutput(stat="auprc", value=compute_auprc(labels, scores), p_value=math.nan, std_error=math.nan)
+
+    @staticmethod
+    def tpr_at_threshold(labels: list[int] | None, scores: list[float] | None, threshold: float) -> StatOutput:
+        if labels is None or scores is None:
+            return StatOutput(stat="tpr_at_threshold", value=math.nan, p_value=math.nan, std_error=math.nan)
+        out = compute_threshold_point_metrics(labels, scores, threshold)
+        return StatOutput(
+            stat="tpr_at_threshold",
+            value=out.tpr,
+            p_value=math.nan,
+            std_error=math.nan,
+            rows_retained=out.rows_retained,
+            n_pos_retained=out.n_pos_retained,
+            n_neg_retained=out.n_neg_retained,
+        )
+
+    @staticmethod
+    def fpr_at_threshold(labels: list[int] | None, scores: list[float] | None, threshold: float) -> StatOutput:
+        if labels is None or scores is None:
+            return StatOutput(stat="fpr_at_threshold", value=math.nan, p_value=math.nan, std_error=math.nan)
+        out = compute_threshold_point_metrics(labels, scores, threshold)
+        return StatOutput(
+            stat="fpr_at_threshold",
+            value=out.fpr,
+            p_value=math.nan,
+            std_error=math.nan,
+            rows_retained=out.rows_retained,
+            n_pos_retained=out.n_pos_retained,
+            n_neg_retained=out.n_neg_retained,
+        )
+
+    @staticmethod
+    def precision_at_threshold(labels: list[int] | None, scores: list[float] | None, threshold: float) -> StatOutput:
+        if labels is None or scores is None:
+            return StatOutput(stat="precision_at_threshold", value=math.nan, p_value=math.nan, std_error=math.nan)
+        out = compute_threshold_point_metrics(labels, scores, threshold)
+        return StatOutput(
+            stat="precision_at_threshold",
+            value=out.precision,
+            p_value=math.nan,
+            std_error=math.nan,
+            rows_retained=out.rows_retained,
+            n_pos_retained=out.n_pos_retained,
+            n_neg_retained=out.n_neg_retained,
+        )
+
+    @staticmethod
+    def recall_at_threshold(labels: list[int] | None, scores: list[float] | None, threshold: float) -> StatOutput:
+        if labels is None or scores is None:
+            return StatOutput(stat="recall_at_threshold", value=math.nan, p_value=math.nan, std_error=math.nan)
+        out = compute_threshold_point_metrics(labels, scores, threshold)
+        return StatOutput(
+            stat="recall_at_threshold",
+            value=out.recall,
+            p_value=math.nan,
+            std_error=math.nan,
+            rows_retained=out.rows_retained,
+            n_pos_retained=out.n_pos_retained,
+            n_neg_retained=out.n_neg_retained,
+        )
+
+    @staticmethod
+    def auc_trunc(labels: list[int] | None, scores: list[float] | None, threshold: float) -> StatOutput:
+        if labels is None or scores is None:
+            return StatOutput(stat="auc_trunc", value=math.nan, p_value=math.nan, std_error=math.nan)
+        n_total, n_pos, n_neg = truncate_counts(labels, scores, threshold)
+        return StatOutput(
+            stat="auc_trunc",
+            value=compute_auc_trunc(labels, scores, threshold),
+            p_value=math.nan,
+            std_error=math.nan,
+            rows_retained=float(n_total),
+            n_pos_retained=float(n_pos),
+            n_neg_retained=float(n_neg),
+        )
+
+    @staticmethod
+    def auprc_trunc(labels: list[int] | None, scores: list[float] | None, threshold: float) -> StatOutput:
+        if labels is None or scores is None:
+            return StatOutput(stat="auprc_trunc", value=math.nan, p_value=math.nan, std_error=math.nan)
+        n_total, n_pos, n_neg = truncate_counts(labels, scores, threshold)
+        return StatOutput(
+            stat="auprc_trunc",
+            value=compute_auprc_trunc(labels, scores, threshold),
+            p_value=math.nan,
+            std_error=math.nan,
+            rows_retained=float(n_total),
+            n_pos_retained=float(n_pos),
+            n_neg_retained=float(n_neg),
+        )
 
     @staticmethod
     def enrichment(cont: Contingency, pvalue_method: str = DEFAULT_PVALUE_METHOD) -> StatOutput:
         out = enrichment(cont, pvalue_method=pvalue_method)
-        return StatOutput(stat="enrichment", value=out.value, p_value=out.p_value)
+        return StatOutput(
+            stat="enrichment",
+            value=out.value,
+            p_value=out.p_value,
+            std_error=out.std_error,
+            enrichment_ci_lower=out.enrichment_ci_lower,
+            enrichment_ci_upper=out.enrichment_ci_upper,
+        )
 
     @staticmethod
     def rate_ratio(
@@ -60,14 +197,31 @@ class StatFactory:
         pvalue_method: str = DEFAULT_PVALUE_METHOD,
     ) -> StatOutput:
         out = rate_ratio(cont, case_total=case_total, ctrl_total=ctrl_total, pvalue_method=pvalue_method)
-        return StatOutput(stat="rate_ratio", value=out.value, p_value=out.p_value)
+        return StatOutput(
+            stat="rate_ratio",
+            value=out.value,
+            p_value=out.p_value,
+            std_error=out.std_error,
+            rate_ratio_ci_lower=out.rate_ratio_ci_lower,
+            rate_ratio_ci_upper=out.rate_ratio_ci_upper,
+        )
 
     @staticmethod
     def enrichment_batch(
         conts: list[Contingency], pvalue_method: str = DEFAULT_PVALUE_METHOD,
     ) -> list[StatOutput]:
         results = enrichment_batch(conts, pvalue_method=pvalue_method)
-        return [StatOutput(stat="enrichment", value=r.value, p_value=r.p_value) for r in results]
+        return [
+            StatOutput(
+                stat="enrichment",
+                value=r.value,
+                p_value=r.p_value,
+                std_error=r.std_error,
+                enrichment_ci_lower=r.enrichment_ci_lower,
+                enrichment_ci_upper=r.enrichment_ci_upper,
+            )
+            for r in results
+        ]
 
     @staticmethod
     def rate_ratio_batch(
@@ -75,7 +229,17 @@ class StatFactory:
         pvalue_method: str = DEFAULT_PVALUE_METHOD,
     ) -> list[StatOutput]:
         results = rate_ratio_batch(conts, case_total=case_total, ctrl_total=ctrl_total, pvalue_method=pvalue_method)
-        return [StatOutput(stat="rate_ratio", value=r.value, p_value=r.p_value) for r in results]
+        return [
+            StatOutput(
+                stat="rate_ratio",
+                value=r.value,
+                p_value=r.p_value,
+                std_error=r.std_error,
+                rate_ratio_ci_lower=r.rate_ratio_ci_lower,
+                rate_ratio_ci_upper=r.rate_ratio_ci_upper,
+            )
+            for r in results
+        ]
 
     @staticmethod
     def pairwise_enrichment(
@@ -121,19 +285,57 @@ class StatFactory:
         anchor_full_auc: float,
         anchor_pairwise_auc: float,
         vsm_pairwise_auc: float,
+        *,
+        delong_p_value: float = math.nan,
     ) -> PairwiseStatOutput:
         out = pairwise_continuous_adjust(anchor_full_auc, anchor_pairwise_auc, vsm_pairwise_auc)
         return PairwiseStatOutput(
             stat="pairwise_auc",
             value=out.value,
-            p_value=math.nan,
+            p_value=delong_p_value,
             anchor_value=out.anchor_value,
             adjustment_ratio=out.adjustment_ratio,
         )
 
     @staticmethod
-    def vsm_comparison(cont_a: Contingency, cont_b: Contingency) -> VsmComparisonResult:
-        return vsm_comparison_fisher(cont_a, cont_b)
+    def vsm_comparison(
+        cont_a: Contingency,
+        cont_b: Contingency,
+        method: str = DEFAULT_VSM_COMPARISON_METHOD,
+    ) -> VsmComparisonResult:
+        return vsm_comparison(cont_a, cont_b, method=method)
+
+    @staticmethod
+    def gene_avg_enrichment_stat(per_gene_values: list[float], n_total_genes: int) -> GeneAvgStatOutput:
+        r = gene_avg_enrichment(per_gene_values, n_total_genes)
+        return GeneAvgStatOutput(
+            stat="gene_avg_enrichment", value=r.value, p_value=r.p_value,
+            std_error=r.std_error, n_genes_used=r.n_genes_used, n_genes_excluded=r.n_genes_excluded,
+        )
+
+    @staticmethod
+    def gene_avg_rate_ratio_stat(per_gene_values: list[float], n_total_genes: int) -> GeneAvgStatOutput:
+        r = gene_avg_rate_ratio(per_gene_values, n_total_genes)
+        return GeneAvgStatOutput(
+            stat="gene_avg_rate_ratio", value=r.value, p_value=r.p_value,
+            std_error=r.std_error, n_genes_used=r.n_genes_used, n_genes_excluded=r.n_genes_excluded,
+        )
+
+    @staticmethod
+    def gene_avg_auc_stat(per_gene_values: list[float], n_total_genes: int) -> GeneAvgStatOutput:
+        r = gene_avg_auc(per_gene_values, n_total_genes)
+        return GeneAvgStatOutput(
+            stat="gene_avg_auc", value=r.value, p_value=r.p_value,
+            std_error=r.std_error, n_genes_used=r.n_genes_used, n_genes_excluded=r.n_genes_excluded,
+        )
+
+    @staticmethod
+    def gene_avg_auprc_stat(per_gene_values: list[float], n_total_genes: int) -> GeneAvgStatOutput:
+        r = gene_avg_auprc(per_gene_values, n_total_genes)
+        return GeneAvgStatOutput(
+            stat="gene_avg_auprc", value=r.value, p_value=r.p_value,
+            std_error=r.std_error, n_genes_used=r.n_genes_used, n_genes_excluded=r.n_genes_excluded,
+        )
 
     @staticmethod
     def pairwise_auprc(
@@ -144,6 +346,22 @@ class StatFactory:
         out = pairwise_continuous_adjust(anchor_full_auprc, anchor_pairwise_auprc, vsm_pairwise_auprc)
         return PairwiseStatOutput(
             stat="pairwise_auprc",
+            value=out.value,
+            p_value=math.nan,
+            anchor_value=out.anchor_value,
+            adjustment_ratio=out.adjustment_ratio,
+        )
+
+    @staticmethod
+    def pairwise_obs_exp_ratio(
+        r_full: float,
+        r_vsm_pair: float,
+        r_anchor_pair: float,
+    ) -> PairwiseStatOutput:
+        """O/E pairwise: r_full * (r_vsm_pair / r_anchor_pair) (same layout as other pairwise_ stats)."""
+        out = pairwise_continuous_adjust(r_full, r_anchor_pair, r_vsm_pair)
+        return PairwiseStatOutput(
+            stat="pairwise_obs_exp_ratio",
             value=out.value,
             p_value=math.nan,
             anchor_value=out.anchor_value,

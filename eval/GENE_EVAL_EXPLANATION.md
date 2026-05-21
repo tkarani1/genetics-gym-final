@@ -65,7 +65,7 @@ ctrl_rate  = FP / ctrl_total
 rate_ratio = case_rate / ctrl_rate
 ```
 
-`case_total` and `ctrl_total` come from CLI args or the resources JSON — they represent total population sizes (e.g., total de novo variants in cases/controls across all genes).
+Per-eval `case_total` and `ctrl_total` come from `--case-total-by-eval` / `--ctrl-total-by-eval` or from `Case_totals` / `Ctrl_totals` in the resources JSON — they represent cohort sizes for that eval (e.g., total variants in cases vs controls).
 
 - **Boolean mode**: rate = (positive genes above threshold) / (total positive genes in population).
 - **`sum_variants` mode**: rate = (case variants in genes above threshold) / (total case variants in cohort).
