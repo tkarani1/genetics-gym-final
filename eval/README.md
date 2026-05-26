@@ -1,428 +1,443 @@
 # BioStat-CLI
 
-Memory-efficient CLI for genomic statistics on merged Parquet tables using Polars lazy execution.
+Command-line toolkit for **Genetics Gym** evaluation tables: enrichment, rate ratios, ROC/PR metrics, pairwise-adjusted scores, gene-level summaries, and publication figures — all on large Parquet files via Polars lazy execution.
 
-## Features
+**Location in the repo:** `genetics-gym-final/eval/`
 
-- Computes `auc`, `auprc`, threshold-point continuous stats (`tpr_at_threshold`, `fpr_at_threshold`, `precision_at_threshold`, `recall_at_threshold`), truncated continuous stats (`auc_trunc`, `auprc_trunc`), plus `enrichment`, `rate_ratio`, `pairwise_enrichment`, and `pairwise_rate_ratio`
-- **Gene-averaged statistics**: `gene_avg_enrichment`, `gene_avg_rate_ratio`, `gene_avg_auc`, `gene_avg_auprc` — computes per-gene stat values and averages them, giving each gene equal weight
-- Optional nonparametric bootstrap stderr (`std_error`) for all supported stats
-- Supports `variant` and `gene` eval levels (strategy-based evaluators)
-- Reads local paths and `gs://` parquet inputs via Polars/fsspec/gcsfs
-- Writes:
-  - main metrics TSV
-  - optional curve points TSV (`<prefix>_curves.tsv`) with ROC/PR points
-  - run log JSON (args, resolved table path, total runtime, per eval/filter runtime)
-- Optional missing-variant TSV to explain `rows_used` vs `total_eval_rows`
-- Optional per-gene variant coverage TSV (`--write-gene-variant-coverage`)
-- Includes a parallel runner (`biostat_cli.cli_parallel`) for eval/filter concurrency
+---
 
-## Install
+## What it does
+
+You point the CLI at a merged evaluation Parquet (local path or `gs://`) and a small JSON config that names score columns, boolean eval labels, and optional filters. It writes TSV metrics plus a JSON run log. Typical workflows:
+
+| Goal | Entry point |
+|------|-------------|
+| One-off metrics on a table | `biostat-cli` (or `python -m biostat_cli.cli`) |
+| Many eval/filter combos in parallel | `python -m biostat_cli.cli_parallel` |
+| Paper Figure 1 panels (compute + QC + plots) | `figure1-pipeline` |
+
+---
+
+## Quick start
+
+### 1. Install
+
+Requires **Python ≥ 3.10**.
 
 ```bash
-cd /Users/tk508/Work/new/gg-script-codex
+cd genetics-gym-final/eval
 pip install -e .
 ```
 
-## Resources JSON format
+This registers two commands: `biostat-cli` and `figure1-pipeline`.
 
-`--resources-json` defaults to `resources.json`.
+### 2. Configure a table
+
+Copy or edit `resources.json`. Each table under `Table_info` needs at least `Path`, `Level`, `Score_cols`, and usually `evals`:
 
 ```json
 {
   "Table_info": {
-    "VSM_all_inner_per_v1": {
-      "Path": "gs://bucket/path/to/data.parquet",
+    "my_variant_table": {
+      "Path": "/path/to/merged.parquet",
       "Level": "variant",
-      "Score_cols": ["AM_percentile", "score_PAI3D_percentile"],
-      "Filters": {"ordered": "filter_ordered"},
-      "evals": ["is_pos__schema", "is_pos_dd"],
-      "Case_totals": {
-        "is_pos__schema": 1000,
-        "is_pos_dd": 1200
-      },
-      "Ctrl_totals": {
-        "is_pos__schema": 5000,
-        "is_pos_dd": 5200
-      }
+      "Score_cols": ["AM_percentile", "mpc_score_percentile"],
+      "Filters": { "ordered": "filter_ordered" },
+      "evals": ["is_pos_schema", "is_pos_dd"],
+      "Case_totals": { "is_pos_schema": 1000 },
+      "Ctrl_totals": { "is_pos_schema": 5000 }
     }
   }
 }
 ```
 
-## CLI arguments
+Keys are case-flexible where noted in code (`evals` / `Evals`, `Case_totals` / `case_totals`).
 
-- `--resources-json` path to resources file (default: `resources.json`)
-- `--table-name` table key under `Table_info` (**required**)
-- `--eval-level` `variant` or `gene` (**required**)
-- `--stat` `all` or csv subset (`auc,auprc,tpr_at_threshold,fpr_at_threshold,precision_at_threshold,recall_at_threshold,auc_trunc,auprc_trunc,enrichment,rate_ratio,pairwise_enrichment,pairwise_rate_ratio,pairwise_auc,pairwise_auprc,pairwise_tpr_at_threshold,pairwise_fpr_at_threshold,pairwise_precision_at_threshold,pairwise_recall_at_threshold,pairwise_auc_trunc,pairwise_auprc_trunc,gene_avg_enrichment,gene_avg_rate_ratio,gene_avg_auc,gene_avg_auprc,gene_avg_tpr_at_threshold,gene_avg_fpr_at_threshold,gene_avg_precision_at_threshold,gene_avg_recall_at_threshold,gene_avg_auc_trunc,gene_avg_auprc_trunc`)
-- `--eval-set` optional csv eval override (defaults to all `evals` from resources)
-- `--filters` optional csv logical filter names (from `Filters` keys); `none` is always included
-- `--thresholds` optional csv thresholds
-- `--case-total-by-eval` optional per-eval case totals (`eval_name:value,eval2:value2`); required for rate-ratio stats unless totals appear under `Case_totals` / `Ctrl_totals` in resources JSON
-- `--ctrl-total-by-eval` optional per-eval control totals (`eval_name:value,eval2:value2`); same resolution as case totals
-- `--bootstrap [N]` enable nonparametric row bootstrap stderr calculation; optional `N` sets sample count (e.g., `--bootstrap 50`, default `100` when `N` omitted)
-- `--pvalue-method` p-value calculation method: `fisher` (default) or `poisson`. Fisher's exact test is recommended for 2×2 contingency tables; Poisson is the legacy approximation
-- `--vsm-comparison-method` method for `vsm_comparison` pairwise VSM table: `fisher` (default) or `poisson`
-- `--gene-col` gene identifier column for gene-averaged stats (default: `ensg`)
-- `--write-gene-variant-coverage` write per-gene variant coverage report as a separate TSV (default: off)
-- `--chromosomes` optional comma-separated chromosome filter; accepts `1-22,X,Y,MT` and `chr`-prefixed forms (e.g., `chr1,chrX,chrM`). Unknown tokens fail fast.
-- `--out-fname` output naming schema/prefix (**required**)
-- `--write-missing` controls missing-entity report: `none`, `all`, or `any` (default: `none`)
-
-Rate-ratio denominator resolution priority (high to low):
-
-1. per-eval CLI (`--case-total-by-eval`, `--ctrl-total-by-eval`)
-2. per-eval table metadata (`Case_totals`, `Ctrl_totals` in resources JSON)
-
-Bootstrap behavior:
-
-- Point `value` and `p_value` are computed on the original dataset.
-- `std_error` precedence:
-  - if `--bootstrap` is enabled: bootstrap SD from resampled `value`s (rows sampled with replacement within each eval/filter subset)
-  - else if `stat=enrichment`: analytic $\mathrm{SE}(\ln \mathrm{LR}^{+})$ (see below); `p_value` still follows `--pvalue-method` (`fisher` or `poisson`)
-  - else if `stat=rate_ratio` and `--pvalue-method poisson`: analytic Poisson stderr on RR scale
-  - else: `NaN`
-- **Enrichment** (`value` is unchanged: case rate / control rate). Analytic uncertainty uses the positive likelihood ratio $\mathrm{LR}^{+}=\frac{\mathrm{TP}/(\mathrm{TP}+\mathrm{FN})}{\mathrm{FP}/(\mathrm{FP}+\mathrm{TN})}$ (same ratio as `value` when defined).
-  - $\mathrm{SE}(\ln \mathrm{LR}^{+})=\sqrt{\left(\frac{1}{\mathrm{TP}}-\frac{1}{\mathrm{TP}+\mathrm{FN}}\right)+\left(\frac{1}{\mathrm{FP}}-\frac{1}{\mathrm{FP}+\mathrm{TN}}\right)}$ on **raw** counts when this is defined.
-  - If that expression is undefined on raw counts (e.g. $\mathrm{TP}=0$ or $\mathrm{FP}=0$), apply **+0.5 to all four cells** once and recompute $\mathrm{SE}$ and CI from the corrected table (stderr/CI only; `value` remains from raw counts).
-  - **95% CI on the `value` (LR+) scale:** $\exp\left(\ln(\mathrm{LR}^{+})\pm 1.96\cdot \mathrm{SE}(\ln \mathrm{LR}^{+})\right)$ using the same cell table as for $\mathrm{SE}$.
-  - Main TSV columns `enrichment_ci_lower` / `enrichment_ci_upper` store these bounds; they are set to `NaN` when `--bootstrap` is used (analytic CI not reported alongside bootstrap `std_error`).
-- **Rate ratio** `value` is $\mathrm{TP}/\mathrm{case\_total}$ divided by $\mathrm{FP}/\mathrm{ctrl\_total}$ (when totals are set).
-  - Analytic Poisson `std_error` (RR scale) when `--pvalue-method poisson`: $\mathrm{SE}[\log(\mathrm{RR})]=\sqrt{1/\mathrm{TP}+1/\mathrm{FP}}$, `std_error = RR \cdot \mathrm{SE}[\log(\mathrm{RR})]`, `NaN` when `TP == 0` or `FP == 0` (or RR undefined). With `fisher`, that analytic `std_error` is `NaN` but **p-value** is still Fisher.
-  - **95% Wald CI on the RR scale** (same $\mathrm{SE}[\log(\mathrm{RR})]$ as above): $\exp(\log(\mathrm{RR})\pm 1.96\cdot \mathrm{SE}[\log(\mathrm{RR})])$ when $\mathrm{TP}>0$, $\mathrm{FP}>0$, and $\mathrm{RR}>0$; stored as `rate_ratio_ci_lower` / `rate_ratio_ci_upper`. These are cleared to `NaN` under `--bootstrap` (same as enrichment CIs).
-- `auc`: `p_value` is a two-sided test of $H_0:\mathrm{AUC}=0.5$ using the Hanley–McNeil variance for the AUC estimate and a normal approximation (`z=(\mathrm{AUC}-0.5)/\mathrm{SE}`). `auprc` still has `p_value = NaN`.
-- `--bootstrap N` must use `N >= 2` when bootstrap is enabled.
-
-Output paths are derived from `--out-fname`:
-
-- main TSV: `<schema>.tsv`
-- log JSON: `<schema>_log.json`
-- missing TSV: `<schema>_missing.tsv` (when `--write-missing` is `all` or `any`)
-- gene variant coverage TSV: `<schema>_gene_variant_coverage.tsv` (when `--write-gene-variant-coverage` is set)
-- curves TSV: `<schema>_curves.tsv` (when continuous labels/scores are available)
-
-## Threshold behavior
-
-- Thresholds are percentile-based **fractions in `[0,1]`**
-- A row counts as **above** threshold when `score >= t` (ties at `t` are included).
-- For `*_trunc` stats, truncation uses the score representation active in the run:
-  - default: current score column values
-  - with `--within-gene-percentile`: within-gene transformed score values
-- When `--chromosomes` is set, filtering is applied before eval/filter/stat computation and affects all outputs.
-- `--chromosomes` requires a chromosome column named `chrom` or `CHROM`; otherwise the run errors.
-- Default thresholds: `0.90,0.95,0.98,0.99`
-- Passing any threshold `> 1.0` exits with error code `22`
-
-Example:
+### 3. Run
 
 ```bash
---thresholds 0.90,0.95,0.98,0.99
+biostat-cli \
+  --resources-json resources.json \
+  --table-name my_variant_table \
+  --eval-level variant \
+  --stat enrichment,auc \
+  --thresholds 0.90,0.95,0.98,0.99 \
+  --out-fname results/my_run
 ```
 
-## Main output TSV schema
+Outputs (prefix = `--out-fname` without extension):
 
-Columns:
+| File | When |
+|------|------|
+| `results/my_run.tsv` | Always |
+| `results/my_run_log.json` | Always |
+| `results/my_run_curves.tsv` | Continuous stats requested (`auc`, `auprc`, …) |
+| `results/my_run_vsm_comparison.tsv` | `--stat` includes `vsm_comparison` |
+| `results/my_run_missing.tsv` | `--write-missing all` or `any` |
+| `results/my_run_gene_variant_coverage.tsv` | `--write-gene-variant-coverage` |
 
-- `eval_name`
-- `filter_name`
-- `score_name`
-- `threshold`
-- `stat`
-- `value`
-- `std_error`
-- `enrichment_ci_lower`, `enrichment_ci_upper` (95% CI on enrichment ratio; `NaN` except for `stat=enrichment` without `--bootstrap`, and always `NaN` for other stats)
-- `rate_ratio_ci_lower`, `rate_ratio_ci_upper` (95% Wald CI on rate ratio; `NaN` except for `stat=rate_ratio` when analytic CI is defined and without `--bootstrap`, and always `NaN` for other stats)
-- `p_value`
-- `tp`, `fp`, `tn`, `fn`
-- `rows_used`
-- `total_eval_rows`
-- `rows_retained`, `n_pos_retained`, `n_neg_retained` (for threshold-point and truncated continuous stats)
+---
 
-For gene-averaged stats (`gene_avg_enrichment`, `gene_avg_rate_ratio`, `gene_avg_auc`, `gene_avg_auprc`), additional columns:
+## Core concepts
 
-- `n_genes_used` — number of genes with valid per-gene values
-- `n_genes_excluded` — number of genes excluded from the average
+### Evaluation level (`--eval-level`)
 
-For pairwise stats (`pairwise_enrichment`, `pairwise_rate_ratio`), additional columns:
+- **`variant`** — one row per variant; boolean eval column marks case vs control (or use observed/expected columns; see below).
+- **`gene`** — one row per gene. Either a boolean gene label **or** weighted burden via `n_case` / `n_ctrl` when no `evals` are listed in JSON (`sum_variants` mode). See [GENE_EVAL_EXPLANATION.md](GENE_EVAL_EXPLANATION.md).
 
-- `anchor_value` - baseline value from anchor VSM on full set
-- `adjustment_ratio` - ratio of VSM performance to anchor performance on pairwise intersection
+### Thresholds
 
-For curve exports (`<prefix>_curves.tsv`), columns:
+Thresholds are **percentile fractions in `[0, 1]`**, not 0–100. A variant/gene counts as “above” when `score >= t` (ties included).
 
-- `eval_name`, `filter_name`, `score_name`
-- `curve_type` (`roc` or `pr`)
-- `point_idx`, `score_threshold`
-- `fpr`, `tpr`, `precision`, `recall`
-- `rows_used`, `total_eval_rows`
+- Default if omitted: `0.90, 0.95, 0.98, 0.99, 0.995`
+- Any value `> 1.0` exits with code **22**
 
-For `pairwise_auc`, `p_value` is a **paired DeLong** two-sided test of whether the anchor and VSM AUCs differ on the **pairwise intersection** cohort (Sun–Xu fast DeLong covariance; same binary labels, two score vectors). The anchor-only baseline row keeps `p_value = NaN`. `pairwise_auprc` still uses `p_value = NaN`.
+### Rate-ratio denominators
 
-## Pairwise statistics
+`rate_ratio`, `pairwise_rate_ratio`, and `gene_avg_rate_ratio` need cohort sizes per eval. Resolution order:
 
-Pairwise statistics compute adjusted enrichment/rate_ratio that maximize variant coverage per VSM comparison.
+1. CLI: `--case-total-by-eval` / `--ctrl-total-by-eval` (`eval_name:value,...`)
+2. Resources JSON: `Case_totals` / `Ctrl_totals` on the table entry
 
-### Formula
+### Input data
 
-```
-enr(VSM_i) = enr(VSM*, S* ∩ S_e) × [enr(VSM_i, S_i ∩ S* ∩ S_e) / enr(VSM*, S_i ∩ S* ∩ S_e)]
-```
+- Parquet with score columns (often precomputed percentiles) and eval/filter columns.
+- **Pairwise-adjusted** stats expect precomputed anchor/VSM percentile columns (patterns below).
+- **Observed/expected** stats expect `{eval_stem}_observed` and `{eval_stem}_expected` for that eval stem.
 
-Where:
-- `VSM*` is the anchor VSM (the one with maximum variant coverage)
-- `S*` is the set of variants defined by the anchor
-- `S_i` is the set of variants defined by VSM_i
-- `S_e` is the evaluation set (after filtering)
+---
 
-### Required input table format
+## Statistics reference
 
-Pairwise statistics require pre-computed percentile columns with specific naming:
+Use `--stat all` or a comma-separated subset. Names are case-insensitive.
 
-| Column Pattern | Description |
-|----------------|-------------|
-| `{anchor}_anchor_percentile` | Anchor percentile on full set S* |
-| `{vsm}_percentile_with_anchor` | VSM_i percentile on S_i ∩ S* |
-| `{anchor}_anchor_percentile_with_{vsm_short}` | Anchor percentile on S_i ∩ S* |
+### Variant / gene (standard)
 
-Example columns for anchor `mpc_score` with VSMs `esm1b_score` and `MisFit_S_score`:
+| Stat | Description |
+|------|-------------|
+| `enrichment` | Case rate / control rate above threshold (2×2 from labels) |
+| `rate_ratio` | (TP / case_total) / (FP / ctrl_total) |
+| `auc`, `auprc` | ROC / PR area |
+| `tpr_at_threshold`, `fpr_at_threshold`, `precision_at_threshold`, `recall_at_threshold` | Point on ROC/PR at each threshold |
+| `auc_trunc`, `auprc_trunc` | Same, restricted to variants with score ≥ threshold |
+| `obs_exp_ratio` | Σ observed / Σ expected above threshold (requires `{stem}_observed`, `{stem}_expected`) |
+| `vsm_comparison` | All-pairs comparison of score columns (separate TSV; see below) |
+
+### Pairwise-adjusted (precomputed columns)
+
+| Stat | Description |
+|------|-------------|
+| `pairwise_enrichment`, `pairwise_rate_ratio` | Anchor-adjusted enrichment / RR |
+| `pairwise_auc`, `pairwise_auprc` | AUC / AUPRC on pairwise intersection cohort |
+| `pairwise_tpr_at_threshold`, … | Threshold metrics on pairwise scores |
+| `pairwise_auc_trunc`, `pairwise_auprc_trunc` | Truncated continuous metrics |
+| `pairwise_obs_exp_ratio` | Adjusted O/E ratio (same column rules as `obs_exp_ratio`) |
+
+`pairwise_auc` uses a **paired DeLong** test vs the anchor on the intersection (anchor row: `p_value = NaN`). Other pairwise continuous stats keep `p_value = NaN`.
+
+### Gene-averaged (macro over genes)
+
+Requires `--eval-level variant` and a gene ID column (`--gene-col`, default `ensg`). **Not available in `cli_parallel`.**
+
+| Stat | Null for t-test |
+|------|-----------------|
+| `gene_avg_enrichment`, `gene_avg_rate_ratio` | 1.0 |
+| `gene_avg_auc` | 0.5 |
+| `gene_avg_auprc` | (p-value NaN) |
+| `gene_avg_tpr_at_threshold`, `gene_avg_fpr_at_threshold`, … | Same structure as variant-level counterparts |
+
+Extra output columns: `n_genes_used`, `n_genes_excluded`. Contingency `tp/fp/tn/fn` are `NaN`.
+
+---
+
+## CLI reference (`biostat-cli`)
+
+### Required
+
+| Flag | Description |
+|------|-------------|
+| `--table-name` | Key under `Table_info` in resources JSON |
+| `--eval-level` | `variant` or `gene` |
+| `--out-fname` | Output prefix (see [Output paths](#output-paths)) |
+
+### Common options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--resources-json` | `resources.json` | Table metadata and paths |
+| `--stat` | `all` | Comma-separated stat names or `all` |
+| `--eval-set` | all table `evals` | Comma-separated eval columns |
+| `--filters` | all table `Filters` | Comma-separated filter names; `none` always runs |
+| `--thresholds` | `0.90,…,0.995` | Comma-separated percentile cutoffs |
+| `--case-total-by-eval` | — | `eval:value,...` for rate ratios |
+| `--ctrl-total-by-eval` | — | Same for controls |
+| `--bootstrap [N]` | off | Nonparametric row bootstrap for `std_error` (default **N=100**; need **N ≥ 2**) |
+| `--pvalue-method` | `fisher` | `fisher` or `poisson` for enrichment / rate ratio |
+| `--vsm-comparison-method` | `fisher` | `fisher` or `poisson` for `vsm_comparison` |
+| `--within-gene-percentile` | off | Rank scores within `ensg` before thresholding (variant level only) |
+| `--gene-col` | `ensg` | Gene ID for gene-averaged stats |
+| `--write-gene-variant-coverage` | off | Per-gene variant coverage TSV |
+| `--chromosomes` | — | e.g. `chr1,chrX,chrM` (column must be `chrom` or `CHROM`) |
+| `--write-missing` | `none` | `none`, `all`, or `any` missing-score report |
+
+Point estimates (`value`, `p_value`) are always computed on the full data. With `--bootstrap`, `std_error` is the SD across bootstrap replicates; analytic confidence intervals for enrichment/rate ratio are set to `NaN`.
+
+### Uncertainty without bootstrap
+
+- **`enrichment`**: analytic SE on ln(LR⁺) and 95% CI on the ratio scale (`enrichment_ci_lower` / `enrichment_ci_upper`); +0.5 smoothing only when raw-cell formula is undefined.
+- **`rate_ratio`**: Wald CI on RR scale when Poisson log-RR SE is defined (`rate_ratio_ci_*`); with `fisher`, analytic `std_error` is `NaN` but Fisher p-value still computed.
+- **`auc`**: two-sided test of AUC = 0.5 (Hanley–McNeil SE).
+- **`gene_avg_*`**: SEM across genes; one-sample t-test vs null above.
+
+Details: [biostat_cli/BIOSTAT_PVALUE_STDERR_SLIDES.md](biostat_cli/BIOSTAT_PVALUE_STDERR_SLIDES.md).
+
+---
+
+## Pairwise column layout
+
+Pairwise stats auto-detect columns from names (no extra JSON):
+
+| Pattern | Role |
+|---------|------|
+| `{anchor}_anchor_percentile` | Anchor on full variant set S* |
+| `{vsm}_percentile_with_anchor` | VSM on S_i ∩ S* |
+| `{anchor}_anchor_percentile_with_{vsm_short}` | Anchor on S_i ∩ S* |
+
+Example for anchor `mpc_score` and VSM `esm1b_score`:
 
 ```
 mpc_score_anchor_percentile
 esm1b_score_percentile_with_anchor
 mpc_score_anchor_percentile_with_esm1b
-MisFit_S_score_percentile_with_anchor
-mpc_score_anchor_percentile_with_MisFit_S
 ```
 
-The column structure is auto-detected; no additional JSON configuration required.
+Adjusted enrichment:
 
-### Example usage
+$$
+\mathrm{Enr}(\mathrm{VSM}_i) = \mathrm{Enr}(\mathrm{VSM}^*, S^* \cap S_e) \times \frac{\mathrm{Enr}(\mathrm{VSM}_i, S_i \cap S^* \cap S_e)}{\mathrm{Enr}(\mathrm{VSM}^*, S_i \cap S^* \cap S_e)}
+$$
 
 ```bash
-python -m biostat_cli.cli \
-  --resources-json ../files/vsm_all.json \
+biostat-cli \
+  --resources-json resources.json \
   --table-name VSM_pairwise_table \
   --eval-level variant \
-  --stat "pairwise_enrichment,pairwise_rate_ratio" \
+  --stat pairwise_enrichment,pairwise_rate_ratio \
   --thresholds 0.90,0.95,0.98,0.99 \
   --case-total-by-eval "is_pos_dd:1000" \
   --ctrl-total-by-eval "is_pos_dd:5000" \
-  --out-fname ../results/VSM_pairwise
+  --out-fname results/pairwise_run
 ```
 
-## Gene-averaged statistics
+---
 
-Gene-averaged stats compute each metric per gene and then average across genes, giving each gene equal weight regardless of variant count (macro-averaging).
+## Observed / expected evals
 
-### Available stats
+If the table has `{eval_stem}_observed` and `{eval_stem}_expected` for an eval stem, requesting `obs_exp_ratio` or `pairwise_obs_exp_ratio` computes
 
-- `gene_avg_enrichment` — per-gene enrichment averaged; null = 1.0
-- `gene_avg_rate_ratio` — per-gene rate ratio averaged (cohort totals per eval via `--case-total-by-eval` / `--ctrl-total-by-eval` or resources JSON); null = 1.0
-- `gene_avg_auc` — per-gene AUC averaged; null = 0.5
-- `gene_avg_auprc` — per-gene AUPRC averaged
+$$
+\text{O/E} = \frac{\sum \text{observed}}{\sum \text{expected}}
+$$
 
-### Requirements
+over rows with `score >= threshold`. Boolean TP/FP/TN/FN stats are not mixed into the same eval row set.
 
-- `--eval-level variant` (not compatible with gene eval level)
-- A gene identifier column must be present in the parquet (default: `ensg`, override with `--gene-col`)
+---
 
-### Output columns
+## VSM comparison output
 
-Gene-averaged rows in the main TSV include two additional columns:
+`--stat vsm_comparison` compares **every pair of score columns** at each threshold on the **intersection of non-null scores** for that pair. Results go to `<prefix>_vsm_comparison.tsv`, not the main TSV.
 
-- `n_genes_used` — genes with a computable (non-NaN) per-gene value
-- `n_genes_excluded` — genes excluded (insufficient labels, zero denominators, etc.)
-- `tp/fp/tn/fn` are `NaN` (no single contingency table)
+Columns include: `eval_name`, `filter_name`, `vsm_i`, `vsm_j`, `threshold`, `odds_ratio`, `p_greater`, `p_less`, `log_odds_ratio`, `standard_error`, confidence interval bounds, `rows_used_pair`.
 
-### Inference
+Methods (`--vsm-comparison-method`):
 
-- `std_error` = SEM across per-gene values: $\mathrm{SD}/\sqrt{n}$
-- `p_value` = one-sample t-test against the null (enrichment/RR: 1.0; AUC: 0.5; AUPRC: NaN)
+- **`fisher`** (default) — Fisher exact on the 2×2 table built from each model’s TP/FP at the threshold.
+- **`poisson`** — exact Poisson formulation on the same contingency summaries.
 
-### Gene variant coverage report
+This is a **marginal** comparison of per-model summaries (row sets can differ when missingness differs), not a strict paired variant-level test.
 
-When `--write-gene-variant-coverage` is enabled, a separate TSV is written to `<prefix>_gene_variant_coverage.tsv` with columns:
+---
 
-- `eval_name`, `filter_name`, `score_name`, `gene`
-- `n_variants_used` — variants with non-null score in this gene
-- `n_variants_excluded` — variants with null score in this gene
-- `n_variants_total` — sum of the above
+## Main output TSV schema
 
-This is computed per (eval, filter, score) combination and is independent of thresholds.
+| Column | Notes |
+|--------|--------|
+| `eval_name`, `filter_name`, `score_name`, `threshold`, `stat` | Keys |
+| `value`, `std_error`, `p_value` | Estimate and uncertainty |
+| `enrichment_ci_lower`, `enrichment_ci_upper` | Enrichment only; `NaN` under bootstrap |
+| `rate_ratio_ci_lower`, `rate_ratio_ci_upper` | Rate ratio only; `NaN` under bootstrap |
+| `tp`, `fp`, `tn`, `fn` | `NaN` for gene-averaged stats |
+| `rows_used`, `total_eval_rows` | Rows contributing to the stat |
+| `rows_retained`, `n_pos_retained`, `n_neg_retained` | Truncated / threshold-point stats |
+| `anchor_value`, `adjustment_ratio` | Pairwise enrichment / RR only |
+| `n_genes_used`, `n_genes_excluded` | Gene-averaged stats only |
 
-### Example usage
+**Curves** (`<prefix>_curves.tsv`): `curve_type` (`roc` / `pr`), `point_idx`, `score_threshold`, `fpr`, `tpr`, `precision`, `recall`.
 
-```bash
-python -m biostat_cli.cli \
-  --resources-json ../files/vsm_all.json \
-  --table-name VSM_all_inner_per_v1 \
-  --eval-level variant \
-  --stat "gene_avg_enrichment,gene_avg_auc" \
-  --thresholds 0.90,0.95,0.98,0.99 \
-  --gene-col ensg \
-  --write-gene-variant-coverage \
-  --out-fname ../results/VSM_gene_avg
-```
+**Missing report** (`<prefix>_missing.tsv`): optional; sorted by eval, filter, category, then locus. ID columns auto-detected (variant: `chrom,pos,ref,alt` or `locus,alleles`; gene: `ensg`, `gene_symbol`, etc.).
 
-## Pairwise VSM comparison (exact Poisson design options)
+**Run log** (`<prefix>_log.json`): `run_args`, `table_path`, `output_files`, `elapsed_seconds`, `eval_filter_elapsed_seconds`.
 
-When adding Poisson-based pairwise VSM comparison (`p_greater`, `p_less`) for
-`rate_ratio` interpretation, there are multiple valid exact formulations.
-For this project, the default should be `full_2x2_exact_poisson`.
+---
 
-`lock-exact-formula` means selecting exactly one formulation before coding so
-implementation, tests, and interpretation all match.
-
-### Candidate formulas (default first)
-
-- `full_2x2_exact_poisson` (default):
-  - Use all four counts `(TP_i, FP_i, TP_j, FP_j)` in a single exact test
-    targeting the relative rate-ratio contrast.
-- `tp_only_conditional_binomial`:
-  - Use `X = TP_i`, `n = TP_i + TP_j`, null `p0 = 0.5`.
-  - `p_greater = P(X >= TP_i | Binomial(n, p0))`
-  - `p_less = P(X <= TP_i | Binomial(n, p0))`
-- `fp_only_conditional_binomial`:
-  - Analogous conditional-binomial test using FP counts.
-
-### Input-count definitions (used by all options)
-
-- Thresholding uses `score >= t` (ties at the cutoff count as above threshold).
-- For boolean evals:
-  - `TP = count(above_threshold and eval == True)`
-  - `FP = count(above_threshold and eval == False)`
-- In gene `sum_variants` mode:
-  - `TP = sum(n_case)` above threshold
-  - `FP = sum(n_ctrl)` above threshold
-
-### Important caveat
-
-Current `vsm_comparison` uses per-model score-non-null row sets, so model `i`
-and model `j` counts can come from different subsets when missingness differs.
-This is a marginal comparison of model-level contingency summaries, not a
-strict paired-intersection test.
-
-## Missing-output TSV (optional)
-
-Use to inspect score-null entities after eval/filter masking.
-
-- One row per entity (per eval/filter)
-- `all` mode: only variants missing score values in all methods
-- `any` mode: variants missing in one or more methods, with category for all vs partial
-- Missing report sort order:
-  - first by `eval_name`
-  - then by `filter_name` (when present)
-  - then by `missing_category` (`all_methods` before `partial_methods`)
-  - then variant-level chromosome/position (`chr1`..`chr22`, `chrX`, `chrY`) or gene identifier/name
-
-Columns:
-
-- `eval_name`
-- `filter_name`
-- id columns are auto-detected for both levels:
-  - variant: `chrom,pos,ref,alt` or `locus,alleles`
-  - gene: `GENE_ID`, `gene_id`, `ensg`, or `gene_symbol`
-- `missing_category` (`all_methods` or `partial_methods`)
-- `missing_score_count`
-- `missing_score_names`
-
-## Runtime logging
-
-The generated log JSON (`<schema>_log.json`) includes:
-
-- `run_args`
-- `table_path`
-- `output_files`
-- `elapsed_seconds`
-- `eval_filter_elapsed_seconds` (per eval/filter runtime)
-
-## Examples
-
-### Standard runner
-
-```bash
-python -m biostat_cli.cli \
-  --resources-json ../files/vsm_all.json \
-  --table-name VSM_all_inner_per_v1 \
-  --eval-level variant \
-  --stat "enrichment,auc" \
-  --thresholds 0.90,0.95,0.98,0.99 \
-  --pvalue-method fisher \
-  --out-fname ../results/VSM_v1 \
-  --write-missing any
-```
-
-### Parallel runner
+## Parallel runner
 
 ```bash
 python -m biostat_cli.cli_parallel \
-  --resources-json ../files/vsm_all.json \
-  --table-name VSM_all_inner_per_v1 \
+  --resources-json resources.json \
+  --table-name my_variant_table \
   --eval-level variant \
-  --stat "enrichment,auc" \
-  --out-fname ../results/VSM_v1_parallel
+  --stat enrichment,auc \
+  --out-fname results/my_run_parallel
 ```
 
-## Figure 1 Pipeline (local-data-first)
+Runs eval/filter combinations concurrently (same outputs as the serial CLI for supported flags).
 
-This repository now includes a one-command Figure 1-style pipeline that:
+**Use the serial `biostat-cli` when you need:**
 
-- computes raw metrics (`enrichment`, `rate_ratio`)
-- computes pairwise-adjusted metrics (`pairwise_enrichment`, `pairwise_rate_ratio`)
-- builds a panel-ready table (default threshold `0.95`)
-- writes QC outputs
-- renders `raw`, `pairwise`, and `combined` plots
+- `--bootstrap`
+- Gene-averaged stats (`gene_avg_*`)
+- `--write-gene-variant-coverage`
+- `--gene-col` override (parallel uses default evaluator paths only for gene-averaged — gene_avg not supported anyway)
 
-Default config file:
+---
 
-- `figure1_pipeline_config.json` (panels, evals, score column names — **not** parquet paths)
+## Figure 1 pipeline
 
-Parquet inputs are **required on the CLI** for `run` and `compute` so you can swap tables without editing the preset.
-
-### Quick start
+End-to-end workflow: raw + pairwise metrics → panel table → QC → plots. Config (`figure1_pipeline_config.json`) holds **panel layout and column names**, not Parquet paths — paths are passed on the CLI.
 
 ```bash
 figure1-pipeline run \
   --config figure1_pipeline_config.json \
   --mode both \
   --raw-parquet /path/to/vsm_all_figure1_ready.parquet \
-  --pairwise-parquet /path/to/vsm_pairwise_mpc_anchor_figure1_ready.parquet
+  --pairwise-parquet /path/to/vsm_pairwise_anchor_figure1_ready.parquet \
+  --outdir results/figure1_run
 ```
 
-### Other modes
+### Subcommands
+
+| Command | Purpose |
+|---------|---------|
+| `run` | Compute, QC, and plot |
+| `compute` | Metrics + panel table + QC only |
+| `plot` | Plot from existing `panel_table.tsv` or metrics TSVs |
+
+### Useful flags
+
+| Flag | Description |
+|------|-------------|
+| `--mode` | `raw`, `pairwise`, or `both` |
+| `--profile` | `paper_figure1` (fixed panels) or `all_variant` (auto `is_pos_*` evals) |
+| `--output-layout` | `combined`, `per_eval`, or `both` |
+| `--threshold` | Panel/plot threshold (e.g. `0.95`) |
+| `--thresholds` | Override compute thresholds |
+| `--bootstrap N` | Pass through to biostat for `std_error` |
+| `--eval-set` | Override eval list |
+| `--paper-strict` | Fail if required paper evals are missing |
+| `--dry-run` | Print plan + validate parquets |
+| `--overwrite` | Replace existing outdir |
+
+### Typical outputs in `--outdir`
+
+- `figure1_run_resources.json` — ephemeral resources pointing at your parquets
+- `metrics_raw.tsv`, `metrics_pairwise.tsv`
+- `panel_table.tsv`, `qc_summary.tsv`, `qc_report.md`
+- `run_manifest.json`
+- `figure1_raw.png/pdf`, `figure1_pairwise.png/pdf`, `figure1_combined.png/pdf` (depending on `--mode`)
+
+Other preset configs in this directory: `figure1_pipeline_config_*.json`, `figure2_pipeline_config*.json`.
+
+---
+
+## Examples
+
+### Enrichment + bootstrap
 
 ```bash
-# Compute TSV/QC only (no plotting)
-figure1-pipeline compute \
-  --config figure1_pipeline_config.json \
-  --mode both \
-  --raw-parquet /path/to/vsm_all_figure1_ready.parquet \
-  --pairwise-parquet /path/to/vsm_pairwise_mpc_anchor_figure1_ready.parquet
-
-# Plot from an existing panel table
-figure1-pipeline plot --config figure1_pipeline_config.json --mode both --panel-table /path/to/panel_table.tsv
+biostat-cli \
+  --resources-json resources.json \
+  --table-name VSM_all_inner_per_v1 \
+  --eval-level variant \
+  --stat enrichment \
+  --thresholds 0.95 \
+  --bootstrap 20 \
+  --out-fname results/enrichment_boot20
 ```
 
-### Helpful options
+### Gene-averaged + coverage report
 
-- `--raw-parquet` / `--pairwise-parquet` — required for `run`/`compute` when the mode includes that family (`raw`, `pairwise`, or `both`)
-- `--outdir /path/to/output_dir` to choose output location
-- `--threshold 0.95` to select panel-plot threshold
-- `--thresholds 0.90,0.95,0.98,0.99` to override compute thresholds
-- `--dry-run` to preview what will run (for `run`/`compute`, also runs preflight validation on the parquets)
+```bash
+biostat-cli \
+  --resources-json resources.json \
+  --table-name VSM_all_inner_per_v1 \
+  --eval-level variant \
+  --stat gene_avg_enrichment,gene_avg_auc \
+  --gene-col ensg \
+  --write-gene-variant-coverage \
+  --out-fname results/gene_avg
+```
 
-### Expected outputs
+### Within-gene percentiles
 
-Each run directory contains:
+```bash
+biostat-cli \
+  --resources-json resources.json \
+  --table-name VSM_all_inner_per_v1 \
+  --eval-level variant \
+  --stat enrichment \
+  --within-gene-percentile \
+  --out-fname results/within_gene
+```
 
-- `figure1_run_resources.json` (ephemeral resources file written for this run; points at the CLI parquets)
-- `metrics_raw.tsv` (when mode includes `raw`)
-- `metrics_pairwise.tsv` (when mode includes `pairwise`)
-- `panel_table.tsv`
-- `qc_summary.tsv`
-- `qc_report.md`
-- `run_manifest.json`
-- `figure1_raw.png/pdf` (when mode includes `raw`)
-- `figure1_pairwise.png/pdf` (when mode includes `pairwise`)
-- `figure1_combined.png/pdf` (when mode is `both`)
+### Chromosome subset
+
+```bash
+biostat-cli \
+  --resources-json resources.json \
+  --table-name VSM_all_inner_per_v1 \
+  --eval-level variant \
+  --stat auc \
+  --chromosomes chr1,chr2,chrX \
+  --out-fname results/chr_subset
+```
+
+---
+
+## Project layout
+
+```
+eval/
+├── README.md                 # This file
+├── pyproject.toml            # Package biostat-cli 0.2.0
+├── resources.json            # Example table registry
+├── biostat_cli/              # Library + CLI
+│   ├── cli.py                # Serial runner (full feature set)
+│   ├── cli_parallel.py       # Parallel eval/filter runner
+│   ├── pipeline/             # figure1-pipeline
+│   └── stats/                # Stat implementations
+├── figure1_pipeline_config.json
+├── GENE_EVAL_EXPLANATION.md  # Gene-level eval modes
+└── tests/                    # pytest suite
+```
+
+Repo-specific driver scripts (e.g. `run_gene_eval.py`, `run_gsm_missense_pairwise_gene_avg.py`) wrap `biostat_cli` for particular Genetics Gym tables; treat them as examples once you understand the flags above.
+
+---
+
+## Development
+
+```bash
+cd genetics-gym-final/eval
+pip install -e ".[dev]"
+pytest
+```
+
+When changing CLI behavior, update this README in the same change (see `.cursor/rules/readme-sync.mdc`).
+
+---
+
+## Further reading
+
+- [GENE_EVAL_EXPLANATION.md](GENE_EVAL_EXPLANATION.md) — boolean vs `sum_variants` gene evals
+- [biostat_cli/BIOSTAT_PVALUE_STDERR_SLIDES.md](biostat_cli/BIOSTAT_PVALUE_STDERR_SLIDES.md) — p-values, bootstrap, and confidence intervals
