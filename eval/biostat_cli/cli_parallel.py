@@ -41,7 +41,7 @@ from biostat_cli.stats.binary import (
     VSM_COMPARISON_METHODS,
 )
 
-from biostat_cli.utils import WITHIN_GENE_COL
+from biostat_cli.utils import WITHIN_GENE_COL, apply_chromosome_filter, parse_chromosomes_arg
 
 ERROR_INVALID_THRESHOLD = 22
 
@@ -62,6 +62,7 @@ class RunArgs:
     within_gene_percentile: bool = False
     pvalue_method: str = DEFAULT_PVALUE_METHOD
     vsm_comparison_method: str = DEFAULT_VSM_COMPARISON_METHOD
+    chromosomes: str | None = None
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -103,6 +104,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--out-fname", required=True)
     parser.add_argument("--write-missing", choices=["none", "all", "any"], default="none")
+    parser.add_argument(
+        "--chromosomes",
+        default=None,
+        help="Comma-separated chromosome filter (supports 1-22,X,Y,MT with optional chr prefix)",
+    )
     return parser
 
 
@@ -375,9 +381,11 @@ def run(
     table = get_table_config(resources, args.table_name)
     thresholds = parse_thresholds(args.thresholds)
     requested_stats = parse_stats(args.stat)
+    chromosomes = parse_chromosomes_arg(args.chromosomes)
 
     # Share a single LazyFrame across all workers so parquet metadata is read once.
     source = scan_table(table.path)
+    source = apply_chromosome_filter(source, chromosomes)
     table_column_names = source.collect_schema().names()
     table_schema = set(table_column_names)
 
@@ -582,6 +590,7 @@ def main() -> None:
         write_missing=ns.write_missing,
         pvalue_method=ns.pvalue_method,
         vsm_comparison_method=ns.vsm_comparison_method,
+        chromosomes=ns.chromosomes,
     )
     try:
         output_paths = _resolve_output_paths(args.out_fname)

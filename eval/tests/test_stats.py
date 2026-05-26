@@ -36,7 +36,7 @@ from biostat_cli.stats.continuous import (
     compute_threshold_point_metrics,
     delong_two_auc_p_value,
 )
-from biostat_cli.utils import apply_within_gene_percentile
+from biostat_cli.utils import apply_within_gene_percentile, normalize_chromosome_token, parse_chromosomes_arg
 
 
 def test_auc_and_auprc_basic():
@@ -344,6 +344,18 @@ def test_parse_eval_totals_invalid_format():
         parse_eval_totals("eval_A=1000", "--case-total-by-eval")
 
 
+def test_parse_chromosomes_arg_normalizes_and_dedupes():
+    parsed = parse_chromosomes_arg("chr1,1, chrX ,chrM,mt,y")
+    assert parsed == ["1", "X", "MT", "Y"]
+
+
+def test_normalize_chromosome_token_rejects_invalid():
+    with pytest.raises(ValueError, match="Invalid chromosome token"):
+        normalize_chromosome_token("chr23")
+    with pytest.raises(ValueError, match="Invalid chromosome token"):
+        normalize_chromosome_token("GL000191.1")
+
+
 def test_resolve_eval_totals_priority():
     case_total, ctrl_total = _resolve_eval_totals(
         eval_col="eval_A",
@@ -492,6 +504,96 @@ def test_bootstrap_run_value_and_pvalue_stable(tmp_path):
     assert boot_row["std_error"] != pytest.approx(base_row["std_error"], rel=0, abs=1e-12)
     assert math.isnan(boot_row["enrichment_ci_lower"])
     assert math.isnan(boot_row["enrichment_ci_upper"])
+
+
+def test_chromosomes_filter_run_applies_before_stats(tmp_path):
+    df = pl.DataFrame(
+        {
+            "chrom": ["1", "1", "2", "2"],
+            "pos": [1, 2, 3, 4],
+            "ref": ["A"] * 4,
+            "alt": ["C"] * 4,
+            "eval_a": [True, False, True, False],
+            "score_x": [0.95, 0.9, 0.2, 0.1],
+        }
+    )
+    parquet_path = tmp_path / "chrom_filter.parquet"
+    resources_path = tmp_path / "resources_chrom_filter.json"
+    out_prefix = tmp_path / "out_chrom_filter"
+    df.write_parquet(str(parquet_path))
+    resources = {
+        "Table_info": {
+            "chrom_filter": {
+                "Path": str(parquet_path),
+                "Level": "variant",
+                "Score_cols": ["score_x"],
+                "evals": ["eval_a"],
+            }
+        }
+    }
+    resources_path.write_text(json.dumps(resources), encoding="utf-8")
+    args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="chrom_filter",
+        eval_level="variant",
+        stat="enrichment",
+        eval_set=None,
+        filters=None,
+        thresholds="0.5",
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+        chromosomes="chr1",
+    )
+    out_df, _, _, _, _, _ = run(args)
+    row = out_df.to_dicts()[0]
+    assert row["rows_used"] == 2
+    assert row["total_eval_rows"] == 2
+
+
+def test_chromosomes_filter_errors_when_column_absent(tmp_path):
+    df = pl.DataFrame(
+        {
+            "locus": ["1:1", "2:2"],
+            "alleles": ["A/C", "A/C"],
+            "eval_a": [True, False],
+            "score_x": [0.9, 0.1],
+        }
+    )
+    parquet_path = tmp_path / "no_chrom_col.parquet"
+    resources_path = tmp_path / "resources_no_chrom_col.json"
+    out_prefix = tmp_path / "out_no_chrom_col"
+    df.write_parquet(str(parquet_path))
+    resources = {
+        "Table_info": {
+            "no_chrom_col": {
+                "Path": str(parquet_path),
+                "Level": "variant",
+                "Score_cols": ["score_x"],
+                "evals": ["eval_a"],
+            }
+        }
+    }
+    resources_path.write_text(json.dumps(resources), encoding="utf-8")
+    args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="no_chrom_col",
+        eval_level="variant",
+        stat="enrichment",
+        eval_set=None,
+        filters=None,
+        thresholds="0.5",
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+        chromosomes="1",
+    )
+    with pytest.raises(ValueError, match="--chromosomes was provided"):
+        run(args)
 
 
 def test_bootstrap_pairwise_std_error(tmp_path):
@@ -1256,6 +1358,77 @@ def test_vsm_comparison_parallel_matches_serial_poisson(tmp_path):
         assert left["threshold"] == pytest.approx(right["threshold"])
         assert left["p_greater"] == pytest.approx(right["p_greater"])
         assert left["p_less"] == pytest.approx(right["p_less"])
+
+
+def test_chromosomes_filter_parallel_matches_serial(tmp_path):
+    from biostat_cli.cli_parallel import RunArgs as ParallelRunArgs
+    from biostat_cli.cli_parallel import run as run_parallel
+
+    df = pl.DataFrame(
+        {
+            "CHROM": ["chr1", "chr1", "chr2", "chr2", "chrX", "chrX"],
+            "POS": [1, 2, 3, 4, 5, 6],
+            "REF": ["A"] * 6,
+            "ALT": ["C"] * 6,
+            "eval_a": [True, False, True, False, True, False],
+            "score_x": [0.95, 0.9, 0.85, 0.1, 0.88, 0.2],
+        }
+    )
+    parquet_path = tmp_path / "parallel_chrom_filter.parquet"
+    resources_path = tmp_path / "resources_parallel_chrom_filter.json"
+    out_prefix = tmp_path / "out_parallel_chrom_filter"
+    df.write_parquet(str(parquet_path))
+    resources = {
+        "Table_info": {
+            "parallel_chrom_filter": {
+                "Path": str(parquet_path),
+                "Level": "variant",
+                "Score_cols": ["score_x"],
+                "evals": ["eval_a"],
+            }
+        }
+    }
+    resources_path.write_text(json.dumps(resources), encoding="utf-8")
+
+    serial_args = RunArgs(
+        resources_json=str(resources_path),
+        table_name="parallel_chrom_filter",
+        eval_level="variant",
+        stat="enrichment",
+        eval_set=None,
+        filters=None,
+        thresholds="0.8",
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        bootstrap_samples=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+        chromosomes="1,X",
+    )
+    serial_df, _, _, _, _, _ = run(serial_args)
+
+    parallel_args = ParallelRunArgs(
+        resources_json=str(resources_path),
+        table_name="parallel_chrom_filter",
+        eval_level="variant",
+        stat="enrichment",
+        eval_set=None,
+        filters=None,
+        thresholds="0.8",
+        case_total_by_eval=None,
+        ctrl_total_by_eval=None,
+        out_fname=str(out_prefix),
+        write_missing="none",
+        chromosomes="1,X",
+    )
+    parallel_df, _, _, _, _, _ = run_parallel(parallel_args)
+    assert serial_df.shape == parallel_df.shape
+    serial_row = serial_df.to_dicts()[0]
+    parallel_row = parallel_df.to_dicts()[0]
+    for key in ["eval_name", "filter_name", "score_name", "stat"]:
+        assert serial_row[key] == parallel_row[key]
+    for key in ["threshold", "value", "p_value", "tp", "fp", "tn", "fn", "rows_used", "total_eval_rows"]:
+        assert serial_row[key] == pytest.approx(parallel_row[key])
 
 
 # ---------------------------------------------------------------------------

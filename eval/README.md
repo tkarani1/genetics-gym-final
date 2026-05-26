@@ -66,6 +66,7 @@ pip install -e .
 - `--vsm-comparison-method` method for `vsm_comparison` pairwise VSM table: `fisher` (default) or `poisson`
 - `--gene-col` gene identifier column for gene-averaged stats (default: `ensg`)
 - `--write-gene-variant-coverage` write per-gene variant coverage report as a separate TSV (default: off)
+- `--chromosomes` optional comma-separated chromosome filter; accepts `1-22,X,Y,MT` and `chr`-prefixed forms (e.g., `chr1,chrX,chrM`). Unknown tokens fail fast.
 - `--out-fname` output naming schema/prefix (**required**)
 - `--write-missing` controls missing-entity report: `none`, `all`, or `any` (default: `none`)
 
@@ -108,6 +109,8 @@ Output paths are derived from `--out-fname`:
 - For `*_trunc` stats, truncation uses the score representation active in the run:
   - default: current score column values
   - with `--within-gene-percentile`: within-gene transformed score values
+- When `--chromosomes` is set, filtering is applied before eval/filter/stat computation and affects all outputs.
+- `--chromosomes` requires a chromosome column named `chrom` or `CHROM`; otherwise the run errors.
 - Default thresholds: `0.90,0.95,0.98,0.99`
 - Passing any threshold `> 1.0` exits with error code `22`
 

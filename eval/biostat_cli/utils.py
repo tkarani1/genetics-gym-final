@@ -4,6 +4,53 @@ from __future__ import annotations
 
 import polars as pl
 
+VALID_CHROMOSOMES = tuple([str(i) for i in range(1, 23)] + ["X", "Y", "MT"])
+
+
+def normalize_chromosome_token(token: str) -> str:
+    """Normalize user or table chromosome token to canonical format."""
+    value = token.strip()
+    if not value:
+        raise ValueError("Chromosome token cannot be empty.")
+    value = value.removeprefix("chr").removeprefix("CHR").upper()
+    if value == "M":
+        value = "MT"
+    if value not in VALID_CHROMOSOMES:
+        raise ValueError(
+            f"Invalid chromosome token {token!r}. Allowed values are 1-22, X, Y, MT "
+            "(optionally prefixed with 'chr')."
+        )
+    return value
+
+
+def parse_chromosomes_arg(raw: str | None) -> list[str]:
+    """Parse CLI chromosome CSV argument into canonical chromosome tokens."""
+    if raw is None or not raw.strip():
+        return []
+    normalized = [normalize_chromosome_token(part) for part in raw.split(",") if part.strip()]
+    # Keep user order but drop duplicates.
+    return list(dict.fromkeys(normalized))
+
+
+def chromosome_normalized_expr(chrom_col: str) -> pl.Expr:
+    """Normalize chromosome column values to canonical format used for filtering."""
+    chrom_norm = pl.col(chrom_col).cast(pl.Utf8).str.replace(r"(?i)^chr", "").str.to_uppercase()
+    return pl.when(chrom_norm == "M").then(pl.lit("MT")).otherwise(chrom_norm)
+
+
+def apply_chromosome_filter(source: pl.LazyFrame, chromosomes: list[str]) -> pl.LazyFrame:
+    """Apply chromosome inclusion filter to source LazyFrame."""
+    if not chromosomes:
+        return source
+    schema_names = source.collect_schema().names()
+    chrom_col = "chrom" if "chrom" in schema_names else "CHROM" if "CHROM" in schema_names else None
+    if chrom_col is None:
+        raise ValueError(
+            "--chromosomes was provided, but no chromosome column was found. "
+            "Expected one of: chrom, CHROM."
+        )
+    return source.filter(chromosome_normalized_expr(chrom_col).is_in(chromosomes))
+
 
 def normalize_chromosome_sort_expr(chrom_col: str) -> pl.Expr:
     """
@@ -18,7 +65,7 @@ def normalize_chromosome_sort_expr(chrom_col: str) -> pl.Expr:
     Returns:
         Polars expression for chromosome sort order.
     """
-    chrom_norm = pl.col(chrom_col).cast(pl.Utf8).str.replace(r"(?i)^chr", "").str.to_uppercase()
+    chrom_norm = chromosome_normalized_expr(chrom_col)
     chr_num = chrom_norm.cast(pl.Int64, strict=False)
     return (
         pl.when(chr_num.is_not_null())
@@ -106,6 +153,11 @@ def apply_within_gene_percentile(lf: pl.LazyFrame, score_col: str, gene_col: str
 
 
 __all__ = [
+    "VALID_CHROMOSOMES",
+    "normalize_chromosome_token",
+    "parse_chromosomes_arg",
+    "chromosome_normalized_expr",
+    "apply_chromosome_filter",
     "normalize_chromosome_sort_expr",
     "sort_by_genomic_position",
     "missing_category_sort_expr",
