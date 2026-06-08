@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Run the entire merge_v2 pipeline end-to-end and emit a full audit trail.
+"""Run the entire write_tables_pipeline pipeline end-to-end and emit a full audit trail.
 
-This is the single entry point for the ``merge_v2`` data build. Running it once
+This is the single entry point for the ``write_tables_pipeline`` data build. Running it once
 will (i) download every source table from GCS and (ii) produce every output
-Parquet table, by invoking each script in ``merge_v2/src`` in **dependency
+Parquet table, by invoking each script in ``write_tables_pipeline/src`` in **dependency
 order** so that each script's inputs are already on disk by the time it runs.
 
 Execution order (and why)
@@ -49,12 +49,12 @@ full transcripts, not possible-missense CDS variants) and would inflate
 ``variant_evals_all`` from ~72.7M to ~296.7M rows. That exclusion is set in
 ``config.json`` (the ``create_variant_eval_all_table`` step's ``args``), which is
 its single source of truth and is also applied to the audit's recorded inputs.
-See ``merge_v2/.agent_reports/obs_exp_mis_preprocessing_assessment.md``.
+See ``write_tables_pipeline/.agent_reports/obs_exp_mis_preprocessing_assessment.md``.
 
 The audit trail
 ---------------
 Every run writes ``aggregation_pipeline_{timestamp}.json`` (under
-``--report-dir``, default ``merge_v2/pipeline_runs``). It is a provenance /
+``--report-dir``, default ``write_tables_pipeline/pipeline_runs``). It is a provenance /
 forensics record so that, if anything looks wrong analytically, you can both
 (i) replay the exact command that produced any table and (ii) see where a row
 count changed (i.e. where data may have been lost or fanned out). The report is
@@ -103,10 +103,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Paths (resolved relative to this file: merge_v2/src/...)
+# Paths (resolved relative to this file: write_tables_pipeline/src/...)
 # ---------------------------------------------------------------------------
 SRC_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = SRC_DIR.parent  # merge_v2/
+PROJECT_DIR = SRC_DIR.parent  # write_tables_pipeline/
 DATA_DIR = PROJECT_DIR / "data"
 SCORES_MANIFEST = DATA_DIR / "processed_data" / "scores" / "score_input_data.json"
 EVALS_MANIFEST = DATA_DIR / "processed_data" / "evals" / "evals_input_data.json"
@@ -787,7 +787,7 @@ def main() -> int:
         "files_written": {},
     }
 
-    print(f"merge_v2 full data aggregation pipeline")
+    print(f"write_tables_pipeline full data aggregation pipeline")
     print(f"  python:  {sys.executable}")
     print(f"  steps:   {len(steps)}  ({', '.join(s.name for s in steps)})")
     print(f"  report:  {report_path}\n")

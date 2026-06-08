@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Join the score tables to the eval tables into ``full_analysis_tables``.
 
-This is the final assembly step of the merge_v2 pipeline. It takes most of the
+This is the final assembly step of the write_tables_pipeline pipeline. It takes most of the
 score Parquet files under ``../data/processed_data/scores`` and LEFT-JOINs them
 onto the merged eval tables under ``../data/processed_data/evals``, writing the
 results to ``../data/processed_data/full_analysis_tables``. Every output is
@@ -87,10 +87,10 @@ from pathlib import Path
 import duckdb
 
 # ---------------------------------------------------------------------------
-# Paths (resolved relative to this file: merge_v2/src/...)
+# Paths (resolved relative to this file: write_tables_pipeline/src/...)
 # ---------------------------------------------------------------------------
 SRC_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = SRC_DIR.parent  # merge_v2/
+PROJECT_DIR = SRC_DIR.parent  # write_tables_pipeline/
 PROC_DIR = PROJECT_DIR / "data" / "processed_data"
 SCORES_DIR = PROC_DIR / "scores"
 EVALS_DIR = PROC_DIR / "evals"

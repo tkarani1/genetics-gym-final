@@ -1,6 +1,6 @@
 # `src/`
 
-Scripts for building the `merge_v2` dataset. All scripts are intended to be
+Scripts for building the `write_tables_pipeline` dataset. All scripts are intended to be
 run from this `src/` directory and read/write to the parallel `../data/` tree.
 Paths are resolved relative to each script's own location, so they also work
 when invoked from elsewhere.
@@ -13,7 +13,7 @@ remaining sections document each underlying script, which can also be run on its
 own.
 
 ```
-merge_v2/
+write_tables_pipeline/
 ├── data/
 │   ├── raw_data/
 │   │   ├── input_data_locations.json       # GCS source manifest (downloads)
@@ -110,7 +110,7 @@ all counting with `--no-row-counts`).
 ### Usage
 
 ```bash
-# From merge_v2/src
+# From write_tables_pipeline/src
 python full_data_aggregation_pipeline.py                     # uses config.json
 python full_data_aggregation_pipeline.py --config my.json    # alternate config
 python full_data_aggregation_pipeline.py --no-skip-download  # override a config bool
@@ -192,7 +192,7 @@ gcloud auth login
 ### Usage
 
 ```bash
-# From merge_v2/src
+# From write_tables_pipeline/src
 python download_source_data.py                              # download everything (default)
 python download_source_data.py --score-tables variant_level # only score variant_level
 python download_source_data.py --eval-tables variant_level,gene_level
@@ -271,7 +271,7 @@ Runtime is intentionally traded for a bounded memory/disk footprint.
 ### Usage
 
 ```bash
-# From merge_v2/src (requires the score sources to be downloaded first)
+# From write_tables_pipeline/src (requires the score sources to be downloaded first)
 python create_variant_scores_all_table.py
 python create_variant_scores_all_table.py --memory-limit 8GB --threads 4
 python create_variant_scores_all_table.py --output /tmp/scores.parquet
@@ -328,7 +328,7 @@ sources that carry `chrom` directly.
 ### Usage
 
 ```bash
-# From merge_v2/src (requires the eval sources to be downloaded first:
+# From write_tables_pipeline/src (requires the eval sources to be downloaded first:
 #   python download_source_data.py --eval-tables variant_level)
 python create_variant_eval_all_table.py
 python create_variant_eval_all_table.py --memory-limit 20GB
@@ -381,7 +381,7 @@ supported via a `**/*.parquet` glob.
 ### Usage
 
 ```bash
-# From merge_v2/src (requires the gene-level eval sources to be downloaded first:
+# From write_tables_pipeline/src (requires the gene-level eval sources to be downloaded first:
 #   python download_source_data.py --eval-tables gene_level)
 python create_ensg_eval_all_table.py
 python create_ensg_eval_all_table.py --memory-limit 20GB
@@ -462,7 +462,7 @@ time, so peak memory/disk is bounded; runtime is traded for that footprint.
 ### Usage
 
 ```bash
-# From merge_v2/src (requires variant_scores_all_outer.parquet to exist first)
+# From write_tables_pipeline/src (requires variant_scores_all_outer.parquet to exist first)
 python create_percentile_score_tables.py                       # both datasets (ensg skipped)
 python create_percentile_score_tables.py --variant             # variant only
 python create_percentile_score_tables.py --memory-limit 20GB --threads 4
@@ -549,7 +549,7 @@ existing output files are **skipped** (resumable) unless `--overwrite` is set.
 ### Usage
 
 ```bash
-# From merge_v2/src (requires variant_scores_all_outer.parquet and, for pairwise_pre,
+# From write_tables_pipeline/src (requires variant_scores_all_outer.parquet and, for pairwise_pre,
 # variant_scores_outer_pre_percentile.parquet to exist first)
 python create_pairwise_score_tables.py --variant                    # raw + pre + post
 python create_pairwise_score_tables.py --variant --anchor cadd      # different anchor
@@ -619,7 +619,7 @@ in flight at a time.
 ### Usage
 
 ```bash
-# From merge_v2/src (requires the score tables and the linker to exist first:
+# From write_tables_pipeline/src (requires the score tables and the linker to exist first:
 #   python download_source_data.py --linker-table all)
 python create_variant_scores_gene_aggregation.py
 python create_variant_scores_gene_aggregation.py --input variant_scores_all_outer.parquet
@@ -740,7 +740,7 @@ streamed in one pass** without ever materializing the wide table:
 ### Usage
 
 ```bash
-# From merge_v2/src (requires the input score table, the linker, and the
+# From write_tables_pipeline/src (requires the input score table, the linker, and the
 # filters to exist locally first):
 python download_source_data.py --linker-table all --filter-tables all
 python create_percentile_score_tables.py --variant   # builds the default input
@@ -820,7 +820,7 @@ outputs are skipped (resumable) unless `--overwrite` is set.
 ### Usage
 
 ```bash
-# From merge_v2/src (requires the score tables and both eval tables to exist first)
+# From write_tables_pipeline/src (requires the score tables and both eval tables to exist first)
 python create_analysis_tables.py                          # all three groups
 python create_analysis_tables.py --groups variant pairwise
 python create_analysis_tables.py --groups gene --memory-limit 20GB

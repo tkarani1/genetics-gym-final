@@ -77,10 +77,10 @@ from pathlib import Path
 import duckdb
 
 # ---------------------------------------------------------------------------
-# Paths (resolved relative to this file: merge_v2/src/...)
+# Paths (resolved relative to this file: write_tables_pipeline/src/...)
 # ---------------------------------------------------------------------------
 SRC_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = SRC_DIR.parent  # merge_v2/
+PROJECT_DIR = SRC_DIR.parent  # write_tables_pipeline/
 DATA_DIR = PROJECT_DIR / "data"
 SCORES_DIR = DATA_DIR / "processed_data" / "scores"
 LINKER_PARQUET = DATA_DIR / "raw_data" / "linker" / "linker_all.parquet"

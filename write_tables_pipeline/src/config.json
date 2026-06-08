@@ -7,7 +7,7 @@
     "memory_limit": "DuckDB memory limit forwarded to every DuckDB step, e.g. '20GB' (null = DuckDB default).",
     "threads": "DuckDB worker threads forwarded to every DuckDB step (null = DuckDB auto).",
     "temp_dir": "Spill/build scratch dir forwarded to every DuckDB step (null = each script's default).",
-    "report_dir": "Directory for the aggregation_pipeline_*.json audit (null = merge_v2/pipeline_runs).",
+    "report_dir": "Directory for the aggregation_pipeline_*.json audit (null = write_tables_pipeline/pipeline_runs).",
     "count_text_inputs": "Also count rows of raw TSV/bgz text sources (full scan; slow). Parquet is always counted from footer metadata.",
     "no_row_counts": "Disable all row counting (fastest auditing).",
     "continue_on_error": "Keep running subsequent steps even if one fails (default: stop at first failure).",

@@ -82,10 +82,10 @@ from pathlib import Path
 import duckdb
 
 # ---------------------------------------------------------------------------
-# Paths (resolved relative to this file: merge_v2/src/...)
+# Paths (resolved relative to this file: write_tables_pipeline/src/...)
 # ---------------------------------------------------------------------------
 SRC_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = SRC_DIR.parent  # merge_v2/
+PROJECT_DIR = SRC_DIR.parent  # write_tables_pipeline/
 SCORES_DIR = PROJECT_DIR / "data" / "processed_data" / "scores"
 DEFAULT_VARIANT_INPUT = SCORES_DIR / "variant_scores_all_outer.parquet"
 DEFAULT_ENSG_INPUT = SCORES_DIR / "ensg_scores_all.parquet"
