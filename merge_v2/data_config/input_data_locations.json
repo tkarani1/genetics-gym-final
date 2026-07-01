@@ -17,7 +17,10 @@
       "gs://genetics-gym/vsm-tables/coalesced/coalesced_snp_PAI3D.tsv.bgz",
       "gs://genetics-gym/vsm-tables/coalesced/coalesced_snp_misfit.tsv.bgz",
       "gs://genetics-gym/vsm-tables/coalesced/coalesced_snp_mpc.tsv.bgz",
-      "gs://genetics-gym/vsm-tables/coalesced/coalesced_snp_polyphen.tsv.bgz"
+      "gs://genetics-gym/vsm-tables/coalesced/coalesced_snp_polyphen.tsv.bgz",
+      "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/MutScore.parquet",
+      "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/SNPred_scores.parquet",
+      "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/VEST4_MetaRNN_scores.parquet"
     ],
     "gene_level": []
   },
