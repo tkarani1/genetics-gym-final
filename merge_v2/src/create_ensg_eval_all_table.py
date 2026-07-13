@@ -62,6 +62,8 @@ from pathlib import Path
 
 import duckdb
 
+import variant_dtypes as vdt
+
 # ---------------------------------------------------------------------------
 # Paths (resolved relative to this file: merge_v2/src/...)
 # ---------------------------------------------------------------------------
@@ -218,9 +220,17 @@ def _bool_cast(src_col: str) -> str:
 
 
 def analyze_source(
-    con: duckdb.DuckDBPyConnection, entry: dict
+    con: duckdb.DuckDBPyConnection, entry: dict, compact: bool = False
 ) -> tuple[str, dict[str, str], dict[str, tuple[str, str]]]:
     """Introspect one source: reader, key casts, and per-field (cast, agg).
+
+    Parameters
+    ----------
+    compact : bool
+        Accepted for run-wide uniformity but a no-op here: this gene-level table
+        has no variant key, ``is_pos``-style labels are ``BOOLEAN`` and numeric
+        fields single-precision ``FLOAT`` in both profiles. The gene key
+        ``ensg`` is a VARCHAR regardless.
 
     Returns
     -------
@@ -229,8 +239,7 @@ def analyze_source(
     key_casts : dict[canonical_key -> sql_expr]
         Cast yielding each canonical key (resolves the ``ensg`` alias to VARCHAR).
     field_specs : dict[output_name -> (cast_expr, agg_func)]
-        Per eval field: the cast expression and the dedup aggregate to use
-        (``bool_or`` for boolean labels, ``max`` for numeric fields).
+        Per eval field: the cast expression and the dedup aggregate to use.
     """
     file_path = entry["file_path"]
     resolved = resolve_path(file_path)
@@ -264,7 +273,7 @@ def analyze_source(
                     f"Available: {sorted(available)}"
                 )
             if _is_bool_field(out_col, types[src_col]):
-                field_specs[out_col] = (_bool_cast(src_col), "bool_or")
+                field_specs[out_col] = vdt.bool_field_spec(_bool_cast(src_col), compact)
             else:
                 field_specs[out_col] = (f"TRY_CAST({q(src_col)} AS FLOAT)", "max")
 
@@ -381,6 +390,12 @@ def main() -> int:
         help="Parquet row group size (default: 512000).",
     )
     parser.add_argument(
+        "--compact-dtypes", action=argparse.BooleanOptionalAction, default=False,
+        help="No-op for this gene-level table (keyed by ensg, is_pos is BOOLEAN "
+             "in both profiles); accepted only for run-wide consistency with the "
+             "variant-level builders.",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print the assembled SQL and exit without writing.",
     )
@@ -415,13 +430,13 @@ def main() -> int:
     con = duckdb.connect(str(db_path))
     try:
         configure(con, args.memory_limit, args.threads, temp_dir)
-        sources = [analyze_source(con, entry) for entry in entries]
+        sources = [analyze_source(con, entry, args.compact_dtypes) for entry in entries]
         statements, field_names = build_statements(sources, final_table)
 
         print(f"Merging {len(entries)} source(s) -> {len(field_names)} eval field(s):")
         for _reader, _keys, field_specs in sources:
-            for name, (_cast, agg) in field_specs.items():
-                kind = "bool" if agg == "bool_or" else "float"
+            for name in field_specs:
+                kind = "label" if name.lower().startswith("is_pos") else "float"
                 print(f"  - {name} ({kind})")
         print(f"Merge: sequential materialized FULL OUTER JOIN on {JOIN_KEYS}")
         print(f"Build DB / spill dir: {temp_dir}")

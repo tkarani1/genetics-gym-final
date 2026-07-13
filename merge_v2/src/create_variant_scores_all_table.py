@@ -75,6 +75,8 @@ from pathlib import Path
 
 import duckdb
 
+import variant_dtypes as vdt
+
 # ---------------------------------------------------------------------------
 # Paths (resolved relative to this file: merge_v2/src/...)
 # ---------------------------------------------------------------------------
@@ -84,11 +86,15 @@ INPUT_JSON = PROJECT_DIR / "data_config" / "score_input_data.json"
 DEFAULT_OUTPUT = PROJECT_DIR / "data" / "processed_data" / "scores" / "variant_scores_all_outer.parquet"
 
 # Canonical join key -> accepted source column aliases (first match wins).
+# Some sources (e.g. MutScore/SNPred/VEST4_MetaRNN) do not carry a conforming
+# chrom/pos column but do expose Hail's ``locus.contig`` ('chr1') / ``locus.position``
+# in the exact target format, so those are accepted as aliases; capitalized
+# ``Ref``/``Alt`` are accepted for the same sources.
 KEY_SPEC: dict[str, list[str]] = {
-    "chrom": ["chrom", "chr"],
-    "pos": ["pos"],
-    "ref": ["ref"],
-    "alt": ["alt"],
+    "chrom": ["chrom", "chr", "locus.contig"],
+    "pos": ["pos", "locus.position"],
+    "ref": ["ref", "Ref"],
+    "alt": ["alt", "Alt"],
 }
 JOIN_KEYS = list(KEY_SPEC.keys())
 
@@ -208,8 +214,24 @@ def source_columns(con: duckdb.DuckDBPyConnection, reader: str) -> list[str]:
     return [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {reader}").fetchall()]
 
 
-def analyze_source(con: duckdb.DuckDBPyConnection, entry: dict) -> tuple[str, dict[str, str], dict[str, str]]:
-    """Introspect one source and return its reader, key casts, and score casts.
+def analyze_source(
+    con: duckdb.DuckDBPyConnection,
+    entry: dict,
+    compact: bool = False,
+) -> tuple[str, dict[str, str], dict[str, str], str | None]:
+    """Introspect one source: reader, key casts, score casts, and SNV filter.
+
+    Parameters
+    ----------
+    compact : bool
+        When true, keys/scores are emitted in the compact numeric profile
+        (see ``variant_dtypes``): ``chrom`` UTINYINT, ``pos`` UINTEGER,
+        ``ref``/``alt`` the single ASCII byte (``UTINYINT``), scores ``DOUBLE``;
+        rows whose raw ``ref``/``alt`` is not a single base are dropped at build
+        time (see ``dedup_source_sql``). When false (default) the historical
+        types are kept (``chrom`` VARCHAR, ``pos`` BIGINT, ``ref``/``alt``
+        VARCHAR, scores single-precision ``FLOAT`` to roughly halve the on-disk
+        footprint) and all rows are retained.
 
     Returns
     -------
@@ -217,11 +239,14 @@ def analyze_source(con: duckdb.DuckDBPyConnection, entry: dict) -> tuple[str, di
         The DuckDB table-function expression reading the file.
     key_casts : dict[canonical_key -> sql_expr]
         Cast expression that yields each canonical join key (resolving the
-        ``chr``/``chrom`` alias and casting ``pos`` to BIGINT).
+        ``chr``/``chrom`` alias) in the active type profile.
     score_casts : dict[output_name -> sql_expr]
-        Cast expression (``TRY_CAST(... AS FLOAT)``) for each score this
-        source contributes, keyed by the output column name. Scores are stored
-        as single-precision ``FLOAT`` to roughly halve the on-disk footprint.
+        Cast expression for each score this source contributes, keyed by the
+        output column name.
+    snv_pred : str | None
+        A predicate over the **raw VARCHAR** alleles that keeps only SNVs
+        (compact mode), or ``None`` in the default profile. Applied before the
+        ``ref``/``alt`` encoding, where ``length()`` is still meaningful.
     """
     file_path = entry["file_path"]
     resolved = resolve_path(file_path)
@@ -236,6 +261,7 @@ def analyze_source(con: duckdb.DuckDBPyConnection, entry: dict) -> tuple[str, di
     available = set(source_columns(con, reader))
 
     key_casts: dict[str, str] = {}
+    raw_keys: dict[str, str] = {}
     for canon, aliases in KEY_SPEC.items():
         src_col = next((a for a in aliases if a in available), None)
         if src_col is None:
@@ -244,8 +270,24 @@ def analyze_source(con: duckdb.DuckDBPyConnection, entry: dict) -> tuple[str, di
                 f"(looked for {aliases}). Available: {sorted(available)}"
             )
         cast_type = "BIGINT" if canon == "pos" else "VARCHAR"
-        key_casts[canon] = f"TRY_CAST({q(src_col)} AS {cast_type})"
+        raw = f"TRY_CAST({q(src_col)} AS {cast_type})"
+        if canon == "chrom":
+            # Sources declare chrom inconsistently: some as a 'chr'-prefixed string
+            # ('chr1'), some unprefixed ('1'), some as an integer. Normalize to the
+            # canonical 'chr'-prefixed VARCHAR so every source joins on the same key.
+            # No-op for already-prefixed values; compact mode strips the prefix again
+            # in encode_chrom, so this stays compatible with both dtype profiles.
+            raw = (
+                f"CASE WHEN {raw} IS NULL THEN NULL "
+                f"WHEN {raw} LIKE 'chr%' THEN {raw} "
+                f"ELSE 'chr' || {raw} END"
+            )
+        raw_keys[canon] = raw
+        key_casts[canon] = vdt.key_expr(canon, raw, compact)
 
+    snv_pred = vdt.snv_only_predicate(raw_keys["ref"], raw_keys["alt"], compact)
+
+    score_type = vdt.score_type(compact)
     score_casts: dict[str, str] = {}
     for mapping in entry.get("score_fields", []):
         for src_col, out_col in mapping.items():
@@ -254,22 +296,31 @@ def analyze_source(con: duckdb.DuckDBPyConnection, entry: dict) -> tuple[str, di
                     f"ERROR: {file_path}: score column '{src_col}' not found. "
                     f"Available: {sorted(available)}"
                 )
-            score_casts[out_col] = f"TRY_CAST({q(src_col)} AS FLOAT)"
+            score_casts[out_col] = f"TRY_CAST({q(src_col)} AS {score_type})"
 
-    return reader, key_casts, score_casts
+    return reader, key_casts, score_casts, snv_pred
 
 
-def dedup_source_sql(reader: str, key_casts: dict[str, str], score_casts: dict[str, str]) -> str:
+def dedup_source_sql(
+    reader: str, key_casts: dict[str, str], score_casts: dict[str, str],
+    snv_pred: str | None = None,
+) -> str:
     """A per-source subquery: keys + this source's scores, deduped on the key.
 
     Casts keys/scores, then collapses to one row per ``(chrom, pos, ref, alt)``
     via ``max()`` (ignores NULLs, deterministic). Deduping each source *before*
     joining is what keeps the row count bounded at ~one-per-variant and prevents
     a duplicate key from multiplying rows across the join chain.
+
+    ``snv_pred`` (compact mode) filters non-SNV rows on the **raw** alleles in the
+    inner scan -- before ``ref``/``alt`` are encoded to a single ASCII byte, so a
+    multi-character allele can still be detected via ``length()``.
     """
     cast_cols = [f"{key_casts[k]} AS {q(k)}" for k in JOIN_KEYS]
     cast_cols += [f"{expr} AS {q(name)}" for name, expr in score_casts.items()]
     inner = "SELECT " + ", ".join(cast_cols) + f" FROM {reader}"
+    if snv_pred:
+        inner += f" WHERE {snv_pred}"
 
     keys_sql = ", ".join(q(k) for k in JOIN_KEYS)
     agg_sql = ", ".join(f"max({q(name)}) AS {q(name)}" for name in score_casts)
@@ -281,7 +332,7 @@ def dedup_source_sql(reader: str, key_casts: dict[str, str], score_casts: dict[s
 
 
 def build_statements(
-    sources: list[tuple[str, dict[str, str], dict[str, str]]],
+    sources: list[tuple[str, dict[str, str], dict[str, str], str | None]],
     final_table: str,
 ) -> tuple[list[str], list[str]]:
     """Build the sequential, materialized full-outer-join statements.
@@ -303,22 +354,24 @@ def build_statements(
     growing wide table -- not by all sources at once.
     """
     score_names: list[str] = []
-    for _reader, _keys, score_casts in sources:
+    for _reader, _keys, score_casts, _snv in sources:
         score_names.extend(score_casts.keys())
 
     using = "(" + ", ".join(q(k) for k in JOIN_KEYS) + ")"
     statements: list[str] = []
 
-    reader0, keys0, scores0 = sources[0]
-    statements.append(f"CREATE TABLE stage0 AS\n{dedup_source_sql(reader0, keys0, scores0)}")
+    reader0, keys0, scores0, snv0 = sources[0]
+    statements.append(
+        f"CREATE TABLE stage0 AS\n{dedup_source_sql(reader0, keys0, scores0, snv0)}"
+    )
 
     prev = "stage0"
     for i in range(1, len(sources)):
-        reader, keys, scores = sources[i]
+        reader, keys, scores, snv = sources[i]
         cur = f"stage{i}"
         statements.append(
             f"CREATE TABLE {cur} AS\nSELECT * FROM {prev}\n"
-            f"FULL JOIN (\n{dedup_source_sql(reader, keys, scores)}\n) USING {using}"
+            f"FULL JOIN (\n{dedup_source_sql(reader, keys, scores, snv)}\n) USING {using}"
         )
         statements.append(f"DROP TABLE {prev}")
         prev = cur
@@ -377,6 +430,10 @@ def main() -> int:
         help="Parquet row group size (default: 512000).",
     )
     parser.add_argument(
+        "--compact-dtypes", action=argparse.BooleanOptionalAction, default=False,
+        help=vdt.FLAG_HELP,
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print the assembled SQL and exit without writing.",
     )
@@ -413,12 +470,17 @@ def main() -> int:
     con = duckdb.connect(str(db_path))
     try:
         configure(con, args.memory_limit, args.threads, temp_dir)
-        sources = [analyze_source(con, entry) for entry in entries]
+        sources = [
+            analyze_source(con, entry, args.compact_dtypes)
+            for entry in entries
+        ]
         statements, score_names = build_statements(sources, final_table)
 
+        profile = "compact numeric" if args.compact_dtypes else "default"
         print(f"Merging {len(entries)} source(s) -> {len(score_names)} score field(s):")
         for name in score_names:
             print(f"  - {name}")
+        print(f"Dtype profile: {profile}")
         print(f"Merge: sequential materialized FULL OUTER JOIN on {JOIN_KEYS}")
         print(f"Build DB / spill dir: {temp_dir}")
         print(f"Output: {args.output}\n")

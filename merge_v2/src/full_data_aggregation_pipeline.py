@@ -149,6 +149,7 @@ FLAG_MEMORY = "memory_limit"
 FLAG_THREADS = "threads"
 FLAG_TEMP = "temp_dir"
 FLAG_OVERWRITE = "overwrite"
+FLAG_COMPACT = "compact_dtypes"
 
 # Conservative built-in fallback used only when config.json is missing or
 # ``--no-config`` is given. config.json next to this file is the user-facing
@@ -156,6 +157,7 @@ FLAG_OVERWRITE = "overwrite"
 DEFAULT_PIPELINE = {
     "skip_download": False,
     "overwrite": False,
+    "compact_dtypes": False,
     "memory_limit": None,
     "threads": None,
     "temp_dir": None,
@@ -171,27 +173,54 @@ DEFAULT_PIPELINE = {
 
 _DUCK = [FLAG_MEMORY, FLAG_THREADS, FLAG_TEMP]
 _DUCK_OVERWRITE = _DUCK + [FLAG_OVERWRITE]
+# --input paths for the gene-aggregated filtered steps are relative to SRC_DIR
+# (each step runs with cwd=SRC_DIR), matching the other steps' ../data/... refs.
+_GENE_AGG_EVAL_DIR = "../data/processed_data/full_analysis_tables/gene_aggregated"
+# Steps that set or re-derive the variant key / value types must all honor the
+# run-wide compact-dtypes flag, or their outputs/joins would be type-mismatched.
+_DUCK_COMPACT = _DUCK + [FLAG_COMPACT]
+_DUCK_OVERWRITE_COMPACT = _DUCK_OVERWRITE + [FLAG_COMPACT]
 DEFAULT_STEPS = [
     {"name": "download_source_data", "script": "download_source_data.py",
      "args": [], "passthrough": [], "enabled": True},
     {"name": "create_variant_scores_all_table", "script": "create_variant_scores_all_table.py",
-     "args": [], "passthrough": _DUCK, "enabled": True},
+     "args": [], "passthrough": _DUCK_COMPACT, "enabled": True},
     {"name": "create_variant_eval_all_table", "script": "create_variant_eval_all_table.py",
-     "args": [], "passthrough": _DUCK, "enabled": True},
+     "args": [], "passthrough": _DUCK_COMPACT, "enabled": True},
     {"name": "create_ensg_eval_all_table", "script": "create_ensg_eval_all_table.py",
-     "args": [], "passthrough": _DUCK, "enabled": True},
+     "args": [], "passthrough": _DUCK_COMPACT, "enabled": True},
     {"name": "create_percentile_score_tables", "script": "create_percentile_score_tables.py",
      "args": ["--variant"], "passthrough": _DUCK, "enabled": True},
     {"name": "create_variant_scores_gene_aggregation", "script": "create_variant_scores_gene_aggregation.py",
-     "args": ["--gene-agg-stats"], "passthrough": _DUCK_OVERWRITE, "enabled": True},
+     "args": ["--gene-agg-stats"], "passthrough": _DUCK_OVERWRITE_COMPACT, "enabled": True},
     {"name": "create_pairwise_score_tables", "script": "create_pairwise_score_tables.py",
      "args": ["--variant"], "passthrough": _DUCK_OVERWRITE, "enabled": True},
     {"name": "create_pairwise_consolidated_score_tables", "script": "create_pairwise_consolidated_score_tables.py",
      "args": ["--variant"], "passthrough": _DUCK_OVERWRITE, "enabled": False},
     {"name": "created_variant_scores_filtered_tables", "script": "created_variant_scores_filtered_tables.py",
-     "args": [], "passthrough": _DUCK_OVERWRITE, "enabled": True},
+     "args": [], "passthrough": _DUCK_OVERWRITE_COMPACT, "enabled": True},
     {"name": "create_analysis_tables", "script": "create_analysis_tables.py",
      "args": [], "passthrough": _DUCK_OVERWRITE, "enabled": True},
+    # Gene-aggregated filtered tables: one invocation per gene-aggregated *_eval
+    # analysis table (outer/inner x eval/deduped). create_gene_aggregated_filtered_table.py
+    # takes a single --input and does NOT accept --compact-dtypes (so it is not in
+    # the passthrough); it appends the filter columns via row-preserving LEFT joins.
+    {"name": "create_gene_aggregated_filtered_outer",
+     "script": "create_gene_aggregated_filtered_table.py",
+     "args": ["--input", f"{_GENE_AGG_EVAL_DIR}/variant_scores_all_outer_ensg_stats_eval.parquet"],
+     "passthrough": _DUCK_OVERWRITE, "enabled": False},
+    {"name": "create_gene_aggregated_filtered_outer_deduped",
+     "script": "create_gene_aggregated_filtered_table.py",
+     "args": ["--input", f"{_GENE_AGG_EVAL_DIR}/variant_scores_all_outer_ensg_stats_eval_deduped.parquet"],
+     "passthrough": _DUCK_OVERWRITE, "enabled": False},
+    {"name": "create_gene_aggregated_filtered_inner",
+     "script": "create_gene_aggregated_filtered_table.py",
+     "args": ["--input", f"{_GENE_AGG_EVAL_DIR}/variant_scores_all_inner_ensg_stats_eval.parquet"],
+     "passthrough": _DUCK_OVERWRITE, "enabled": False},
+    {"name": "create_gene_aggregated_filtered_inner_deduped",
+     "script": "create_gene_aggregated_filtered_table.py",
+     "args": ["--input", f"{_GENE_AGG_EVAL_DIR}/variant_scores_all_inner_ensg_stats_eval_deduped.parquet"],
+     "passthrough": _DUCK_OVERWRITE, "enabled": False},
 ]
 
 # DuckDB is optional here -- only used to read (free) Parquet row counts. If it
@@ -332,7 +361,23 @@ def step_io_map() -> dict[str, dict[str, list[str]]]:
 
     p_scores = "data/processed_data/scores"
     p_evals = "data/processed_data/evals"
+    p_gene_agg = "data/processed_data/full_analysis_tables/gene_aggregated"
     linker = "data/raw_data/linker/linker_all.parquet"
+    filter_trees = [
+        "tree:data/raw_data/filters/variant",
+        "tree:data/raw_data/filters/ensg",
+    ]
+
+    def gene_agg_filtered_io(eval_stem: str) -> dict[str, list[str]]:
+        """Audit I/O for one create_gene_aggregated_filtered_table.py step.
+
+        Consumes a gene-aggregated ``*_eval[_deduped].parquet`` analysis table plus
+        every variant/gene filter; produces the ``*_filtered.parquet`` sibling.
+        """
+        return {
+            "inputs": [f"{p_gene_agg}/{eval_stem}.parquet", *filter_trees],
+            "outputs": [f"{p_gene_agg}/{eval_stem}_filtered.parquet"],
+        }
 
     return {
         "download_source_data": {
@@ -405,6 +450,18 @@ def step_io_map() -> dict[str, dict[str, list[str]]]:
             ],
             "outputs": ["tree:data/processed_data/full_analysis_tables"],
         },
+        "create_gene_aggregated_filtered_outer": gene_agg_filtered_io(
+            "variant_scores_all_outer_ensg_stats_eval"
+        ),
+        "create_gene_aggregated_filtered_outer_deduped": gene_agg_filtered_io(
+            "variant_scores_all_outer_ensg_stats_eval_deduped"
+        ),
+        "create_gene_aggregated_filtered_inner": gene_agg_filtered_io(
+            "variant_scores_all_inner_ensg_stats_eval"
+        ),
+        "create_gene_aggregated_filtered_inner_deduped": gene_agg_filtered_io(
+            "variant_scores_all_inner_ensg_stats_eval_deduped"
+        ),
     }
 
 
@@ -584,6 +641,8 @@ def build_command(step: Step, args: argparse.Namespace) -> list[str]:
         cmd += ["--temp-dir", str(args.temp_dir)]
     if FLAG_OVERWRITE in step.passthrough and args.overwrite:
         cmd += ["--overwrite"]
+    if FLAG_COMPACT in step.passthrough and args.compact_dtypes:
+        cmd += ["--compact-dtypes"]
     return cmd
 
 
@@ -720,6 +779,16 @@ def main() -> int:
         help="Forward --overwrite to steps that skip existing outputs by default "
              "(gene aggregation, pairwise, filtered, analysis). The score/eval/"
              "percentile steps always rewrite their outputs regardless.",
+    )
+    parser.add_argument(
+        "--compact-dtypes", action=argparse.BooleanOptionalAction,
+        default=bool(pipe.get("compact_dtypes", False)),
+        help="Build the whole run in the compact numeric dtype profile "
+             "(chrom UTINYINT, pos UINTEGER, ref/alt UTINYINT single-byte ASCII "
+             "[non-SNV rows dropped], is_pos BOOLEAN, score DOUBLE). Forwarded to "
+             "every key-producing/consuming step so the tables stay "
+             "join-compatible. Default off (historical VARCHAR/BIGINT/FLOAT/"
+             "BOOLEAN types), keeping all rows.",
     )
     parser.add_argument(
         "--memory-limit", default=pipe["memory_limit"],

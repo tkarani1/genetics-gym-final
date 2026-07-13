@@ -96,6 +96,36 @@
       "score_fields": [
         {"polyphen_score": "polyphen"}
       ]
+    },
+    {
+      "file_path": "data/raw_data/scores/scores_prior.parquet",
+      "score_fields": [
+        {"s_prior_AlphaMissense_norm": "s_prior_AlphaMissense_norm"},
+        {"s_AlphaMissense_norm": "s_AlphaMissense_norm"},
+        {"s_prior_popEVE_neg": "s_prior_popEVE_neg"},
+        {"s_popEVE_neg": "s_popEVE_neg"},
+        {"s_prior_esm_score_neg": "s_prior_esm_score_neg"},
+        {"s_esm_score_neg": "s_esm_score_neg"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/scores/MutScore.parquet",
+      "score_fields": [
+        {"MutScore": "MutScore"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/scores/SNPred_scores.parquet",
+      "score_fields": [
+        {"SNPred_score": "SNPred"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/scores/VEST4_MetaRNN_scores.parquet",
+      "score_fields": [
+        {"VEST4_score": "VEST4"},
+        {"MetaRNN_score": "MetaRNN"}
+      ]
     }
   ],
   "gene_level": []

@@ -76,6 +76,8 @@ from pathlib import Path
 
 import duckdb
 
+import variant_dtypes as vdt
+
 # ---------------------------------------------------------------------------
 # Paths (resolved relative to this file: merge_v2/src/...)
 # ---------------------------------------------------------------------------
@@ -190,12 +192,32 @@ def keys_using() -> str:
     return "(" + ", ".join(q(k) for k in VARIANT_KEYS) + ")"
 
 
-def linker_join_sql(prev_from: str, linker_reader: str, join_type: str) -> str:
-    """FULL/LEFT OUTER JOIN the wide table to the linker, adding ``ensg``."""
-    linker = (
-        f"SELECT {', '.join(q(k) for k in VARIANT_KEYS)}, {q(ENSG_COL)} "
-        f"FROM {linker_reader}"
-    )
+def _key_projection(compact: bool) -> list[str]:
+    """``TRY_CAST(...)``/encoded projections for the variant key, one per key.
+
+    Yields the historical VARCHAR/BIGINT casts by default, or the compact
+    numeric encoding (matching the score table's keys) when ``compact`` is set.
+    """
+    out = []
+    for k in VARIANT_KEYS:
+        raw = f"TRY_CAST({q(k)} AS {'BIGINT' if k == 'pos' else 'VARCHAR'})"
+        out.append(f"{vdt.key_expr(k, raw, compact)} AS {q(k)}")
+    return out
+
+
+def linker_join_sql(prev_from: str, linker_reader: str, join_type: str, compact: bool) -> str:
+    """FULL/LEFT OUTER JOIN the wide table to the linker, adding ``ensg``.
+
+    In the compact profile the linker's raw keys are encoded so they match the
+    (already-encoded) keys of the wide score table on the ``USING`` join, and its
+    non-SNV rows are dropped so a FULL JOIN cannot re-introduce indels/MNVs. The
+    SNV filter runs on the linker's **raw** ``ref``/``alt`` (in the ``WHERE``,
+    which the encoding in the ``SELECT`` list does not affect), before they become
+    a single ASCII byte.
+    """
+    key_sel = ", ".join(_key_projection(compact))
+    where = vdt.and_where(vdt.snv_only_predicate(q("ref"), q("alt"), compact))
+    linker = f"SELECT {key_sel}, {q(ENSG_COL)} FROM {linker_reader} WHERE {where}"
     return (
         f"SELECT * FROM {prev_from} "
         f"{join_type} JOIN (\n{linker}\n) USING {keys_using()}"
@@ -203,25 +225,29 @@ def linker_join_sql(prev_from: str, linker_reader: str, join_type: str) -> str:
 
 
 def variant_filter_join_sql(
-    prev_from: str, filter_reader: str, colname: str, join_type: str
+    prev_from: str, filter_reader: str, colname: str, join_type: str, compact: bool
 ) -> str:
     """FULL/LEFT OUTER JOIN one variant filter, adding a BOOLEAN membership column.
 
     The filter file is reduced to its DISTINCT variant keys (so a variant listed
     under several transcripts/genes cannot fan the join out) and tagged with a
-    presence marker; non-members of an already-present row become FALSE.
+    presence marker; non-members of an already-present row become FALSE. In the
+    compact profile the filter's keys are encoded to match the wide table and its
+    non-SNV rows are dropped so a FULL JOIN cannot re-introduce indels/MNVs. The
+    SNV filter runs on the **raw** ``ref``/``alt`` inside the innermost scan --
+    before the ASCII-byte encoding -- while the NULL-key check runs on the encoded
+    keys just outside it.
     """
-    casts = [
-        f"TRY_CAST({q('chrom')} AS VARCHAR) AS {q('chrom')}",
-        f"TRY_CAST({q('pos')} AS BIGINT) AS {q('pos')}",
-        f"TRY_CAST({q('ref')} AS VARCHAR) AS {q('ref')}",
-        f"TRY_CAST({q('alt')} AS VARCHAR) AS {q('alt')}",
-    ]
+    casts = _key_projection(compact)
+    snv = vdt.snv_only_predicate(q("ref"), q("alt"), compact)
+    inner = f"SELECT {', '.join(casts)} FROM {filter_reader}"
+    if snv:
+        inner += f" WHERE {snv}"
     nonnull = " AND ".join(f"{q(k)} IS NOT NULL" for k in VARIANT_KEYS)
     keyed = (
         f"SELECT DISTINCT {', '.join(q(k) for k in VARIANT_KEYS)}, "
         f"TRUE AS {q(PRESENT_COL)} FROM (\n"
-        f"  SELECT {', '.join(casts)} FROM {filter_reader}\n"
+        f"  {inner}\n"
         f") WHERE {nonnull}"
     )
     return (
@@ -268,18 +294,22 @@ def gene_filter_join_sql(
 class Step:
     """One join in the chain."""
 
-    def __init__(self, name: str, kind: str, reader: str, extra: dict | None = None):
+    def __init__(
+        self, name: str, kind: str, reader: str,
+        extra: dict | None = None, compact: bool = False,
+    ):
         self.name = name        # short label, also used for plan validation
         self.kind = kind        # 'linker' | 'variant_filter' | 'gene_filter'
         self.reader = reader     # read_*() expression for the right-hand input
         self.extra = extra or {}
+        self.compact = compact   # emit keys in the compact numeric profile
 
     def join_sql(self, prev_from: str, join_type: str) -> str:
         if self.kind == "linker":
-            return linker_join_sql(prev_from, self.reader, join_type)
+            return linker_join_sql(prev_from, self.reader, join_type, self.compact)
         if self.kind == "variant_filter":
             return variant_filter_join_sql(
-                prev_from, self.reader, self.extra["colname"], join_type
+                prev_from, self.reader, self.extra["colname"], join_type, self.compact
             )
         if self.kind == "gene_filter":
             return gene_filter_join_sql(
@@ -293,9 +323,10 @@ def build_steps(
     linker: Path,
     variant_filters: list[Path],
     gene_filter: Path | None,
+    compact: bool = False,
 ) -> list[Step]:
     """Assemble the ordered list of joins and validate column names up front."""
-    steps: list[Step] = [Step("linker", "linker", parquet_reader(linker))]
+    steps: list[Step] = [Step("linker", "linker", parquet_reader(linker), compact=compact)]
 
     seen: dict[str, str] = {}
     for vf in variant_filters:
@@ -308,7 +339,8 @@ def build_steps(
             )
         seen[lower] = col
         steps.append(
-            Step(f"variant:{col}", "variant_filter", csv_reader(vf), {"colname": col})
+            Step(f"variant:{col}", "variant_filter", csv_reader(vf),
+                 {"colname": col}, compact=compact)
         )
 
     if gene_filter is not None:
@@ -320,7 +352,8 @@ def build_steps(
                 f"column to join on. Found: {cols}"
             )
         steps.append(
-            Step("gene", "gene_filter", csv_reader(gene_filter), {"value_cols": value_cols})
+            Step("gene", "gene_filter", csv_reader(gene_filter),
+                 {"value_cols": value_cols}, compact=compact)
         )
     return steps
 
@@ -336,11 +369,14 @@ def checkpoint_path(ckpt_dir: Path, step_idx: int) -> Path:
     return ckpt_dir / f"after_step_{step_idx:03d}.parquet"
 
 
-def write_plan(ckpt_dir: Path, base_input: Path, join_type: str, steps: list[Step]) -> None:
+def write_plan(
+    ckpt_dir: Path, base_input: Path, join_type: str, steps: list[Step], compact: bool
+) -> None:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     plan = {
         "base_input": str(base_input),
         "join_type": join_type,
+        "compact_dtypes": compact,
         "steps": [s.name for s in steps],
     }
     (ckpt_dir / PLAN_FILE).write_text(json.dumps(plan, indent=2))
@@ -354,7 +390,7 @@ def load_plan(ckpt_dir: Path) -> dict | None:
 
 
 def validate_resume(
-    ckpt_dir: Path, base_input: Path, join_type: str, steps: list[Step]
+    ckpt_dir: Path, base_input: Path, join_type: str, steps: list[Step], compact: bool
 ) -> None:
     """Refuse to resume against a plan that no longer matches the inputs."""
     plan = load_plan(ckpt_dir)
@@ -363,6 +399,7 @@ def validate_resume(
     current = {
         "base_input": str(base_input),
         "join_type": join_type,
+        "compact_dtypes": compact,
         "steps": [s.name for s in steps],
     }
     if plan != current:
@@ -523,6 +560,13 @@ def main() -> int:
         help="Parquet row group size (default: 512000).",
     )
     parser.add_argument(
+        "--compact-dtypes", action=argparse.BooleanOptionalAction, default=False,
+        help="Match the compact numeric key profile of the input score table: "
+             "encode the linker's and each variant filter's chrom/pos/ref/alt the "
+             "same way (so the joins match). Must match the flag the input was "
+             "built with. " + vdt.FLAG_HELP,
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print the join plan (and a few representative SQL statements) and exit.",
     )
@@ -559,7 +603,9 @@ def main() -> int:
     # A short-lived connection just for schema introspection while planning.
     plan_con = duckdb.connect()
     try:
-        steps = build_steps(plan_con, args.linker, variant_filters, gene_filter)
+        steps = build_steps(
+            plan_con, args.linker, variant_filters, gene_filter, args.compact_dtypes
+        )
     finally:
         plan_con.close()
     n_steps = len(steps)
@@ -574,6 +620,7 @@ def main() -> int:
     print(f"Join type: {args.join_type.upper()} OUTER on "
           f"{VARIANT_KEYS} (filters) / [{ENSG_COL}] (gene filter)")
     print(f"Total joins: {n_steps}  | checkpoint every {args.checkpoint_every}")
+    print(f"Dtype profile: {'compact numeric' if args.compact_dtypes else 'default'}")
     print(f"Checkpoints: {ckpt_dir}")
     print(f"Spill dir: {temp_dir}\n")
 
@@ -600,8 +647,8 @@ def main() -> int:
         print("Output already exists; nothing to do (use --overwrite to rebuild).")
         return 0
 
-    validate_resume(ckpt_dir, args.input, args.join_type, steps)
-    write_plan(ckpt_dir, args.input, args.join_type, steps)
+    validate_resume(ckpt_dir, args.input, args.join_type, steps, args.compact_dtypes)
+    write_plan(ckpt_dir, args.input, args.join_type, steps, args.compact_dtypes)
 
     next_idx, ckpt_source = latest_checkpoint(ckpt_dir, n_steps)
     current_source = ckpt_source if ckpt_source is not None else args.input

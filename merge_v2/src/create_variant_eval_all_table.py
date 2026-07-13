@@ -63,6 +63,8 @@ from pathlib import Path
 
 import duckdb
 
+import variant_dtypes as vdt
+
 # ---------------------------------------------------------------------------
 # Paths (resolved relative to this file: merge_v2/src/...)
 # ---------------------------------------------------------------------------
@@ -250,19 +252,33 @@ def _bool_cast(src_col: str) -> str:
 
 
 def analyze_source(
-    con: duckdb.DuckDBPyConnection, entry: dict
-) -> tuple[str, dict[str, str], dict[str, tuple[str, str]]]:
-    """Introspect one source: reader, key casts, and per-field (cast, agg).
+    con: duckdb.DuckDBPyConnection,
+    entry: dict,
+    compact: bool = False,
+) -> tuple[str, dict[str, str], dict[str, tuple[str, str]], str | None]:
+    """Introspect one source: reader, key casts, per-field (cast, agg), SNV filter.
+
+    Parameters
+    ----------
+    compact : bool
+        When true, keys are emitted in the compact numeric profile (``chrom``
+        UTINYINT, ``pos`` UINTEGER; ``ref``/``alt`` the single ASCII byte
+        ``UTINYINT``, with non-SNV rows dropped at build time -- see
+        ``dedup_source_sql``); ``is_pos`` labels stay ``BOOLEAN`` and numeric
+        eval fields stay single-precision ``FLOAT``. When false (default), the
+        historical types are kept (VARCHAR/BIGINT keys) and all rows retained.
 
     Returns
     -------
     reader : str
         DuckDB table-function expression reading the file.
     key_casts : dict[canonical_key -> sql_expr]
-        Cast yielding each canonical key (resolves ``chr``/``chrom``; ``pos`` BIGINT).
+        Cast yielding each canonical key in the active type profile.
     field_specs : dict[output_name -> (cast_expr, agg_func)]
-        Per eval field: the cast expression and the dedup aggregate to use
-        (``bool_or`` for boolean labels, ``max`` for numeric fields).
+        Per eval field: the cast expression and the dedup aggregate to use.
+    snv_pred : str | None
+        A predicate over the **raw VARCHAR** alleles keeping only SNVs (compact
+        mode), or ``None`` -- applied before ``ref``/``alt`` are encoded.
     """
     file_path = entry["file_path"]
     resolved = resolve_path(file_path)
@@ -281,19 +297,24 @@ def analyze_source(
     # the key from Hail-style locus/alleles columns (the hail_evaluation tables).
     has_locus_alleles = "locus" in available and "alleles" in available
     key_casts: dict[str, str] = {}
+    raw_keys: dict[str, str] = {}
     for canon, aliases in KEY_SPEC.items():
         src_col = next((a for a in aliases if a in available), None)
         if src_col is not None:
             cast_type = "BIGINT" if canon == "pos" else "VARCHAR"
-            key_casts[canon] = f"TRY_CAST({q(src_col)} AS {cast_type})"
+            raw = f"TRY_CAST({q(src_col)} AS {cast_type})"
         elif has_locus_alleles:
-            key_casts[canon] = derive_key_from_locus_alleles(canon, "locus", "alleles")
+            raw = derive_key_from_locus_alleles(canon, "locus", "alleles")
         else:
             sys.exit(
                 f"ERROR: {file_path}: no column for join key '{canon}' "
                 f"(looked for {aliases}, or a locus+alleles pair). "
                 f"Available: {sorted(available)}"
             )
+        raw_keys[canon] = raw
+        key_casts[canon] = vdt.key_expr(canon, raw, compact)
+
+    snv_pred = vdt.snv_only_predicate(raw_keys["ref"], raw_keys["alt"], compact)
 
     field_specs: dict[str, tuple[str, str]] = {}
     for mapping in entry.get("eval_fields", []):
@@ -304,15 +325,16 @@ def analyze_source(
                     f"Available: {sorted(available)}"
                 )
             if _is_bool_field(out_col, types[src_col]):
-                field_specs[out_col] = (_bool_cast(src_col), "bool_or")
+                field_specs[out_col] = vdt.bool_field_spec(_bool_cast(src_col), compact)
             else:
                 field_specs[out_col] = (f"TRY_CAST({q(src_col)} AS FLOAT)", "max")
 
-    return reader, key_casts, field_specs
+    return reader, key_casts, field_specs, snv_pred
 
 
 def dedup_source_sql(
-    reader: str, key_casts: dict[str, str], field_specs: dict[str, tuple[str, str]]
+    reader: str, key_casts: dict[str, str], field_specs: dict[str, tuple[str, str]],
+    snv_pred: str | None = None,
 ) -> str:
     """Per-source subquery: keys + this source's fields, deduped to one row/key.
 
@@ -321,10 +343,15 @@ def dedup_source_sql(
     each source *before* joining keeps the row count ~one-per-variant and stops
     a duplicated key (e.g. per-transcript observed/expected rows) from
     multiplying rows across the join chain.
+
+    ``snv_pred`` (compact mode) drops non-SNV rows on the **raw** alleles in the
+    inner scan -- before ``ref``/``alt`` are encoded to a single ASCII byte.
     """
     cast_cols = [f"{key_casts[k]} AS {q(k)}" for k in JOIN_KEYS]
     cast_cols += [f"{cast} AS {q(name)}" for name, (cast, _agg) in field_specs.items()]
     inner = "SELECT " + ", ".join(cast_cols) + f" FROM {reader}"
+    if snv_pred:
+        inner += f" WHERE {snv_pred}"
 
     keys_sql = ", ".join(q(k) for k in JOIN_KEYS)
     agg_sql = ", ".join(f"{agg}({q(name)}) AS {q(name)}" for name, (_c, agg) in field_specs.items())
@@ -334,7 +361,7 @@ def dedup_source_sql(
 
 
 def build_statements(
-    sources: list[tuple[str, dict[str, str], dict[str, tuple[str, str]]]],
+    sources: list[tuple[str, dict[str, str], dict[str, tuple[str, str]], str | None]],
     final_table: str,
 ) -> tuple[list[str], list[str]]:
     """Build the sequential, materialized full-outer-join statements.
@@ -351,22 +378,24 @@ def build_statements(
     Only one 2-table join runs at a time, so peak memory/disk is bounded.
     """
     field_names: list[str] = []
-    for _reader, _keys, field_specs in sources:
+    for _reader, _keys, field_specs, _snv in sources:
         field_names.extend(field_specs.keys())
 
     using = "(" + ", ".join(q(k) for k in JOIN_KEYS) + ")"
     statements: list[str] = []
 
-    reader0, keys0, fields0 = sources[0]
-    statements.append(f"CREATE TABLE stage0 AS\n{dedup_source_sql(reader0, keys0, fields0)}")
+    reader0, keys0, fields0, snv0 = sources[0]
+    statements.append(
+        f"CREATE TABLE stage0 AS\n{dedup_source_sql(reader0, keys0, fields0, snv0)}"
+    )
 
     prev = "stage0"
     for i in range(1, len(sources)):
-        reader, keys, fields = sources[i]
+        reader, keys, fields, snv = sources[i]
         cur = f"stage{i}"
         statements.append(
             f"CREATE TABLE {cur} AS\nSELECT * FROM {prev}\n"
-            f"FULL JOIN (\n{dedup_source_sql(reader, keys, fields)}\n) USING {using}"
+            f"FULL JOIN (\n{dedup_source_sql(reader, keys, fields, snv)}\n) USING {using}"
         )
         statements.append(f"DROP TABLE {prev}")
         prev = cur
@@ -422,6 +451,10 @@ def main() -> int:
         help="Parquet row group size (default: 512000).",
     )
     parser.add_argument(
+        "--compact-dtypes", action=argparse.BooleanOptionalAction, default=False,
+        help=vdt.FLAG_HELP,
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print the assembled SQL and exit without writing.",
     )
@@ -456,14 +489,19 @@ def main() -> int:
     con = duckdb.connect(str(db_path))
     try:
         configure(con, args.memory_limit, args.threads, temp_dir)
-        sources = [analyze_source(con, entry) for entry in entries]
+        sources = [
+            analyze_source(con, entry, args.compact_dtypes)
+            for entry in entries
+        ]
         statements, field_names = build_statements(sources, final_table)
 
+        profile = "compact numeric" if args.compact_dtypes else "default"
         print(f"Merging {len(entries)} source(s) -> {len(field_names)} eval field(s):")
         for _reader, _keys, field_specs in sources:
-            for name, (_cast, agg) in field_specs.items():
-                kind = "bool" if agg == "bool_or" else "float"
+            for name in field_specs:
+                kind = "label" if name.lower().startswith("is_pos") else "float"
                 print(f"  - {name} ({kind})")
+        print(f"Dtype profile: {profile}")
         print(f"Merge: sequential materialized FULL OUTER JOIN on {JOIN_KEYS}")
         print(f"Build DB / spill dir: {temp_dir}")
         print(f"Output: {args.output}\n")

@@ -105,6 +105,8 @@ from pathlib import Path
 
 import duckdb
 
+import variant_dtypes as vdt
+
 # ---------------------------------------------------------------------------
 # Paths (resolved relative to this file: merge_v2/src/...)
 # ---------------------------------------------------------------------------
@@ -177,6 +179,29 @@ def score_columns(con: duckdb.DuckDBPyConnection, reader: str, input_path: Path)
             f"this step expects a variant-level (non-gene-annotated) table."
         )
     return scores
+
+
+def encoded_linker_reader(linker_reader: str, compact: bool) -> str:
+    """Wrap the linker reader so its keys match the score table's type profile.
+
+    When ``compact`` is set the score tables carry the numeric key encoding, so
+    the linker's raw ``(chrom, pos, ref, alt)`` must be encoded the *same* way or
+    the join would find no matches; non-SNV linker rows are also dropped so the
+    linker matches the SNV-only score tables. The SNV filter runs on the raw
+    ``ref``/``alt`` in the ``WHERE`` (before the ASCII-byte encoding in the
+    ``SELECT`` list). Returns the reader unchanged otherwise.
+    """
+    if not compact:
+        return linker_reader
+    cols = []
+    for k in VARIANT_KEYS:
+        raw = f"TRY_CAST({q(k)} AS {'BIGINT' if k == 'pos' else 'VARCHAR'})"
+        cols.append(f"{vdt.key_expr(k, raw, compact)} AS {q(k)}")
+    where = vdt.and_where(vdt.snv_only_predicate(q("ref"), q("alt"), compact))
+    return (
+        f"(SELECT {', '.join(cols)}, {q(ENSG_COL)} FROM {linker_reader} "
+        f"WHERE {where})"
+    )
 
 
 def join_sql(score_reader: str, linker_reader: str, scores: list[str]) -> str:
@@ -299,7 +324,7 @@ def build_gene_stats(
         con.execute(f"DROP TABLE IF EXISTS {tmp}")
 
 
-def stats_projection(scores: list[str]) -> str:
+def stats_projection(scores: list[str], compact: bool = False) -> str:
     """Projection of the appended statistic columns for the final stats COPY.
 
     ``t`` aliases the ``_ensg`` table (per-row scores) and ``g`` the per-gene
@@ -307,12 +332,12 @@ def stats_projection(scores: list[str]) -> str:
     z-score and modified z-score are computed per row, NULL where the gene has no
     spread (std/MAD 0 or NULL) or where this row's own score is missing.
 
-    Every appended statistic column is stored as ``FLOAT`` (single precision):
-    the arithmetic is done in DOUBLE and only the stored value is narrowed, which
-    roughly halves the (otherwise high-entropy, poorly-compressing) footprint of
-    these ~7-per-score columns. The raw score columns (carried through via
-    ``t.*``) are themselves already ``FLOAT`` in the source table.
+    The arithmetic is always done in DOUBLE; only the *stored* type differs by
+    profile. Default: ``FLOAT`` (single precision), which roughly halves the
+    (otherwise high-entropy, poorly-compressing) footprint of these ~7-per-score
+    columns. ``compact``: ``DOUBLE``, matching the compact-profile score columns.
     """
+    st = vdt.score_type(compact)
     parts: list[str] = []
     for c in scores:
         tc = f"t.{q(c)}"
@@ -320,20 +345,20 @@ def stats_projection(scores: list[str]) -> str:
         g_median = f"g.{q(c + '_median')}"
         g_std = f"g.{q(c + '_std')}"
         g_mad = f"g.{q(c + '_mad')}"
-        parts.append(f"CAST({g_mean} AS FLOAT) AS {q(c + '_mean')}")
-        parts.append(f"CAST({g_median} AS FLOAT) AS {q(c + '_median')}")
-        parts.append(f"CAST(g.{q(c + '_max')} AS FLOAT) AS {q(c + '_max')}")
-        parts.append(f"CAST(g.{q(c + '_p90')} AS FLOAT) AS {q(c + '_p90')}")
-        parts.append(f"CAST(g.{q(c + '_p95')} AS FLOAT) AS {q(c + '_p95')}")
+        parts.append(f"CAST({g_mean} AS {st}) AS {q(c + '_mean')}")
+        parts.append(f"CAST({g_median} AS {st}) AS {q(c + '_median')}")
+        parts.append(f"CAST(g.{q(c + '_max')} AS {st}) AS {q(c + '_max')}")
+        parts.append(f"CAST(g.{q(c + '_p90')} AS {st}) AS {q(c + '_p90')}")
+        parts.append(f"CAST(g.{q(c + '_p95')} AS {st}) AS {q(c + '_p95')}")
         parts.append(
             f"CAST(CASE WHEN {g_std} IS NULL OR {g_std} = 0 OR NOT {notna(c, 't')} "
-            f"THEN NULL ELSE ({tc} - {g_mean}) / {g_std} END AS FLOAT) "
+            f"THEN NULL ELSE ({tc} - {g_mean}) / {g_std} END AS {st}) "
             f"AS {q(c + '_zscore')}"
         )
         parts.append(
             f"CAST(CASE WHEN {g_mad} IS NULL OR {g_mad} = 0 OR NOT {notna(c, 't')} "
             f"THEN NULL ELSE {MOD_Z_CONST!r} * ({tc} - {g_median}) / {g_mad} END "
-            f"AS FLOAT) AS {q(c + '_modified_zscore')}"
+            f"AS {st}) AS {q(c + '_modified_zscore')}"
         )
     return ",\n  ".join(parts)
 
@@ -355,7 +380,7 @@ def write_gene_stats(
     build_gene_stats(con, reader, scores)
 
     source_sql = (
-        f"SELECT t.*,\n  {stats_projection(scores)}\n"
+        f"SELECT t.*,\n  {stats_projection(scores, args.compact_dtypes)}\n"
         f"FROM {reader} AS t LEFT JOIN gene_stats AS g ON t.{q(ENSG_COL)} = g.ensg"
     )
     print(f"  writing {stats_out.name} ...", flush=True)
@@ -494,6 +519,13 @@ def main() -> int:
         help="Parquet row group size (default: 512000).",
     )
     parser.add_argument(
+        "--compact-dtypes", action=argparse.BooleanOptionalAction, default=False,
+        help="Match the compact numeric key profile of the input score tables: "
+             "encode the linker's chrom/pos/ref/alt the same way (so the join "
+             "matches) and store the per-gene statistic columns as DOUBLE. Must "
+             "match the flag the score tables were built with. " + vdt.FLAG_HELP,
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print the plan (inputs, columns, outputs, SQL) and exit without writing.",
     )
@@ -524,6 +556,10 @@ def main() -> int:
     con = duckdb.connect(str(db_path))
     try:
         configure(con, args.memory_limit, args.threads, temp_dir)
+        # In the compact profile the linker's raw keys are encoded to match the
+        # (already-encoded) score tables and its non-SNV rows are dropped so it
+        # stays consistent with the SNV-only score tables.
+        linker_reader = encoded_linker_reader(linker_reader, args.compact_dtypes)
         for input_path in inputs:
             annotate_table(con, input_path, linker_reader, out_dir, args)
     finally:

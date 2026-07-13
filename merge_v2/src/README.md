@@ -159,16 +159,70 @@ python full_data_aggregation_pipeline.py --dry-run           # print the plan on
   `--continue-on-error` to push on (downstream steps will likely error on
   missing inputs).
 
+## Dtype profiles (`--compact-dtypes`)
+
+Every table normally stores the variant key and values in their **default**
+types. Passing `--compact-dtypes` (default **off**) switches the whole run to a
+**compact numeric** profile instead — this is opt-in and byte-for-byte identical
+to today when left off.
+
+| Field | Default (off) | `--compact-dtypes` (on) |
+| ----- | ------------- | ----------------------- |
+| `chrom` | `VARCHAR` (`'chr1'`…`'chrY'`) | `UTINYINT` — `chr` stripped; 1‑22 keep their number, `X`→23, `Y`→24, `M`/`MT`→25. Any contig that does not map (alt/unplaced/decoy) → `NULL`, so it drops out on the non‑null key filter / inner joins. |
+| `pos` | `BIGINT` | `UINTEGER` (uint32) |
+| `ref` / `alt` | `VARCHAR` | `UTINYINT` — the single‑base ASCII byte as a uint8 (`A`=65, `C`=67, `G`=71, `T`=84), i.e. the `|S1` byte reversible via `chr()` (build an `S1` view for display). **SNV‑only**: rows with a multi‑character allele (indel/MNV) are **dropped** (see below), so every value fits in one byte. |
+| `is_pos` | `BOOLEAN` | `BOOLEAN` (a 1‑byte bool once materialized) |
+| score | `FLOAT` | `DOUBLE` |
+
+`is_pos` is `BOOLEAN` in both profiles. `chrom`, `pos`, `ref`/`alt` and `score`
+re‑type in compact. `ref`/`alt` become the single ASCII byte (`UTINYINT`); recover
+the base with `chr()` (e.g. an `S1` view). Because a single byte can't hold a
+multi‑character allele, compact also **drops non‑SNV rows** (indels/MNVs).
+
+The policy lives in one place, [`variant_dtypes.py`](#dtype-profiles---compact-dtypes),
+and is shared by every script that sets or re‑derives the key.
+
+**Run‑wide, not per‑table.** Downstream tables inherit the key columns unchanged
+(`SELECT *`) and then join on `(chrom, pos, ref, alt)`, so mixing a compact table
+with a default one would make those joins silently find no matches. The
+orchestrator therefore forwards a **single** run‑wide flag to every
+key‑producing step (the score/eval builders) *and* the steps that re‑read raw
+external keys (the linker + filter joins: `create_variant_scores_gene_aggregation`
+and `created_variant_scores_filtered_tables`, which encode the linker/filter keys
+the same way so the joins still match). Set it once in
+[`config.json`](#configjson) (`"compact_dtypes": true`) or via
+`--compact-dtypes` on the pipeline; it is passed to each step through that step's
+`passthrough` list.
+
+**SNV‑only drop.** Because compact stores each `ref`/`alt` as a single ASCII
+byte (`UTINYINT`), a multi‑character allele (indel/MNV) would not fit and
+truncating it would collapse distinct variants onto one key. In compact mode
+every builder therefore **drops** rows whose `ref` or `alt` is longer than one
+character, on each score/eval source and on the linker + each variant filter (so
+a `FULL JOIN` can't re‑introduce indels/MNVs). The filter (`length(ref) = 1 AND
+length(alt) = 1`) runs on the **raw** VARCHAR alleles *before* they are encoded
+to the byte — `length()` on the encoded integer would be meaningless. The
+default profile keeps all rows. This filter lives in
+`variant_dtypes.snv_only_predicate`.
+
+The individual builder scripts also accept `--compact-dtypes` directly (with
+`--no-compact-dtypes` to force it off), so a single table can be built in either
+profile in isolation — but for a coherent end‑to‑end run drive it from the
+pipeline so every table matches.
+
 ## `config.json`
 
 The all-encompassing configuration for `full_data_aggregation_pipeline.py` — the
 single place to control how the pipeline runs. It has two sections:
 
 - **`pipeline`** — the run-wide options, mirroring the CLI flags above
-  (`skip_download`, `overwrite`, `memory_limit`, `threads`, `temp_dir`,
-  `report_dir`, `count_text_inputs`, `no_row_counts`, `continue_on_error`,
-  `only`, `from_step`, `to_step`, `skip`). These seed the parser's defaults; a
-  CLI flag overrides the matching value. Inline `_pipeline_docs` documents each.
+  (`skip_download`, `overwrite`, `compact_dtypes`, `memory_limit`, `threads`,
+  `temp_dir`, `report_dir`, `count_text_inputs`, `no_row_counts`,
+  `continue_on_error`, `only`, `from_step`, `to_step`, `skip`). These seed the
+  parser's defaults; a CLI flag overrides the matching value. Inline
+  `_pipeline_docs` documents each. `compact_dtypes` selects the compact numeric
+  type profile for the whole run — see
+  [Dtype profiles](#dtype-profiles---compact-dtypes).
 - **`steps`** — the ordered list of script invocations. Each entry has a `name`
   (audit label + selection key), a `script` (file in this `src/` dir), `args`
   (extra CLI args passed to that script), `passthrough` (which pipeline options
