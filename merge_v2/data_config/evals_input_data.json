@@ -98,6 +98,34 @@
         {"observed_dd": "observed_dd"},
         {"expected_dd": "expected_dd"}
       ]
+    },
+    {
+      "file_path": "data/raw_data/evals/gnomad_new_obs_exp_mis.parquet/",
+      "eval_fields": [
+        {"observed_gnomad_new": "observed_gnomad_new"},
+        {"expected_gnomad_new": "expected_gnomad_new"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/gnomad_ukb_obs_exp_mis.parquet/",
+      "eval_fields": [
+        {"observed_gnomad_ukb": "observed_gnomad_ukb"},
+        {"expected_gnomad_ukb": "expected_gnomad_ukb"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/gnomad_v2_obs_exp_mis.parquet/",
+      "eval_fields": [
+        {"observed_gnomad_v2": "observed_gnomad_v2"},
+        {"expected_gnomad_v2": "expected_gnomad_v2"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/gnomad_v2_ukb_obs_exp_mis.parquet/",
+      "eval_fields": [
+        {"observed_gnomad_v2_ukb": "observed_gnomad_v2_ukb"},
+        {"expected_gnomad_v2_ukb": "expected_gnomad_v2_ukb"}
+      ]
     }
   ],
   "gene_level": [

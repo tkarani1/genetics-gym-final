@@ -497,7 +497,7 @@ def main() -> int:
 
         profile = "compact numeric" if args.compact_dtypes else "default"
         print(f"Merging {len(entries)} source(s) -> {len(field_names)} eval field(s):")
-        for _reader, _keys, field_specs in sources:
+        for _reader, _keys, field_specs, _snv_pred in sources:
             for name in field_specs:
                 kind = "label" if name.lower().startswith("is_pos") else "float"
                 print(f"  - {name} ({kind})")

@@ -42,7 +42,11 @@
       "gs://genetics-gym/hail_evaluation_tables/genebass_af_matched_controls.tsv",
       "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/asd_obs_exp_mis.parquet",
       "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/chd_obs_exp_mis.parquet",
-      "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/dd_obs_exp_mis.parquet"
+      "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/dd_obs_exp_mis.parquet",
+      "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/gnomad_new_obs_exp_mis.parquet",
+      "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/gnomad_ukb_obs_exp_mis.parquet",
+      "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/gnomad_v2_obs_exp_mis.parquet",
+      "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/gnomad_v2_ukb_obs_exp_mis.parquet"
     ],
     "gene_level": [
       "gs://genetics-gym/eval-tables-final/lof_gene/clinvar_ensg_is_case.tsv",

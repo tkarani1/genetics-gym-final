@@ -22,8 +22,8 @@
     "skip_download": true,
     "overwrite": true,
     "compact_dtypes": false,
-    "memory_limit": null,
-    "threads": null,
+    "memory_limit": "30GB",
+    "threads": 4,
     "temp_dir": null,
     "report_dir": null,
     "count_text_inputs": false,
@@ -39,7 +39,7 @@
 
   "_pairwise_analysis_routes": "There are two ways to turn the pairwise score tables (scores/pairwise/{raw,pre,post}) into analysis tables; choose one by toggling steps here. ROUTE (i) INDIVIDUAL PAIRS: leave create_pairwise_consolidated_score_tables disabled and set create_analysis_tables args to ['--groups','pairwise'] -> one analysis table per anchor/non-anchor pair per flavor under full_analysis_tables/pairwise/<flavor>/. ROUTE (ii) CONSOLIDATED: enable create_pairwise_consolidated_score_tables and set create_analysis_tables args to ['--groups','pairwise_consolidated'] -> the consolidation step first collapses each flavor's per-pair files into a single scores/pairwise_consolidated/pairwise_<flavor>_consolidated.parquet (coalescing the anchor for raw/pre; for post keeping every per-pair anchor percentile renamed ..._<anchor>_x_<non_anchor>), then the analysis step writes one analysis table per flavor under full_analysis_tables/pairwise_consolidated/. Either route requires create_pairwise_score_tables to have produced the per-pair files first. The two groups can also be combined in one create_analysis_tables run, e.g. ['--groups','pairwise','pairwise_consolidated'].",
 
-  "_gene_aggregated_filtered_route": "This config is tuned to produce the FILTERED, GENE-AGGREGATED analysis tables from the current score_input_data.json (including newly added score sources). The gene-aggregated filter step (create_gene_aggregated_filtered_table.py) appends the ~65 variant-level boolean membership columns + the ~68 'ensg_'-prefixed gene-level filter columns onto each gene-aggregated *_eval analysis table via row-preserving LEFT joins (the linker step is skipped because the gene-aggregated *_eval table already carries 'ensg'). It takes ONE --input per invocation, so the four gene-aggregated _eval tables (outer/inner x eval/deduped) get one step each. NB: create_gene_aggregated_filtered_table.py does NOT accept --compact-dtypes, so 'compact_dtypes' must not appear in its passthrough. Out-of-scope steps (pairwise, pairwise_consolidated, the variant-level created_variant_scores_filtered_tables) are disabled; the eval-table builders are disabled because eval tables do not depend on score sources and already exist. skip_download is true because 16 of the 20 raw score sources (plus the linker, evals, and filters) are already local and unchanged; only the 4 newly declared score sources (MutScore, SNPred_scores, VEST4_MetaRNN_scores, scores_prior) need fetching, which is done in a targeted download rather than re-pulling ~22GB. All score-derived intermediates (variant_scores_all_*, percentile tables, gene_aggregated/*_ensg_stats, gene-aggregated *_eval/*_eval_deduped) are stale (they carry only 17 of the 27 currently-declared score fields) and are rebuilt from scratch with overwrite=true.",
+  "_gene_aggregated_filtered_route": "INNER-ONLY variant of the FILTERED, GENE-AGGREGATED analysis route. This build excludes the entire 2026-07 score-source batch: MutScore.parquet, SNPred_scores.parquet, VEST4_MetaRNN_scores.parquet, and scores_prior.parquet -- 10 score fields dropped in total (MutScore, SNPred, VEST4, MetaRNN, and the 6 s_prior/s_norm fields from scores_prior). That leaves 17 score fields in variant_scores_all_outer.parquet and, after the drop-any-NA inner projection, a much larger inner table than a version that kept those sparse-ish sources. create_variant_scores_gene_aggregation runs with '--input variant_scores_all_inner.parquet' so it produces ONLY the inner_ensg[_stats].parquet pair (skipping the outer branch entirely -- saves ~20 GB of intermediate and ~5 min of wall time). Downstream, create_analysis_tables globs *_ensg_stats.parquet in the gene_aggregated dir; with only the inner stats file present, it produces only variant_scores_all_inner_ensg_stats_eval.parquet and variant_scores_all_inner_ensg_stats_eval_deduped.parquet. The two outer filtered steps are disabled; only create_gene_aggregated_filtered_inner and create_gene_aggregated_filtered_inner_deduped run. The eval-table builders (create_variant_eval_all_table, create_ensg_eval_all_table) are disabled because the existing variant_evals_all.parquet (with the 4 gnomAD obs/exp eval sources folded in) and ensg_evals_all.parquet are reused as-is. Out-of-scope steps (pairwise, pairwise_consolidated, the variant-level created_variant_scores_filtered_tables) are disabled. skip_download is true because every declared source is already local. All score-derived intermediates (variant_scores_all_outer/inner, percentile tables, gene_aggregated/variant_scores_all_inner_ensg_stats, gene-aggregated variant_scores_all_inner_ensg_stats_eval[_deduped]) are rebuilt from scratch with overwrite=true.",
 
   "steps": [
     {
@@ -52,7 +52,7 @@
     {
       "name": "create_variant_scores_all_table",
       "script": "create_variant_scores_all_table.py",
-      "args": [],
+      "args": ["--exclude", "MutScore.parquet", "SNPred_scores.parquet", "VEST4_MetaRNN_scores.parquet", "scores_prior.parquet"],
       "passthrough": ["memory_limit", "threads", "temp_dir", "compact_dtypes"],
       "enabled": true
     },
@@ -80,7 +80,7 @@
     {
       "name": "create_variant_scores_gene_aggregation",
       "script": "create_variant_scores_gene_aggregation.py",
-      "args": ["--gene-agg-stats"],
+      "args": ["--gene-agg-stats", "--input", "../data/processed_data/scores/variant_scores_all_inner.parquet"],
       "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite", "compact_dtypes"],
       "enabled": true
     },
@@ -117,14 +117,14 @@
       "script": "create_gene_aggregated_filtered_table.py",
       "args": ["--input", "../data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval.parquet"],
       "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite"],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "create_gene_aggregated_filtered_outer_deduped",
       "script": "create_gene_aggregated_filtered_table.py",
       "args": ["--input", "../data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval_deduped.parquet"],
       "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite"],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "create_gene_aggregated_filtered_inner",
