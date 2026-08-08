@@ -1,0 +1,112 @@
+{
+  "_comment": "All-encompassing configuration for full_data_aggregation_pipeline.py. This file is the single place to control how the pipeline runs. The pipeline reads it by default (override with --config PATH or ignore with --no-config). Any CLI flag overrides the matching value here; booleans support --flag / --no-flag (e.g. --no-skip-download).",
+
+  "_pipeline_docs": {
+    "skip_download": "Skip the download_source_data step (source data already local).",
+    "overwrite": "Forward --overwrite to steps that skip existing outputs by default (gene aggregation, pairwise, filtered, analysis). The score/eval/percentile steps always rewrite regardless.",
+    "memory_limit": "DuckDB memory limit forwarded to every DuckDB step, e.g. '20GB' (null = DuckDB default).",
+    "threads": "DuckDB worker threads forwarded to every DuckDB step (null = DuckDB auto).",
+    "temp_dir": "Spill/build scratch dir forwarded to every DuckDB step (null = each script's default).",
+    "report_dir": "Directory for the aggregation_pipeline_*.json audit (null = merge_v2/pipeline_runs).",
+    "count_text_inputs": "Also count rows of raw TSV/bgz text sources (full scan; slow). Parquet is always counted from footer metadata.",
+    "no_row_counts": "Disable all row counting (fastest auditing).",
+    "continue_on_error": "Keep running subsequent steps even if one fails (default: stop at first failure).",
+    "only": "Run only these step name(s) (list), mutually exclusive with from_step/to_step.",
+    "from_step": "Start at this step name (inclusive); useful to resume after a failure.",
+    "to_step": "Stop after this step name (inclusive).",
+    "skip": "Skip these step name(s) (list)."
+  },
+
+  "pipeline": {
+    "skip_download": true,
+    "overwrite": true,
+    "memory_limit": null,
+    "threads": null,
+    "temp_dir": null,
+    "report_dir": null,
+    "count_text_inputs": false,
+    "no_row_counts": false,
+    "continue_on_error": false,
+    "only": null,
+    "from_step": null,
+    "to_step": null,
+    "skip": null
+  },
+
+  "_steps_docs": "Ordered list of script invocations. Each step: 'name' (audit label + selection key), 'script' (file in this src/ dir), 'args' (extra CLI args passed to that script), 'passthrough' (which pipeline-level options to forward: any of memory_limit, threads, temp_dir, overwrite), and 'enabled' (set false to skip the step entirely). The obs/exp eval sources are included in the variant eval merge (corrected upstream by filtering to missense via the linker), so the former '--exclude _obs_exp_mis' guard is removed.",
+
+  "_pairwise_analysis_routes": "There are two ways to turn the pairwise score tables (scores/pairwise/{raw,pre,post}) into analysis tables; choose one by toggling steps here. ROUTE (i) INDIVIDUAL PAIRS: leave create_pairwise_consolidated_score_tables disabled and set create_analysis_tables args to ['--groups','pairwise'] -> one analysis table per anchor/non-anchor pair per flavor under full_analysis_tables/pairwise/<flavor>/. ROUTE (ii) CONSOLIDATED: enable create_pairwise_consolidated_score_tables and set create_analysis_tables args to ['--groups','pairwise_consolidated'] -> the consolidation step first collapses each flavor's per-pair files into a single scores/pairwise_consolidated/pairwise_<flavor>_consolidated.parquet (coalescing the anchor for raw/pre; for post keeping every per-pair anchor percentile renamed ..._<anchor>_x_<non_anchor>), then the analysis step writes one analysis table per flavor under full_analysis_tables/pairwise_consolidated/. Either route requires create_pairwise_score_tables to have produced the per-pair files first. The two groups can also be combined in one create_analysis_tables run, e.g. ['--groups','pairwise','pairwise_consolidated'].",
+
+  "steps": [
+    {
+      "name": "download_source_data",
+      "script": "download_source_data.py",
+      "args": [],
+      "passthrough": [],
+      "enabled": true
+    },
+    {
+      "name": "create_variant_scores_all_table",
+      "script": "create_variant_scores_all_table.py",
+      "args": [],
+      "passthrough": ["memory_limit", "threads", "temp_dir"],
+      "enabled": false
+    },
+    {
+      "name": "create_variant_eval_all_table",
+      "script": "create_variant_eval_all_table.py",
+      "args": [],
+      "passthrough": ["memory_limit", "threads", "temp_dir"],
+      "enabled": false
+    },
+    {
+      "name": "create_ensg_eval_all_table",
+      "script": "create_ensg_eval_all_table.py",
+      "args": [],
+      "passthrough": ["memory_limit", "threads", "temp_dir"],
+      "enabled": false
+    },
+    {
+      "name": "create_percentile_score_tables",
+      "script": "create_percentile_score_tables.py",
+      "args": ["--variant"],
+      "passthrough": ["memory_limit", "threads", "temp_dir"],
+      "enabled": false
+    },
+    {
+      "name": "create_variant_scores_gene_aggregation",
+      "script": "create_variant_scores_gene_aggregation.py",
+      "args": ["--gene-agg-stats"],
+      "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite"],
+      "enabled": false
+    },
+    {
+      "name": "create_pairwise_score_tables",
+      "script": "create_pairwise_score_tables.py",
+      "args": ["--variant"],
+      "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite"],
+      "enabled": true
+    },
+    {
+      "name": "create_pairwise_consolidated_score_tables",
+      "script": "create_pairwise_consolidated_score_tables.py",
+      "args": ["--variant"],
+      "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite"],
+      "enabled": false
+    },
+    {
+      "name": "created_variant_scores_filtered_tables",
+      "script": "created_variant_scores_filtered_tables.py",
+      "args": [],
+      "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite"],
+      "enabled": false
+    },
+    {
+      "name": "create_analysis_tables",
+      "script": "create_analysis_tables.py",
+      "args": ["--groups", "gene"],
+      "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite"],
+      "enabled": false
+    }
+  ]
+}

@@ -14,6 +14,7 @@ configuration.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections import Counter
 from functools import reduce
@@ -701,6 +702,17 @@ def join_and_write(
     if eval_keys is None:
         eval_keys = JOIN_KEYS
 
+    # --- Materialize merged_pred to disk ----------------------------------
+    # Without this, every downstream .collect() (null counts, percentile
+    # thresholds) and the final sink_parquet re-execute the entire upstream
+    # lazy plan (N-way join + percentile ranking + linker + aggregation),
+    # which exhausts RAM on large variant-level tables.  Sinking once to a
+    # temp parquet and re-scanning keeps peak memory bounded.
+    tmp_pred_path = output_uri + ".merged_pred.tmp.parquet"
+    logger.info("Materializing merged predictions to temp cache %s ...", tmp_pred_path)
+    merged_pred.sink_parquet(tmp_pred_path, compression="zstd")
+    merged_pred = pl.scan_parquet(tmp_pred_path)
+
     # --- Join eval and pred -----------------------------------------------
     if subtable == "pred" or merged_eval is None:
         merged = merged_pred
@@ -803,6 +815,10 @@ def join_and_write(
     if merged_eval is not None and subtable != "pred":
         eval_schema = merged_eval.collect_schema()
         eval_cols = [c for c in eval_schema.names() if c not in eval_keys]
+
+    # Clean up temp materialized predictions
+    if os.path.exists(tmp_pred_path):
+        os.remove(tmp_pred_path)
 
     return PipelineResult(
         frame=merged,

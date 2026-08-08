@@ -233,8 +233,11 @@ For each prediction score column, a companion `{score}_percentile`
 column is computed as:
 
 ```
-rank(method="average") / count_of_non_null_values
+rank(method="max") / count_of_non_null_values
 ```
+
+This is equivalent to SQL `CUME_DIST()` and guarantees that the
+highest-valued row receives a percentile of exactly 1.0.
 
 Rows with null scores receive a null percentile. The raw score columns
 are dropped by default (use `--keep_raw_scores` to retain them).
