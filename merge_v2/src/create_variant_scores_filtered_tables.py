@@ -59,11 +59,11 @@ filters to be present locally first)::
     python download_source_data.py --linker-table all --filter-tables all
     python create_percentile_score_tables.py --variant   # builds the input
 
-    python created_variant_scores_filtered_tables.py
-    python created_variant_scores_filtered_tables.py --memory-limit 20GB --threads 4
-    python created_variant_scores_filtered_tables.py --checkpoint-every 5
-    python created_variant_scores_filtered_tables.py --join-type left
-    python created_variant_scores_filtered_tables.py --dry-run    # print the plan
+    python create_variant_scores_filtered_tables.py
+    python create_variant_scores_filtered_tables.py --memory-limit 20GB --threads 4
+    python create_variant_scores_filtered_tables.py --checkpoint-every 5
+    python create_variant_scores_filtered_tables.py --join-type left
+    python create_variant_scores_filtered_tables.py --dry-run    # print the plan
 """
 
 from __future__ import annotations

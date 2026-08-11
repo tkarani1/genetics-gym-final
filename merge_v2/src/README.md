@@ -41,18 +41,27 @@ merge_v2/
 │       │   └── ensg_evals_all.parquet        # wide gene (ensg) eval table
 │       └── full_analysis_tables/             # scores LEFT-JOINed onto evals (final)
 ├── pipeline_runs/                            # aggregation_pipeline_*.json audit trails (gitignored)
+├── preprocess/                               # out-of-pipeline one-time source-normalization scripts
+│   ├── README.md                             # what lives here and why
+│   ├── preprocess_gnomad_obs_exp.py          # bootstrap only; standard pipeline consumes the result
+│   ├── bootstrap_gnomad_obs_exp.sh
+│   └── phase2_filtered_upload.sh             # dated one-off upload driver (2026-07-01 batch)
 └── src/
     ├── config.json                          # orchestrator configuration
     ├── full_data_aggregation_pipeline.py    # runs the whole pipeline + audit
     ├── download_source_data.py
+    ├── variant_dtypes.py                    # shared dtype-profile module (default / compact)
     ├── create_variant_scores_all_table.py
     ├── create_variant_eval_all_table.py
     ├── create_ensg_eval_all_table.py
+    ├── create_ensg_scores_all_table.py      # placeholder; no gene-level score sources yet
     ├── create_percentile_score_tables.py
     ├── create_variant_scores_gene_aggregation.py
     ├── create_pairwise_score_tables.py
     ├── create_pairwise_consolidated_score_tables.py
-    ├── created_variant_scores_filtered_tables.py
+    ├── create_variant_scores_filtered_tables.py
+    ├── create_gene_aggregated_filtered_table.py
+    ├── create_gene_aggregated_mechanism_appended_table.py
     └── create_analysis_tables.py
 ```
 
@@ -66,7 +75,7 @@ normal CLI invocation of one of the scripts documented below.
 
 Execution order (each step's key output in parentheses):
 
-1. `download_source_data.py` (`raw_data/{scores,evals,linker,filters}`)
+1. `download_source_data.py` (`raw_data/{scores,evals,linker,filters,mechanisms}`)
 2. `create_variant_scores_all_table.py` (`scores/variant_scores_all_outer.parquet`)
 3. `create_variant_eval_all_table.py` (`evals/variant_evals_all.parquet`)
 4. `create_ensg_eval_all_table.py` (`evals/ensg_evals_all.parquet`)
@@ -74,14 +83,43 @@ Execution order (each step's key output in parentheses):
 6. `create_variant_scores_gene_aggregation.py --gene-agg-stats` (`scores/gene_aggregated/`)
 7. `create_pairwise_score_tables.py --variant` (`scores/pairwise/`)
 8. `create_pairwise_consolidated_score_tables.py --variant` (`scores/pairwise_consolidated/`, optional)
-9. `created_variant_scores_filtered_tables.py` (`scores/filtered/`)
+9. `create_variant_scores_filtered_tables.py` (`scores/filtered/`)
 10. `create_analysis_tables.py` (`full_analysis_tables/`)
+11. `create_gene_aggregated_filtered_table.py --input .../variant_scores_all_outer_ensg_stats_eval.parquet` (`full_analysis_tables/gene_aggregated/…_eval_filtered.parquet`)
+12. `create_gene_aggregated_mechanism_appended_table.py --input .../variant_scores_all_outer_ensg_stats_eval_filtered.parquet` (`…_eval_filtered_mech.parquet`)
+13. `create_gene_aggregated_filtered_table.py --input .../variant_scores_all_outer_ensg_stats_eval_deduped.parquet` (same, deduped input)
+14. `create_gene_aggregated_mechanism_appended_table.py --input .../variant_scores_all_outer_ensg_stats_eval_deduped_filtered.parquet` (same, deduped input)
+15. `create_gene_aggregated_filtered_table.py --input .../variant_scores_all_inner_ensg_stats_eval.parquet` (inner branch)
+16. `create_gene_aggregated_mechanism_appended_table.py --input .../variant_scores_all_inner_ensg_stats_eval_filtered.parquet` (inner branch)
+17. `create_gene_aggregated_filtered_table.py --input .../variant_scores_all_inner_ensg_stats_eval_deduped.parquet` (inner + deduped)
+18. `create_gene_aggregated_mechanism_appended_table.py --input .../variant_scores_all_inner_ensg_stats_eval_deduped_filtered.parquet` (inner + deduped)
 
 Only the variant-level percentile / pairwise flavors are built, because the
 score manifest declares no `gene_level` score sources (so there is no
 `ensg_scores_all.parquet` to percentile or pair); the gene group of
 `create_analysis_tables.py` is fed instead by the gene-aggregated tables from
-step 6.
+step 6. `create_ensg_scores_all_table.py` is a tracked placeholder for the day
+gene-level score sources are added; it is intentionally empty and not wired
+into the orchestrator.
+
+Steps 11–18 form the **gene-aggregated filtered + mechanism-annotated tail**:
+four `(filtered, mechanism-appended)` pairs, one per gene-aggregated `_eval`
+input variant (outer / inner × plain / deduped). Each odd step (11, 13, 15,
+17) invokes `create_gene_aggregated_filtered_table.py` on a gene-aggregated
+`_eval*.parquet`; each even step (12, 14, 16, 18) then invokes
+`create_gene_aggregated_mechanism_appended_table.py` on the `_filtered.parquet`
+that the previous step just wrote, LEFT-JOINing the per-chromosome mechanism
+shards under `raw_data/mechanisms/` to emit `_filtered_mech.parquet` alongside.
+Each pair is independently toggleable in `config.json`; keep the `enabled`
+flag consistent within a pair (flipping only one of the two leaves the
+pipeline half-configured — the mech-append step would be run against a stale
+`_filtered.parquet`, or the filtered step would run with no downstream
+consumer). Each pair is independently toggleable via the `enabled` flags in
+`config.json`; check the current configuration for which pairs are active.
+
+The `merge_v2/preprocess/` sibling directory holds **out-of-pipeline** one-time
+source-normalization and dated upload drivers. Nothing in that directory is
+invoked by the orchestrator; see [`preprocess/README.md`](../preprocess/README.md).
 
 #### Two routes for the pairwise analysis tables
 
@@ -109,6 +147,18 @@ script, which the pipeline reads by default. Any CLI flag overrides the matching
 config value; booleans accept both spellings (e.g. `--skip-download` /
 `--no-skip-download`). Point at a different file with `--config PATH` or ignore
 it entirely (built-in defaults) with `--no-config`.
+
+### Disk space
+
+A full inner+outer build (all 8 filtered/mechanism steps enabled) produces
+~120-150 GB of intermediate and final tables. If local disk is constrained
+(e.g. < 150 GB free), consider a **two-pass strategy**: build the inner tables
+first, upload them to GCS and delete the local copies, then build the outer
+tables in a second pass. Each pass peaks at roughly 60-80 GB. The pipeline's
+`from_step` / `to_step` / `only` / `skip` options make it straightforward to
+split the work. Intermediate `.duckdb_build` and `.ckpt_*` directories under
+`data/processed_data/scores/` can also be cleaned between passes to reclaim
+space.
 
 ### The audit trail
 
@@ -188,7 +238,7 @@ with a default one would make those joins silently find no matches. The
 orchestrator therefore forwards a **single** run‑wide flag to every
 key‑producing step (the score/eval builders) *and* the steps that re‑read raw
 external keys (the linker + filter joins: `create_variant_scores_gene_aggregation`
-and `created_variant_scores_filtered_tables`, which encode the linker/filter keys
+and `create_variant_scores_filtered_tables`, which encode the linker/filter keys
 the same way so the joins still match). Set it once in
 [`config.json`](#configjson) (`"compact_dtypes": true`) or via
 `--compact-dtypes` on the pipeline; it is passed to each step through that step's
@@ -226,8 +276,9 @@ single place to control how the pipeline runs. It has two sections:
 - **`steps`** — the ordered list of script invocations. Each entry has a `name`
   (audit label + selection key), a `script` (file in this `src/` dir), `args`
   (extra CLI args passed to that script), `passthrough` (which pipeline options
-  to forward: any of `memory_limit`, `threads`, `temp_dir`, `overwrite`), and an
-  `enabled` toggle (set `false` to skip a step entirely).
+  to forward: any of `memory_limit`, `threads`, `temp_dir`, `overwrite`,
+  `compact_dtypes`), and an `enabled` toggle (set `false` to skip a step
+  entirely).
 
 Per-step `args` are the single source of truth for any extra CLI options a step
 needs (e.g. the `create_analysis_tables` step's `--groups`, which selects the
@@ -245,21 +296,25 @@ conservative built-in defaults.
 Downloads the GCS objects listed in
 `../data_config/input_data_locations.json` into the local `raw_data` tree:
 
-| Manifest key    | Destination                                                       |
-| --------------- | ----------------------------------------------------------------- |
-| `score_tables`  | `../data/raw_data/scores`                                         |
-| `eval_tables`   | `../data/raw_data/evals`                                          |
-| `linker_table`  | `../data/raw_data/linker`                                         |
-| `filter_tables` | `../data/raw_data/filters/variant` and `../data/raw_data/filters/ensg` |
+| Manifest key       | Destination                                                            |
+| ------------------ | ---------------------------------------------------------------------- |
+| `score_tables`     | `../data/raw_data/scores`                                              |
+| `eval_tables`      | `../data/raw_data/evals`                                               |
+| `linker_table`     | `../data/raw_data/linker`                                              |
+| `filter_tables`    | `../data/raw_data/filters/variant` and `../data/raw_data/filters/ensg` |
+| `mechanism_tables` | `../data/raw_data/mechanisms` *(opt-in — see below)*                   |
 
 The `score_tables`/`eval_tables` groups are organized into subcategories
 (`variant_level`, `gene_level`); `linker_table` is a single standalone URI (the
 variant→gene linker). `filter_tables` is also subcategorized, but its two
 subcategories route to *different* destinations: `variant_level` →
 `../data/raw_data/filters/variant` and `gene_level` →
-`../data/raw_data/filters/ensg`. Both single files (`.tsv`, `.tsv.bgz`,
-`.tsv.gz`) and partitioned directory prefixes (`.parquet/`) are supported;
-downloads run via `gcloud storage cp -r`.
+`../data/raw_data/filters/ensg`. `mechanism_tables` is a flat list of GCS URIs
+(one per chromosome shard, e.g. `linker_mech_chrom_1.tsv.gz` … `linker_mech_chrom_X.tsv.gz`)
+holding the raw per-variant mechanistic annotations that back the derived
+variant-level filters. Both single files (`.tsv`, `.tsv.bgz`, `.tsv.gz`) and
+partitioned directory prefixes (`.parquet/`) are supported; downloads run via
+`gcloud storage cp -r`.
 
 ### Prerequisites
 
@@ -274,26 +329,29 @@ gcloud auth login
 
 ```bash
 # From merge_v2/src
-python download_source_data.py                              # download everything (default)
+python download_source_data.py                              # download everything except mechanisms (default)
 python download_source_data.py --score-tables variant_level # only score variant_level
 python download_source_data.py --eval-tables variant_level,gene_level
 python download_source_data.py --score-tables all --eval-tables none
 python download_source_data.py --linker-table all          # only the linker table
 python download_source_data.py --filter-tables all         # only the filter tables
+python download_source_data.py --mechanism-tables all      # only the mechanism tables (opt-in)
 python download_source_data.py --dry-run                    # preview gcloud commands only
 ```
 
 ### Selection semantics
 
-- With **no** selection flags, everything is downloaded (scores, evals, filters,
-  linker).
+- With **no** selection flags, everything **except `mechanism_tables`** is
+  downloaded (scores, evals, filters, linker). `mechanism_tables` is opt-in:
+  it must be requested explicitly via `--mechanism-tables all`.
 - If **any** of `--score-tables` / `--eval-tables` / `--filter-tables` /
-  `--linker-table` is supplied, only the explicitly requested categories are
-  downloaded; the unspecified groups default to `none`.
+  `--linker-table` / `--mechanism-tables` is supplied, only the explicitly
+  requested categories are downloaded; the unspecified groups default to `none`.
 - `--score-tables` / `--eval-tables` / `--filter-tables` accept a comma-separated
   list of subcategory keys (e.g. `variant_level,gene_level`) or the keywords
   `all` / `none`. Subcategory keys are read dynamically from the manifest.
-- `--linker-table` accepts `all` / `none` (it is a single URI, not subcategorized).
+- `--linker-table` and `--mechanism-tables` each accept `all` / `none`
+  (both are standalone entries, not subcategorized).
 - Both dashed and underscored spellings are accepted (e.g. `--score-tables`
   and `--score_tables`).
 
@@ -826,7 +884,7 @@ the fly — no wide ~80M-row intermediate is ever materialized.
   duplication, minus any variants absent from the linker) and, for stats, the
   final row × column counts.
 
-## `created_variant_scores_filtered_tables.py`
+## `create_variant_scores_filtered_tables.py`
 
 Attaches the variant→gene linker **and every filter table** to a wide variant
 score table via a long chain of **FULL OUTER JOIN**s, writing
@@ -888,11 +946,11 @@ streamed in one pass** without ever materializing the wide table:
 python download_source_data.py --linker-table all --filter-tables all
 python create_percentile_score_tables.py --variant   # builds the default input
 
-python created_variant_scores_filtered_tables.py
-python created_variant_scores_filtered_tables.py --checkpoint-every 5 --memory-limit 24GB
-python created_variant_scores_filtered_tables.py --join-type left   # keep only the score table's variants
-python created_variant_scores_filtered_tables.py --input variant_scores_all_outer.parquet --output /tmp/out.parquet
-python created_variant_scores_filtered_tables.py --dry-run          # print the join plan + sample SQL
+python create_variant_scores_filtered_tables.py
+python create_variant_scores_filtered_tables.py --checkpoint-every 5 --memory-limit 24GB
+python create_variant_scores_filtered_tables.py --join-type left   # keep only the score table's variants
+python create_variant_scores_filtered_tables.py --input variant_scores_all_outer.parquet --output /tmp/out.parquet
+python create_variant_scores_filtered_tables.py --dry-run          # print the join plan + sample SQL
 ```
 
 ### Behavior notes
@@ -911,6 +969,123 @@ python created_variant_scores_filtered_tables.py --dry-run          # print the 
   successful, non-`--keep-intermediates` run. Point `--temp-dir` at a volume
   with enough free space for the linker step's spill.
 
+## `create_gene_aggregated_filtered_table.py`
+
+The **gene-aggregated analogue** of `create_variant_scores_filtered_tables.py`.
+Attaches the variant- and gene-level filters to a gene-aggregated `_eval`
+analysis table (produced by `create_analysis_tables.py --groups gene`), writing
+`{input_stem}_filtered.parquet` alongside the input.
+
+The gene-aggregated `_eval` tables under
+`full_analysis_tables/gene_aggregated/` already carry `ensg`, so unlike the
+variant-level filter script this one **skips the linker join** and appends only
+the filter columns. Two joins:
+
+1. **Every variant-level filter** under `../data/raw_data/filters/variant/`.
+   Each `variant_filters_*.tsv.gz` file *is* a set of variants — membership in
+   the file is the filter — so each contributes a single `BOOLEAN` membership
+   column named after the file (`variant_filters_<name>.tsv.gz` → `<name>`).
+2. **The gene/ensg-level filter** (`../data/raw_data/filters/ensg/ensg_filters.tsv`)
+   joined on `ensg`; its non-key columns are carried through with an `ensg_`
+   prefix (`uniprot_id` stays `VARCHAR`, every other column is cast to `BOOLEAN`).
+
+All joins are **LEFT OUTER** joins onto the (already gene-fanned) analysis
+table, so the output has the **same row count** as the input — no variant is
+added or dropped, the filters only add columns. The heavy lifting (per-join
+SQL, the pipelined/checkpointed streaming `COPY` strategy, resume support) is
+reused verbatim from `create_variant_scores_filtered_tables.py`; this module
+only changes which steps make up the join chain (no linker) and forces a LEFT
+join.
+
+### Wiring into the pipeline
+
+`full_data_aggregation_pipeline.py` invokes this script **four** times, once
+per gene-aggregated `_eval` variant (outer/inner × plain/deduped) — those are
+the odd steps 11 / 13 / 15 / 17 in the execution order above, each immediately
+followed by its `create_gene_aggregated_mechanism_appended_table.py` sibling
+(the even steps 12 / 14 / 16 / 18). Each pair is independently toggleable in
+`config.json`; check the current `enabled` flags for the active configuration.
+
+### Usage
+
+```bash
+# From merge_v2/src (requires the input _eval table + the filters to exist)
+python create_gene_aggregated_filtered_table.py            # default outer input
+python create_gene_aggregated_filtered_table.py \
+    --input ../data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_inner_ensg_stats_eval.parquet
+python create_gene_aggregated_filtered_table.py --memory-limit 20GB --threads 3
+python create_gene_aggregated_filtered_table.py --dry-run  # print the plan and exit
+```
+
+### Behavior notes
+
+- `--input` selects the gene-aggregated `_eval` table to filter; the default is
+  the outer-branch `variant_scores_all_outer_ensg_stats_eval.parquet`.
+- Existing outputs are **skipped** (resumable) unless `--overwrite` is set.
+- Does **not** accept `--compact-dtypes` (the gene-aggregated input already
+  carries its keys in the profile chosen upstream, and this step only appends
+  columns rather than re-deriving the key).
+- `--memory-limit` / `--threads` / `--temp-dir` tune DuckDB; the spill and
+  checkpoint dirs default to `<output dir>/.duckdb_spill` and
+  `<output dir>/.ckpt_<output stem>/` respectively.
+
+## `create_gene_aggregated_mechanism_appended_table.py`
+
+The **mechanism-annotation** step in the gene-aggregated filtered tail. Reads a
+`*_filtered.parquet` written by `create_gene_aggregated_filtered_table.py` and
+LEFT-JOINs the per-chromosome mechanism shards under
+`../data/raw_data/mechanisms/` onto it, writing
+`{input_stem}_mech.parquet` alongside the input.
+
+The mechanism shards (`linker_mech_chrom_{1..22,X}.tsv.gz`) each carry
+per-variant annotation columns keyed by `(chrom, pos, ref, alt, ensg)`. Every
+non-key column is renamed on the way in with a `mech_` prefix (e.g.
+`aromatic` → `mech_aromatic`, `foldx_ddg` → `mech_foldx_ddg`) so it cannot
+collide with any existing filter / eval column in the input; original types
+are preserved (BOOLEAN, VARCHAR, floating, etc.). The LEFT-JOIN is on the
+composite `(chrom, pos, ref, alt, ensg)` key, so the output has the **same
+row count** as the input — no variant is added or dropped, the mechanism data
+only adds columns.
+
+### Engine / memory / disk strategy
+
+The same pipelined/checkpointed streaming-`COPY` engine as
+`create_variant_scores_filtered_tables.py` / `create_gene_aggregated_filtered_table.py`:
+one per-chromosome shard per checkpoint, at most two checkpoints on disk at a
+time, and a `plan.json` recording the shard order so a crashed run can resume
+without recomputing prior joins.
+
+### Wiring into the pipeline
+
+`full_data_aggregation_pipeline.py` invokes this script **four** times, once
+per gene-aggregated `_filtered.parquet` variant (outer/inner × plain/deduped) —
+the even steps 12 / 14 / 16 / 18, each paired with its filtered predecessor
+(the odd steps 11 / 13 / 15 / 17). Each pair is toggled together in
+`config.json`; check the current `enabled` flags for the active configuration.
+
+### Usage
+
+```bash
+# From merge_v2/src (requires the input _filtered table + the mechanism shards to exist)
+python create_gene_aggregated_mechanism_appended_table.py    # default outer input
+python create_gene_aggregated_mechanism_appended_table.py \
+    --input ../data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_inner_ensg_stats_eval_filtered.parquet
+python create_gene_aggregated_mechanism_appended_table.py --memory-limit 20GB --threads 3
+python create_gene_aggregated_mechanism_appended_table.py --dry-run  # print the plan and exit
+```
+
+### Behavior notes
+
+- `--input` selects the `_filtered.parquet` to annotate; the default is the
+  outer-branch `variant_scores_all_outer_ensg_stats_eval_filtered.parquet`.
+- Existing outputs are **skipped** (resumable) unless `--overwrite` is set.
+- Accepts `--compact-dtypes` so the shard keys can be re-encoded to match a
+  compact-profile input; the pipeline forwards the run-wide flag via each
+  step's `passthrough`.
+- `--memory-limit` / `--threads` / `--temp-dir` tune DuckDB; the spill and
+  checkpoint dirs default to `<output dir>/.duckdb_spill` and
+  `<output dir>/.ckpt_<output stem>/` respectively.
+
 ## `create_analysis_tables.py`
 
 The final assembly step: LEFT-JOINs most of the score tables under
@@ -919,7 +1094,7 @@ The final assembly step: LEFT-JOINs most of the score tables under
 `../data/processed_data/full_analysis_tables`. Every output is named
 `{score file stem}_eval.parquet`.
 
-Four groups of score tables are processed (select a subset with `--groups`):
+Five groups of score tables are processed (select a subset with `--groups`):
 
 | Group | Inputs | Joined onto | Output location |
 | ----- | ------ | ----------- | --------------- |
@@ -927,12 +1102,25 @@ Four groups of score tables are processed (select a subset with `--groups`):
 | `pairwise` | every file under `scores/pairwise/{pairwise_raw,pairwise_pre,pairwise_post}` | `variant_evals_all.parquet` on the variant key | `full_analysis_tables/pairwise/<flavor>/` |
 | `pairwise_consolidated` | each `scores/pairwise_consolidated/*.parquet` (one per flavor, from `create_pairwise_consolidated_score_tables.py`) | `variant_evals_all.parquet` on the variant key | `full_analysis_tables/pairwise_consolidated/` |
 | `gene`     | the two `scores/gene_aggregated/*_ensg_stats.parquet` tables | `variant_evals_all.parquet` (variant key) **and** `evals/ensg_evals_all.parquet` (on `ensg`) | `full_analysis_tables/gene_aggregated/` |
+| `variant_locus` | `scores/variant_scores_all_outer.parquet` | `variant_evals_all.parquet` **FULL OUTER** on the variant key, then LEFT JOIN linker on the variant key, then LEFT JOIN `ensg_evals_all.parquet` on `ensg` | `full_analysis_tables/variant_locus/variant_scores_all_outer_ensg_eval_locus.parquet` |
 
 `pairwise` and `pairwise_consolidated` are the two alternative routes for the
 pairwise analysis tables (one table per pair vs. one table per flavor — see
 [the two pairwise routes](#two-routes-for-the-pairwise-analysis-tables)); pick
 one, or pass both. The `filtered` score tables are intentionally **not**
 processed.
+
+The `variant_locus` group is a **locus-preserving** sibling of `gene`: it keeps
+every locus that appears in either the score or the variant-eval table
+(including benchmark loci with no scores) and preserves variants with no gene
+mapping as a single row with `ensg = NULL`. Grain is `(variant, gene)` with
+NULL-ensg rows preserved, i.e. *not* unique on the locus. No per-gene summary
+statistics are added (that is the `gene` group's job). This group has its own
+join plan (see the table above) and does not share the "LEFT JOIN eval onto
+score" contract of the other four groups. It reads the variant→gene linker
+from `../data/raw_data/linker/linker_all.parquet` (override with `--linker`)
+and the variant-level score table from `variant_scores_all_outer.parquet`
+(override with `--variant-locus-scores`).
 
 ### Why LEFT JOIN is safe
 
@@ -969,10 +1157,11 @@ outputs are skipped (resumable) unless `--overwrite` is set.
 
 ```bash
 # From merge_v2/src (requires the score tables and both eval tables to exist first)
-python create_analysis_tables.py                          # all four groups
+python create_analysis_tables.py                          # all five groups
 python create_analysis_tables.py --groups variant pairwise
 python create_analysis_tables.py --groups pairwise_consolidated   # consolidated route
 python create_analysis_tables.py --groups gene --memory-limit 20GB
+python create_analysis_tables.py --groups variant_locus   # locus-preserving, gene-annotated
 python create_analysis_tables.py --overwrite
 python create_analysis_tables.py --dry-run                # print the plan and exit
 ```
@@ -980,9 +1169,11 @@ python create_analysis_tables.py --dry-run                # print the plan and e
 ### Behavior notes
 
 - `--groups` chooses any subset of `variant` / `pairwise` /
-  `pairwise_consolidated` / `gene` (default: all).
+  `pairwise_consolidated` / `gene` / `variant_locus` (default: all).
 - `--scores-dir` / `--output-dir` override the input/output roots;
   `--variant-evals` / `--ensg-evals` override the eval table locations.
+- `--linker` and `--variant-locus-scores` override the two inputs unique to the
+  `variant_locus` group (ignored when that group is not selected).
 - Existing outputs are skipped unless `--overwrite` is set.
 - `--compression` (default `zstd`) and `--row-group-size` (default 512000) tune
   the Parquet writer; `--memory-limit` / `--threads` / `--temp-dir` tune DuckDB.

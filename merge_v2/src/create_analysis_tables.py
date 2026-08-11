@@ -39,6 +39,28 @@ Three groups of score tables are processed (select a subset with ``--groups``):
   table two outputs are written: ``{stem}_eval.parquet`` (the join as-is) and
   ``{stem}_eval_deduped.parquet`` (see below).
 
+* ``variant_locus`` -- locus-preserving, gene-annotated variant analysis table.
+  A sibling of the ``gene`` group that intentionally **keeps variants without a
+  gene mapping**. Uses ``variant_scores_all_outer.parquet`` as the score input
+  and a *different* join plan from the other groups:
+
+  1. **FULL OUTER JOIN** ``variant_scores_all_outer`` with
+     ``variant_evals_all`` on ``(chrom, pos, ref, alt)`` -- keeps every locus
+     that appears in either the score or the variant-eval table (benchmark loci
+     with no scores are preserved).
+  2. **LEFT JOIN** the variant->gene linker
+     (``../data/raw_data/linker/linker_all.parquet``) on the variant key --
+     adds ``ensg`` and fans the table out to one row per ``(variant, gene)``.
+     Variants with no linker mapping produce a single row with ``ensg = NULL``.
+  3. **LEFT JOIN** ``ensg_evals_all`` on ``ensg`` -- adds the gene-level eval
+     columns (NULL for unmapped variants).
+
+  Output goes to ``full_analysis_tables/variant_locus/
+  variant_scores_all_outer_ensg_eval_locus.parquet``. Grain is
+  ``(variant, gene)`` with NULL-ensg rows preserved -- **not** unique on the
+  locus. No per-gene summary statistics are added (that is the ``gene`` group's
+  job); the ``variant_locus`` group joins only the eval columns.
+
 The ``filtered`` score tables are intentionally **not** processed.
 
 Join semantics: why LEFT JOIN is safe
@@ -82,6 +104,7 @@ Run from the ``src/`` directory::
     python create_analysis_tables.py
     python create_analysis_tables.py --groups variant pairwise
     python create_analysis_tables.py --groups gene --memory-limit 20GB
+    python create_analysis_tables.py --groups variant_locus              # locus-preserving
     python create_analysis_tables.py --dry-run
     python create_analysis_tables.py --overwrite
 """
@@ -108,6 +131,7 @@ DEFAULT_OUTPUT_DIR = PROC_DIR / "full_analysis_tables"
 
 VARIANT_EVALS = EVALS_DIR / "variant_evals_all.parquet"
 ENSG_EVALS = EVALS_DIR / "ensg_evals_all.parquet"
+LINKER_DEFAULT = PROJECT_DIR / "data" / "raw_data" / "linker" / "linker_all.parquet"
 
 # Join keys.
 VARIANT_KEYS = ["chrom", "pos", "ref", "alt"]
@@ -122,11 +146,16 @@ PAIRWISE_CONSOLIDATED_SUBDIR = "pairwise_consolidated"
 # Only the per-gene *stats* tables are joined for the gene group.
 GENE_INPUT_GLOB = "*_ensg_stats.parquet"
 
+# variant_locus group defaults.
+VARIANT_LOCUS_SCORES_DEFAULT = SCORES_DIR / "variant_scores_all_outer.parquet"
+VARIANT_LOCUS_SUBDIR = "variant_locus"
+VARIANT_LOCUS_OUTPUT_STEM = "variant_scores_all_outer_ensg_eval_locus"
+
 # Output naming.
 EVAL_SUFFIX = "_eval"
 DEDUP_SUFFIX = "_eval_deduped"
 
-GROUPS = ("variant", "pairwise", "pairwise_consolidated", "gene")
+GROUPS = ("variant", "pairwise", "pairwise_consolidated", "gene", "variant_locus")
 
 
 def q(identifier: str) -> str:
@@ -434,6 +463,171 @@ def process_job(con: duckdb.DuckDBPyConnection, job: Job, args: argparse.Namespa
     )
 
 
+# ---------------------------------------------------------------------------
+# variant_locus group (locus-preserving, gene-annotated join)
+# ---------------------------------------------------------------------------
+# The variant_locus group has a different join plan from the other groups
+# (FULL OUTER of scores x variant-evals, then LEFT JOINs onto the linker and
+# ensg-evals), so it does not fit the shared Job / process_job pipeline. It has
+# a dedicated builder + runner that mirrors those functions' out-of-core style.
+def build_variant_locus_select_sql(
+    scores: Path,
+    variant_evals: Path,
+    ensg_evals: Path,
+    linker: Path,
+    score_vals: list[str],
+    ve_vals: list[str],
+    ee_vals: list[str],
+) -> str:
+    """Build the FULL-OUTER (scores+var-evals) + LEFT (linker) + LEFT (gene-evals) projection.
+
+    Grain: one row per ``(variant, gene)``. Variants with no linker mapping
+    produce a single row with ``ensg = NULL``; loci present in only the score or
+    only the variant-eval table are preserved (unlike the other groups' LEFT
+    JOIN which anchors on the score table alone).
+    """
+    ensg_col = ENSG_KEYS[0]
+    s_reader = reader_sql(scores.resolve())
+    e_reader = reader_sql(variant_evals.resolve())
+    l_reader = reader_sql(linker.resolve())
+    ee_reader = reader_sql(ensg_evals.resolve())
+
+    base_keys = [f"coalesce(s.{q(k)}, e.{q(k)}) AS {q(k)}" for k in VARIANT_KEYS]
+    base_cols = (
+        base_keys
+        + [f"s.{q(c)} AS {q(c)}" for c in score_vals]
+        + [f"e.{q(c)} AS {q(c)}" for c in ve_vals]
+    )
+    on_se = " AND ".join(f"s.{q(k)} = e.{q(k)}" for k in VARIANT_KEYS)
+    base_sql = (
+        "SELECT " + ", ".join(base_cols) + "\n"
+        f"FROM {s_reader} AS s\n"
+        f"FULL OUTER JOIN {e_reader} AS e ON {on_se}"
+    )
+
+    on_bl = " AND ".join(f"b.{q(k)} = l.{q(k)}" for k in VARIANT_KEYS)
+    out_cols = (
+        [f"b.{q(k)}" for k in VARIANT_KEYS]
+        + [f"l.{q(ensg_col)} AS {q(ensg_col)}"]
+        + [f"b.{q(c)}" for c in score_vals]
+        + [f"b.{q(c)}" for c in ve_vals]
+        + [f"ee.{q(c)} AS {q(c)}" for c in ee_vals]
+    )
+    return (
+        "WITH base AS (\n" + base_sql + "\n)\n"
+        "SELECT " + ", ".join(out_cols) + "\n"
+        "FROM base AS b\n"
+        f"LEFT JOIN {l_reader} AS l ON {on_bl}\n"
+        f"LEFT JOIN {ee_reader} AS ee ON l.{q(ensg_col)} = ee.{q(ensg_col)}"
+    )
+
+
+def process_variant_locus(
+    con: duckdb.DuckDBPyConnection,
+    args: argparse.Namespace,
+    scores: Path,
+    variant_evals: Path,
+    ensg_evals: Path,
+    linker: Path,
+    out_dir: Path,
+) -> None:
+    """Build the locus-preserving, gene-annotated variant analysis table."""
+    for path, label in (
+        (scores, "score table"),
+        (variant_evals, "variant eval table"),
+        (ensg_evals, "gene eval table"),
+        (linker, "linker table"),
+    ):
+        if not path.exists():
+            sys.exit(f"ERROR: {label} not found: {path}")
+
+    score_cols = column_names(con, reader_sql(scores.resolve()))
+    ve_cols = column_names(con, reader_sql(variant_evals.resolve()))
+    ee_cols = column_names(con, reader_sql(ensg_evals.resolve()))
+    ensg_col = ENSG_KEYS[0]
+
+    for path, cols, keys in (
+        (scores, score_cols, VARIANT_KEYS),
+        (variant_evals, ve_cols, VARIANT_KEYS),
+        (ensg_evals, ee_cols, [ensg_col]),
+    ):
+        missing = [k for k in keys if k not in cols]
+        if missing:
+            sys.exit(
+                f"ERROR: {path.name} is missing key column(s) {missing}. "
+                f"Found: {cols}"
+            )
+    if ensg_col in score_cols:
+        sys.exit(
+            f"ERROR: {scores.name} already has an '{ensg_col}' column; the "
+            f"variant_locus group expects a variant-level (non-gene-annotated) "
+            f"score table and gets '{ensg_col}' from the linker."
+        )
+
+    score_vals = [c for c in score_cols if c not in VARIANT_KEYS]
+    ve_vals = [c for c in ve_cols if c not in VARIANT_KEYS]
+    ee_vals = [c for c in ee_cols if c != ensg_col]
+
+    seen: dict[str, str] = {ensg_col: "linker"}
+    for c in VARIANT_KEYS:
+        seen[c] = "key"
+    for label, vals in (
+        (scores.name, score_vals),
+        (variant_evals.name, ve_vals),
+        (ensg_evals.name, ee_vals),
+    ):
+        for c in vals:
+            if c in seen:
+                sys.exit(
+                    f"ERROR: output column-name collision on '{c}' between "
+                    f"{label} and {seen[c]}."
+                )
+            seen[c] = label
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{VARIANT_LOCUS_OUTPUT_STEM}.parquet"
+
+    select_sql = build_variant_locus_select_sql(
+        scores, variant_evals, ensg_evals, linker, score_vals, ve_vals, ee_vals,
+    )
+
+    print("\n=== variant_locus ===")
+    print(f"Scores:        {scores}")
+    print(f"Variant evals: {variant_evals}")
+    print(f"Gene evals:    {ensg_evals}")
+    print(f"Linker:        {linker}")
+    print(f"Output:        {out_path}")
+    print(
+        f"Columns: 4 key + ensg + {len(score_vals)} score + "
+        f"{len(ve_vals)} variant-eval + {len(ee_vals)} gene-eval"
+    )
+
+    if args.dry_run:
+        print("  (dry run -- nothing written)")
+        print(copy_sql(select_sql, out_path, args.compression, args.row_group_size) + ";")
+        return
+
+    if out_path.exists() and not args.overwrite:
+        print("  skip (output exists; use --overwrite to rebuild)")
+        return
+
+    print("  joining + writing parquet ...", flush=True)
+    con.execute(copy_sql(select_sql, out_path, args.compression, args.row_group_size))
+    n_out = count_rows(con, out_path)
+    reader = reader_sql(out_path.resolve())
+    n_null_ensg = con.execute(
+        f"SELECT count(*) FROM {reader} WHERE {q(ensg_col)} IS NULL"
+    ).fetchone()[0]
+    n_loci = con.execute(
+        f"SELECT count(*) FROM (SELECT DISTINCT "
+        f"{', '.join(q(k) for k in VARIANT_KEYS)} FROM {reader})"
+    ).fetchone()[0]
+    print(
+        f"  done: {n_out:,} rows, {n_loci:,} distinct loci, "
+        f"{n_null_ensg:,} rows with NULL ensg"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -461,6 +655,18 @@ def main() -> int:
         "--ensg-evals", "--ensg_evals", dest="ensg_evals",
         type=Path, default=ENSG_EVALS,
         help=f"Gene-level eval table (default: {ENSG_EVALS}).",
+    )
+    parser.add_argument(
+        "--linker", type=Path, default=LINKER_DEFAULT,
+        help=f"Variant->gene linker (variant_locus group only; "
+             f"default: {LINKER_DEFAULT}).",
+    )
+    parser.add_argument(
+        "--variant-locus-scores", "--variant_locus_scores",
+        dest="variant_locus_scores", type=Path,
+        default=VARIANT_LOCUS_SCORES_DEFAULT,
+        help=f"Score table for the variant_locus group "
+             f"(default: {VARIANT_LOCUS_SCORES_DEFAULT}).",
     )
     parser.add_argument(
         "--overwrite", action="store_true",
@@ -492,10 +698,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # variant_locus has its own join plan (see process_variant_locus); the
+    # other groups share the Job/process_job pipeline.
+    run_variant_locus = "variant_locus" in args.groups
+    other_groups = [g for g in args.groups if g != "variant_locus"]
+
     jobs = build_jobs(
-        args.groups, args.scores_dir, args.output_dir, args.variant_evals, args.ensg_evals
+        other_groups, args.scores_dir, args.output_dir, args.variant_evals, args.ensg_evals
     )
-    if not jobs:
+    if not jobs and not run_variant_locus:
         sys.exit(
             f"ERROR: no score tables found for groups {args.groups} under "
             f"{args.scores_dir}."
@@ -506,9 +717,13 @@ def main() -> int:
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Groups: {args.groups}")
-    print(f"Score tables to process: {len(jobs)}")
+    print(f"Score tables to process: {len(jobs)}"
+          f"{' (+ variant_locus)' if run_variant_locus else ''}")
     print(f"Variant evals: {args.variant_evals}")
     print(f"Gene evals:    {args.ensg_evals}")
+    if run_variant_locus:
+        print(f"Linker:        {args.linker}")
+        print(f"variant_locus scores: {args.variant_locus_scores}")
     print(f"Output root:   {args.output_dir}")
     print(f"Spill dir:     {temp_dir}")
 
@@ -517,6 +732,16 @@ def main() -> int:
         configure(con, args.memory_limit, args.threads, temp_dir)
         for job in jobs:
             process_job(con, job, args)
+        if run_variant_locus:
+            process_variant_locus(
+                con,
+                args,
+                scores=args.variant_locus_scores,
+                variant_evals=args.variant_evals,
+                ensg_evals=args.ensg_evals,
+                linker=args.linker,
+                out_dir=args.output_dir / VARIANT_LOCUS_SUBDIR,
+            )
     finally:
         con.close()
         shutil.rmtree(temp_dir, ignore_errors=True)

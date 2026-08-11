@@ -13,7 +13,7 @@ subprocess with the *same* Python interpreter that launched this pipeline (so
 the children inherit this process's environment / DuckDB install). The order is
 the topological sort of the data dependencies:
 
-1. ``download_source_data.py``               -> data/raw_data/{scores,evals,linker,filters}
+1. ``download_source_data.py``               -> data/raw_data/{scores,evals,linker,filters,mechanisms}
 2. ``create_variant_scores_all_table.py``    -> scores/variant_scores_all_outer.parquet
 3. ``create_variant_eval_all_table.py``      -> evals/variant_evals_all.parquet
 4. ``create_ensg_eval_all_table.py``         -> evals/ensg_evals_all.parquet
@@ -27,7 +27,7 @@ the topological sort of the data dependencies:
    (``--variant``, optional)                    (collapses each flavor's per-pair files
                                                  into one table; needed only for the
                                                  consolidated analysis route -- see below)
-9. ``created_variant_scores_filtered_tables.py`` -> scores/filtered/*_filtered.parquet
+9. ``create_variant_scores_filtered_tables.py`` -> scores/filtered/*_filtered.parquet
    (needs outer_pre_percentile + linker + filters)
 10. ``create_analysis_tables.py``            -> full_analysis_tables/** (joins scores x evals)
 
@@ -173,8 +173,9 @@ DEFAULT_PIPELINE = {
 
 _DUCK = [FLAG_MEMORY, FLAG_THREADS, FLAG_TEMP]
 _DUCK_OVERWRITE = _DUCK + [FLAG_OVERWRITE]
-# --input paths for the gene-aggregated filtered steps are relative to SRC_DIR
-# (each step runs with cwd=SRC_DIR), matching the other steps' ../data/... refs.
+# --input paths for the gene-aggregated filtered / mech-append steps are
+# relative to SRC_DIR (each step runs with cwd=SRC_DIR), matching the other
+# steps' ../data/... refs.
 _GENE_AGG_EVAL_DIR = "../data/processed_data/full_analysis_tables/gene_aggregated"
 # Steps that set or re-derive the variant key / value types must all honor the
 # run-wide compact-dtypes flag, or their outputs/joins would be type-mismatched.
@@ -197,7 +198,7 @@ DEFAULT_STEPS = [
      "args": ["--variant"], "passthrough": _DUCK_OVERWRITE, "enabled": True},
     {"name": "create_pairwise_consolidated_score_tables", "script": "create_pairwise_consolidated_score_tables.py",
      "args": ["--variant"], "passthrough": _DUCK_OVERWRITE, "enabled": False},
-    {"name": "created_variant_scores_filtered_tables", "script": "created_variant_scores_filtered_tables.py",
+    {"name": "create_variant_scores_filtered_tables", "script": "create_variant_scores_filtered_tables.py",
      "args": [], "passthrough": _DUCK_OVERWRITE_COMPACT, "enabled": True},
     {"name": "create_analysis_tables", "script": "create_analysis_tables.py",
      "args": [], "passthrough": _DUCK_OVERWRITE, "enabled": True},
@@ -205,22 +206,47 @@ DEFAULT_STEPS = [
     # analysis table (outer/inner x eval/deduped). create_gene_aggregated_filtered_table.py
     # takes a single --input and does NOT accept --compact-dtypes (so it is not in
     # the passthrough); it appends the filter columns via row-preserving LEFT joins.
+    #
+    # Each filtered step is immediately followed by its
+    # create_gene_aggregated_mechanism_appended_table.py sibling, which LEFT-JOINs
+    # the per-chromosome mechanism shards onto the just-produced *_filtered.parquet
+    # to write *_filtered_mech.parquet alongside it. The mech script DOES accept
+    # --compact-dtypes (so the mech-shard keys can be re-encoded to match a
+    # compact-profile input), hence _DUCK_OVERWRITE_COMPACT. Enabled state is
+    # kept in lockstep with the filtered predecessor -- flipping one on/off
+    # should flip the other the same way.
     {"name": "create_gene_aggregated_filtered_outer",
      "script": "create_gene_aggregated_filtered_table.py",
      "args": ["--input", f"{_GENE_AGG_EVAL_DIR}/variant_scores_all_outer_ensg_stats_eval.parquet"],
      "passthrough": _DUCK_OVERWRITE, "enabled": False},
+    {"name": "create_gene_aggregated_mechanism_appended_outer",
+     "script": "create_gene_aggregated_mechanism_appended_table.py",
+     "args": ["--input", f"{_GENE_AGG_EVAL_DIR}/variant_scores_all_outer_ensg_stats_eval_filtered.parquet"],
+     "passthrough": _DUCK_OVERWRITE_COMPACT, "enabled": False},
     {"name": "create_gene_aggregated_filtered_outer_deduped",
      "script": "create_gene_aggregated_filtered_table.py",
      "args": ["--input", f"{_GENE_AGG_EVAL_DIR}/variant_scores_all_outer_ensg_stats_eval_deduped.parquet"],
      "passthrough": _DUCK_OVERWRITE, "enabled": False},
+    {"name": "create_gene_aggregated_mechanism_appended_outer_deduped",
+     "script": "create_gene_aggregated_mechanism_appended_table.py",
+     "args": ["--input", f"{_GENE_AGG_EVAL_DIR}/variant_scores_all_outer_ensg_stats_eval_deduped_filtered.parquet"],
+     "passthrough": _DUCK_OVERWRITE_COMPACT, "enabled": False},
     {"name": "create_gene_aggregated_filtered_inner",
      "script": "create_gene_aggregated_filtered_table.py",
      "args": ["--input", f"{_GENE_AGG_EVAL_DIR}/variant_scores_all_inner_ensg_stats_eval.parquet"],
      "passthrough": _DUCK_OVERWRITE, "enabled": False},
+    {"name": "create_gene_aggregated_mechanism_appended_inner",
+     "script": "create_gene_aggregated_mechanism_appended_table.py",
+     "args": ["--input", f"{_GENE_AGG_EVAL_DIR}/variant_scores_all_inner_ensg_stats_eval_filtered.parquet"],
+     "passthrough": _DUCK_OVERWRITE_COMPACT, "enabled": False},
     {"name": "create_gene_aggregated_filtered_inner_deduped",
      "script": "create_gene_aggregated_filtered_table.py",
      "args": ["--input", f"{_GENE_AGG_EVAL_DIR}/variant_scores_all_inner_ensg_stats_eval_deduped.parquet"],
      "passthrough": _DUCK_OVERWRITE, "enabled": False},
+    {"name": "create_gene_aggregated_mechanism_appended_inner_deduped",
+     "script": "create_gene_aggregated_mechanism_appended_table.py",
+     "args": ["--input", f"{_GENE_AGG_EVAL_DIR}/variant_scores_all_inner_ensg_stats_eval_deduped_filtered.parquet"],
+     "passthrough": _DUCK_OVERWRITE_COMPACT, "enabled": False},
 ]
 
 # DuckDB is optional here -- only used to read (free) Parquet row counts. If it
@@ -363,6 +389,7 @@ def step_io_map() -> dict[str, dict[str, list[str]]]:
     p_evals = "data/processed_data/evals"
     p_gene_agg = "data/processed_data/full_analysis_tables/gene_aggregated"
     linker = "data/raw_data/linker/linker_all.parquet"
+    mechanisms_tree = "tree:data/raw_data/mechanisms"
     filter_trees = [
         "tree:data/raw_data/filters/variant",
         "tree:data/raw_data/filters/ensg",
@@ -377,6 +404,19 @@ def step_io_map() -> dict[str, dict[str, list[str]]]:
         return {
             "inputs": [f"{p_gene_agg}/{eval_stem}.parquet", *filter_trees],
             "outputs": [f"{p_gene_agg}/{eval_stem}_filtered.parquet"],
+        }
+
+    def gene_agg_mech_appended_io(filtered_stem: str) -> dict[str, list[str]]:
+        """Audit I/O for one create_gene_aggregated_mechanism_appended_table.py step.
+
+        Consumes a gene-aggregated ``*_filtered.parquet`` (produced by the
+        corresponding filtered step) plus the per-chromosome mechanism shards;
+        produces the ``*_filtered_mech.parquet`` sibling with ``mech_`` prefixed
+        annotation columns appended.
+        """
+        return {
+            "inputs": [f"{p_gene_agg}/{filtered_stem}.parquet", mechanisms_tree],
+            "outputs": [f"{p_gene_agg}/{filtered_stem}_mech.parquet"],
         }
 
     return {
@@ -430,7 +470,7 @@ def step_io_map() -> dict[str, dict[str, list[str]]]:
             "inputs": ["tree:data/processed_data/scores/pairwise"],
             "outputs": ["tree:data/processed_data/scores/pairwise_consolidated"],
         },
-        "created_variant_scores_filtered_tables": {
+        "create_variant_scores_filtered_tables": {
             "inputs": [
                 f"{p_scores}/variant_scores_outer_pre_percentile.parquet",
                 linker,
@@ -453,14 +493,26 @@ def step_io_map() -> dict[str, dict[str, list[str]]]:
         "create_gene_aggregated_filtered_outer": gene_agg_filtered_io(
             "variant_scores_all_outer_ensg_stats_eval"
         ),
+        "create_gene_aggregated_mechanism_appended_outer": gene_agg_mech_appended_io(
+            "variant_scores_all_outer_ensg_stats_eval_filtered"
+        ),
         "create_gene_aggregated_filtered_outer_deduped": gene_agg_filtered_io(
             "variant_scores_all_outer_ensg_stats_eval_deduped"
+        ),
+        "create_gene_aggregated_mechanism_appended_outer_deduped": gene_agg_mech_appended_io(
+            "variant_scores_all_outer_ensg_stats_eval_deduped_filtered"
         ),
         "create_gene_aggregated_filtered_inner": gene_agg_filtered_io(
             "variant_scores_all_inner_ensg_stats_eval"
         ),
+        "create_gene_aggregated_mechanism_appended_inner": gene_agg_mech_appended_io(
+            "variant_scores_all_inner_ensg_stats_eval_filtered"
+        ),
         "create_gene_aggregated_filtered_inner_deduped": gene_agg_filtered_io(
             "variant_scores_all_inner_ensg_stats_eval_deduped"
+        ),
+        "create_gene_aggregated_mechanism_appended_inner_deduped": gene_agg_mech_appended_io(
+            "variant_scores_all_inner_ensg_stats_eval_deduped_filtered"
         ),
     }
 

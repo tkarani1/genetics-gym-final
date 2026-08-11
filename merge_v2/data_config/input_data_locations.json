@@ -1,4 +1,39 @@
 {
+  "_preprocessing": {
+    "_description": "Provenance for entries derived from preprocessing. The arrays above list processed GCS URIs that download_source_data.py fetches directly. This section records the raw source(s) and script(s) used to produce each processed file, so users can re-derive from scratch if needed. See merge_v2/preprocess/README.md for full usage details.",
+    "msa_pairformer_variant.parquet": {
+      "raw_source": "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/msa_pairformer_llr_chunks0-9.parquet",
+      "additional_inputs": ["linker_missense_enst_transcript_aa_uniprot_by_chrom_tsv/ (per-chrom .bgz shards under the linker download group)"],
+      "preprocessing_script": "merge_v2/preprocess/preprocess_msa_pairformer_llr.py",
+      "notes": "Canonical UniProt isoform policy; ~37% coverage of missense variants with a UniProt mapping. See preprocess/README.md for the inner-table-collapse caveat."
+    },
+    "gnomad_v4_obs_exp_mis.parquet": {
+      "raw_source": "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/obs_exp/gnomad_v4_obs_exp_per_variant.parquet",
+      "additional_inputs": ["linker_all.parquet (INNER JOIN for missense-only filtering)"],
+      "preprocessing_script": "merge_v2/preprocess/preprocess_gnomad_v4_obs_exp.py",
+      "notes": "INNER JOIN with linker restricts to missense; ENSG filter + DISTINCT removes dual gene_id encoding and exact-duplicate rows."
+    },
+    "gnomad_new_obs_exp_mis.parquet": {
+      "raw_source": "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/gnomad.new.genetics_gym.per_variant.expected.parquet",
+      "preprocessing_script": "merge_v2/preprocess/preprocess_gnomad_obs_exp.py",
+      "bootstrap_driver": "merge_v2/preprocess/bootstrap_gnomad_obs_exp.sh"
+    },
+    "gnomad_ukb_obs_exp_mis.parquet": {
+      "raw_source": "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/gnomad.ukb.genetics_gym.per_variant.expected.parquet",
+      "preprocessing_script": "merge_v2/preprocess/preprocess_gnomad_obs_exp.py",
+      "bootstrap_driver": "merge_v2/preprocess/bootstrap_gnomad_obs_exp.sh"
+    },
+    "gnomad_v2_obs_exp_mis.parquet": {
+      "raw_source": "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/gnomad.v2.genetics_gym.per_variant.expected.parquet",
+      "preprocessing_script": "merge_v2/preprocess/preprocess_gnomad_obs_exp.py",
+      "bootstrap_driver": "merge_v2/preprocess/bootstrap_gnomad_obs_exp.sh"
+    },
+    "gnomad_v2_ukb_obs_exp_mis.parquet": {
+      "raw_source": "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/gnomad.v2.ukb.genetics_gym.per_variant.expected.parquet",
+      "preprocessing_script": "merge_v2/preprocess/preprocess_gnomad_obs_exp.py",
+      "bootstrap_driver": "merge_v2/preprocess/bootstrap_gnomad_obs_exp.sh"
+    },
+  },
   "linker_table": "gs://grohlicek/genetics_gym_vsm_all_content/linker/linker_all.parquet",
   "score_tables": {
     "variant_level": [
@@ -21,7 +56,8 @@
       "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/MutScore.parquet",
       "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/SNPred_scores.parquet",
       "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/VEST4_MetaRNN_scores.parquet",
-      "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/scores_prior.parquet"
+      "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/scores_prior.parquet",
+      "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/msa_pairformer_variant.parquet"
     ],
     "gene_level": []
   },
@@ -46,7 +82,8 @@
       "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/gnomad_new_obs_exp_mis.parquet",
       "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/gnomad_ukb_obs_exp_mis.parquet",
       "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/gnomad_v2_obs_exp_mis.parquet",
-      "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/gnomad_v2_ukb_obs_exp_mis.parquet"
+      "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/gnomad_v2_ukb_obs_exp_mis.parquet",
+      "gs://grohlicek/genetics_gym_vsm_all_content/eval_obs_exp/gnomad_v4_obs_exp_mis.parquet"
     ],
     "gene_level": [
       "gs://genetics-gym/eval-tables-final/lof_gene/clinvar_ensg_is_case.tsv",
@@ -130,5 +167,30 @@
     "gene_level": [
       "gs://grohlicek/genetics_gym_vsm_all_content/filters/ensg_filters.tsv"
     ]
-  }
+  },
+  "mechanism_tables": [
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_1.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_2.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_3.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_4.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_5.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_6.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_7.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_8.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_9.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_10.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_11.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_12.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_13.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_14.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_15.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_16.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_17.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_18.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_19.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_20.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_21.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_22.tsv.gz",
+    "gs://grohlicek/genetics_gym_vsm_all_content/mechanisms/linker_mech_chrom_X.tsv.gz"
+  ]
 }

@@ -126,6 +126,12 @@
         {"VEST4_score": "VEST4"},
         {"MetaRNN_score": "MetaRNN"}
       ]
+    },
+    {
+      "file_path": "data/raw_data/scores/msa_pairformer_variant.parquet",
+      "score_fields": [
+        {"msa_pairformer_llr": "msa_pairformer_llr"}
+      ]
     }
   ],
   "gene_level": []

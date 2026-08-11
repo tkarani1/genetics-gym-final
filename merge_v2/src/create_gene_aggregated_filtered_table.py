@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Attach the variant- and gene-level filters to a gene-aggregated analysis table.
 
-This is the gene-aggregated analogue of ``created_variant_scores_filtered_tables.py``.
+This is the gene-aggregated analogue of ``create_variant_scores_filtered_tables.py``.
 That script filters the wide *variant-level* score table and therefore has to
 join the variant->gene linker first (to obtain ``ensg``). The gene-aggregated
 ``full_analysis_tables/gene_aggregated/*_eval.parquet`` tables produced by
@@ -27,7 +27,7 @@ layout as the corresponding ``*_eval_filtered.parquet`` already published on GCS
 
 The heavy lifting (per-join SQL, the pipelined/checkpointed streaming ``COPY``
 strategy, resume support) is reused verbatim from
-``created_variant_scores_filtered_tables.py``; this module only changes which
+``create_variant_scores_filtered_tables.py``; this module only changes which
 steps make up the join chain (no linker) and forces a LEFT join.
 
 Run from the ``src/`` directory::
@@ -49,7 +49,7 @@ import duckdb
 
 # Reuse the proven builders / runners from the variant-level filter script so
 # the per-join SQL and the streaming/checkpoint engine are identical.
-import created_variant_scores_filtered_tables as vf  # noqa: E402
+import create_variant_scores_filtered_tables as vf  # noqa: E402
 
 SRC_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SRC_DIR.parent  # merge_v2/
