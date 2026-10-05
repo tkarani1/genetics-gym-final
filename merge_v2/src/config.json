@@ -39,7 +39,7 @@
 
   "_pairwise_analysis_routes": "There are two ways to turn the pairwise score tables (scores/pairwise/{raw,pre,post}) into analysis tables; choose one by toggling steps here. ROUTE (i) INDIVIDUAL PAIRS: leave create_pairwise_consolidated_score_tables disabled and set create_analysis_tables args to ['--groups','pairwise'] -> one analysis table per anchor/non-anchor pair per flavor under full_analysis_tables/pairwise/<flavor>/. ROUTE (ii) CONSOLIDATED: enable create_pairwise_consolidated_score_tables and set create_analysis_tables args to ['--groups','pairwise_consolidated'] -> the consolidation step first collapses each flavor's per-pair files into a single scores/pairwise_consolidated/pairwise_<flavor>_consolidated.parquet (coalescing the anchor for raw/pre; for post keeping every per-pair anchor percentile renamed ..._<anchor>_x_<non_anchor>), then the analysis step writes one analysis table per flavor under full_analysis_tables/pairwise_consolidated/. Either route requires create_pairwise_score_tables to have produced the per-pair files first. The two groups can also be combined in one create_analysis_tables run, e.g. ['--groups','pairwise','pairwise_consolidated'].",
 
-  "_gene_aggregated_filtered_route": "INNER+OUTER FILTERED, GENE-AGGREGATED analysis route WITH MECHANISM ANNOTATION APPEND. Score sources include msa_pairformer_variant.parquet; the --exclude list drops MutScore.parquet, SNPred_scores.parquet, VEST4_MetaRNN_scores.parquet, and scores_prior.parquet. Eval sources include gnomad_v4 obs/exp (preprocessed to missense via linker INNER JOIN; see preprocess/preprocess_gnomad_v4_obs_exp.py). create_variant_scores_gene_aggregation runs WITHOUT --input so it produces BOTH inner and outer _ensg[_stats].parquet. All 8 filtered/mech-append steps (4 inner + 4 outer) are enabled. If disk is tight, consider a two-pass strategy: build inner first, upload and delete, then build outer (see README.md 'Disk space' section).",
+  "_gene_aggregated_filtered_route": "SEPTEMBER 2026 CONFIGURATION (tables published to gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_09_11_updated_tables/). INNER FILTERED + OUTER UNFILTERED, GENE-AGGREGATED analysis route WITH MECHANISM ANNOTATION APPEND (inner only). Score sources EXCLUDE msa_pairformer_variant.parquet (--exclude on create_variant_scores_all_table) but INCLUDE gnomad_v2_mpc_liftover_GRCh38_variant.parquet (output col mpc_liftover; max per (chrom,pos,ref,alt) via the merge step's standard per-source dedup). Eval sources include gnomad_v4 obs/exp (preprocessed to missense via linker INNER JOIN; see preprocess/preprocess_gnomad_v4_obs_exp.py). Every step needed to rebuild the published tables from the downloaded sources is ENABLED here; the September tables themselves were built with two equivalent out-of-pipeline shortcuts in place of create_variant_scores_all_table (see that step's _comment and preprocess/README.md). create_variant_scores_gene_aggregation runs WITHOUT --input so it produces BOTH inner_ensg[_stats].parquet and outer_ensg[_stats].parquet; create_analysis_tables --groups gene then globs both, writing variant_scores_all_{inner,outer}_ensg_stats_eval[.parquet]/_deduped automatically. The 4 outer filtered/mech-append steps stay DISABLED -- the outer targets (variant_scores_all_outer_ensg_stats_eval[_deduped].parquet) are intentionally unfiltered, so those steps aren't needed for them.",
 
   "steps": [
     {
@@ -57,9 +57,10 @@
       "enabled": true
     },
     {
+      "_comment": "Full rebuild of scores/variant_scores_all_outer.parquet (4 keys + 18 scores: the 17 legacy scores + mpc_liftover; msa_pairformer excluded). For the September 2026 publish this step was bypassed: the outer table was derived from the August 22-col table by preprocess/shortcut_exclude_msa_pairformer.py (drop msa_pairformer_llr; it contributed zero unique variant keys) and then preprocess/add_score_mpc_liftover.py (one extra FULL JOIN of the mpc_liftover source using this script's own dedup/max helpers). This step produces the same table directly from the sources.",
       "name": "create_variant_scores_all_table",
       "script": "create_variant_scores_all_table.py",
-      "args": ["--exclude", "MutScore.parquet", "SNPred_scores.parquet", "VEST4_MetaRNN_scores.parquet", "scores_prior.parquet"],
+      "args": ["--exclude", "MutScore.parquet", "SNPred_scores.parquet", "VEST4_MetaRNN_scores.parquet", "scores_prior.parquet", "msa_pairformer_variant.parquet"],
       "passthrough": ["memory_limit", "threads", "temp_dir", "compact_dtypes"],
       "enabled": true
     },
@@ -71,11 +72,12 @@
       "enabled": true
     },
     {
+      "_comment": "Enabled so a clean checkout builds evals/ensg_evals_all.parquet (read by create_analysis_tables). The September run reused an existing copy; a rebuild from the current sources is identical (18,421 rows, 15 cols).",
       "name": "create_ensg_eval_all_table",
       "script": "create_ensg_eval_all_table.py",
       "args": [],
       "passthrough": ["memory_limit", "threads", "temp_dir", "compact_dtypes"],
-      "enabled": false
+      "enabled": true
     },
     {
       "name": "create_percentile_score_tables",
@@ -85,6 +87,7 @@
       "enabled": true
     },
     {
+      "_comment": "Runs for BOTH inner and outer (no --input override), so create_analysis_tables produces variant_scores_all_{inner,outer}_ensg_stats_eval[_deduped].parquet. The INNER JOIN onto the linker copies each variant's scores (and, downstream, its variant-level eval labels) to every gene the variant maps to; the _deduped outputs drop variants that map to more than one gene.",
       "name": "create_variant_scores_gene_aggregation",
       "script": "create_variant_scores_gene_aggregation.py",
       "args": ["--gene-agg-stats"],
@@ -120,33 +123,33 @@
       "enabled": true
     },
     {
-      "_comment": "Each create_gene_aggregated_filtered_<variant> step is immediately followed by its create_gene_aggregated_mechanism_appended_<variant> sibling, which LEFT-JOINs the per-chromosome mechanism shards onto the just-produced *_filtered.parquet (emitting *_filtered_mech.parquet alongside). Keep the two rows' 'enabled' values in lockstep -- toggling only one leaves the pipeline half-configured.",
+      "_comment": "Each create_gene_aggregated_filtered_<variant> step is immediately followed by its create_gene_aggregated_mechanism_appended_<variant> sibling, which LEFT-JOINs the per-chromosome mechanism shards onto the just-produced *_filtered.parquet (emitting *_filtered_mech.parquet alongside). Keep the two rows' 'enabled' values in lockstep -- toggling only one leaves the pipeline half-configured. The four outer-branch steps are DISABLED because the published outer tables (variant_scores_all_outer_ensg_stats_eval[_deduped].parquet) are intentionally unfiltered; re-enable them (in lockstep) to also produce *_outer_*_filtered[_mech] tables.",
       "name": "create_gene_aggregated_filtered_outer",
       "script": "create_gene_aggregated_filtered_table.py",
       "args": ["--input", "../data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval.parquet"],
       "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite"],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "create_gene_aggregated_mechanism_appended_outer",
       "script": "create_gene_aggregated_mechanism_appended_table.py",
       "args": ["--input", "../data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval_filtered.parquet"],
       "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite", "compact_dtypes"],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "create_gene_aggregated_filtered_outer_deduped",
       "script": "create_gene_aggregated_filtered_table.py",
       "args": ["--input", "../data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval_deduped.parquet"],
       "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite"],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "create_gene_aggregated_mechanism_appended_outer_deduped",
       "script": "create_gene_aggregated_mechanism_appended_table.py",
       "args": ["--input", "../data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval_deduped_filtered.parquet"],
       "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite", "compact_dtypes"],
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "create_gene_aggregated_filtered_inner",

@@ -132,6 +132,12 @@
       "score_fields": [
         {"msa_pairformer_llr": "msa_pairformer_llr"}
       ]
+    },
+    {
+      "file_path": "data/raw_data/scores/gnomad_v2_mpc_liftover_GRCh38_variant.parquet",
+      "score_fields": [
+        {"mpc_liftover": "mpc_liftover"}
+      ]
     }
   ],
   "gene_level": []

@@ -33,6 +33,11 @@
       "preprocessing_script": "merge_v2/preprocess/preprocess_gnomad_obs_exp.py",
       "bootstrap_driver": "merge_v2/preprocess/bootstrap_gnomad_obs_exp.sh"
     },
+    "gnomad_v2_mpc_liftover_GRCh38_variant.parquet": {
+      "raw_source": "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/gnomad_v2_mpc_liftover_GRCh38.parquet (a manual Hail->Spark-parquet export of the native Hail table at gs://grohlicek/genetics_gym_vsm_all_content/from_ruchit/gnomad_v2.1.1_mpc_liftover_GRCh38.ht/, done by hand since it wasn't already Hail-exported like this pipeline's other raw sources)",
+      "preprocessing_script": "merge_v2/preprocess/preprocess_mpc_liftover.py",
+      "notes": "gnomAD v2.1.1 MPC (GRCh37), lifted over to GRCh38. preprocess_mpc_liftover.py drops ref_allele_mismatch=True rows (bad/ambiguous liftover; 1,412 of 67,996,604), restricts to chr1-22/chrX (drops ALT-contig and chrY rows), and splits locus/alleles to chrom/pos/ref/alt. Registered as score_fields {\"mpc_liftover\": \"mpc_liftover\"} in score_input_data.json (output name distinct from the existing 'mpc' column, which comes from coalesced_snp_mpc.tsv.bgz). The source has ~68.6K duplicate GRCh38 keys (several GRCh37 transcripts/loci lifting to the same variant, ~all with differing values); the merge step's standard per-source dedup keeps max(mpc_liftover) per (chrom,pos,ref,alt). For the September 2026 publish it was folded into the existing outer table via preprocess/add_score_mpc_liftover.py (same dedup helper) instead of a full create_variant_scores_all_table.py rebuild; the two paths give the same table."
+    }
   },
   "linker_table": "gs://grohlicek/genetics_gym_vsm_all_content/linker/linker_all.parquet",
   "score_tables": {
@@ -57,7 +62,8 @@
       "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/SNPred_scores.parquet",
       "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/VEST4_MetaRNN_scores.parquet",
       "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/scores_prior.parquet",
-      "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/msa_pairformer_variant.parquet"
+      "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/msa_pairformer_variant.parquet",
+      "gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/gnomad_v2_mpc_liftover_GRCh38_variant.parquet"
     ],
     "gene_level": []
   },

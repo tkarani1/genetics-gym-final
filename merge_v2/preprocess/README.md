@@ -181,3 +181,56 @@ file stays on disk and registered in the manifest, but is skipped for the
 merge (analogous to the four sparse-ish 2026-07 score sources already
 excluded there). See the git history of `input_data_locations.json` /
 `score_input_data.json` for the initial registration.
+
+### `preprocess_mpc_liftover.py`
+
+Normalizes the gnomAD v2.1.1 MPC score lifted over to GRCh38 (Ruchit's Hail
+table `gs://grohlicek/genetics_gym_vsm_all_content/from_ruchit/gnomad_v2.1.1_mpc_liftover_GRCh38.ht/`,
+exported by hand to the Spark-partitioned Parquet directory
+`gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/gnomad_v2_mpc_liftover_GRCh38.parquet/`)
+into variant-key shape for `create_variant_scores_all_table.py`. It:
+
+1. drops `ref_allele_mismatch = True` rows (bad/ambiguous liftover),
+2. keeps only `chr1`..`chr22`, `chrX` (drops ALT-contig and `chrY` rows),
+3. splits `alleles` into `ref`/`alt` and renames `locus.*` to `chrom`/`pos`.
+
+Duplicate `(chrom, pos, ref, alt)` keys are **not** collapsed here (~68.6K
+keys, where several GRCh37 transcripts/loci lift to the same GRCh38 variant;
+nearly all disagree in value). The merge step's standard per-source dedup
+keeps `max(mpc_liftover)` per key.
+
+```bash
+python preprocess_mpc_liftover.py --input /path/to/gnomad_v2_mpc_liftover_GRCh38.parquet
+python preprocess_mpc_liftover.py --input ... --dry-run
+```
+
+Output: `merge_v2/data/raw_data/scores/gnomad_v2_mpc_liftover_GRCh38_variant.parquet`
+(schema `chrom VARCHAR, pos BIGINT, ref VARCHAR, alt VARCHAR,
+mpc_liftover FLOAT`). Already uploaded to
+`gs://grohlicek/genetics_gym_vsm_all_content/parquet_files/scores/gnomad_v2_mpc_liftover_GRCh38_variant.parquet`
+and registered in `input_data_locations.json` / `score_input_data.json`
+(output column `mpc_liftover`, distinct from the legacy `mpc` column), so
+`download_source_data.py` fetches the processed file directly.
+
+### `shortcut_exclude_msa_pairformer.py` and `add_score_mpc_liftover.py`
+
+Dated (2026-09) bypasses of `create_variant_scores_all_table.py`, used to
+build the tables published under
+`gs://.../full_analysis_tables/2026_09_11_updated_tables/` without a full
+21-source merge. Run in this order:
+
+1. `shortcut_exclude_msa_pairformer.py --commit` -- derives the 17-score
+   outer/inner/pre-percentile tables, the threshold TSV and `inner_ensg` from
+   the August 18-score build by dropping `msa_pairformer_llr` (and
+   re-applying drop-any-NA for the inner tables). This is exact because
+   MSA-Pairformer contributed zero unique variant keys to the outer merge.
+2. `add_score_mpc_liftover.py --commit` -- one `FULL JOIN` of the
+   `mpc_liftover` source onto that outer table, using the merge script's own
+   `analyze_source` / `dedup_source_sql` helpers (so `max()` per key, exactly
+   as a full rebuild would).
+
+Both write sidecars first and only swap them into place with `--commit`
+(originals kept as `.bak`). `config.json` now enables
+`create_variant_scores_all_table` with `msa_pairformer_variant.parquet`
+excluded, which produces the same outer table directly from the sources, so
+neither script is needed for a clean rebuild. They are kept for provenance.
