@@ -1,0 +1,343 @@
+############################################################
+### TABLE: variant_scores_all_inner_ensg_stats_eval
+### free before: 58Gi
+############################################################
+>>> [1/4] upload _eval -> gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_inner_ensg_stats_eval.parquet
+    already in GCS; skipping _eval upload
+>>> [2/4] build _filtered
+Input:  /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_inner_ensg_stats_eval.parquet
+Output: /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_inner_ensg_stats_eval_filtered.parquet
+Variant-level filters: 65 (-> 65 boolean membership columns)
+Gene-level filter: ensg_filters.tsv (-> 'ensg_'-prefixed columns)
+Join type: LEFT OUTER on ['chrom', 'pos', 'ref', 'alt'] (variant filters) / [ensg] (gene filter); linker step skipped (ensg already present)
+Total joins: 66  | checkpoint every 10
+Dtype profile: default
+Checkpoints: /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/.ckpt_variant_scores_all_inner_ensg_stats_eval_filtered
+Spill dir: /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/.duckdb_spill
+
+  == batch: steps 0..9 -> after_step_009.parquet ==
+    joins: [0] variant:aromatic_aa, [1] variant:buried, [2] variant:cath_arch_1_10, [3] variant:cath_arch_1_20, [4] variant:cath_arch_1_25, [5] variant:cath_arch_1_50, [6] variant:cath_arch_2_10, [7] variant:cath_arch_2_100, [8] variant:cath_arch_2_102, [9] variant:cath_arch_2_110
+    streaming -> after_step_009.parquet ...
+     checkpoint written: 11,382,998 rows -> after_step_009.parquet
+  == batch: steps 10..19 -> after_step_019.parquet ==
+    joins: [10] variant:cath_arch_2_120, [11] variant:cath_arch_2_130, [12] variant:cath_arch_2_140, [13] variant:cath_arch_2_150, [14] variant:cath_arch_2_160, [15] variant:cath_arch_2_170, [16] variant:cath_arch_2_180, [17] variant:cath_arch_2_20, [18] variant:cath_arch_2_30, [19] variant:cath_arch_2_40
+    streaming -> after_step_019.parquet ...
+     checkpoint written: 11,382,998 rows -> after_step_019.parquet
+  == batch: steps 20..29 -> after_step_029.parquet ==
+    joins: [20] variant:cath_arch_2_60, [21] variant:cath_arch_2_70, [22] variant:cath_arch_2_80, [23] variant:cath_arch_2_90, [24] variant:cath_arch_3_10, [25] variant:cath_arch_3_100, [26] variant:cath_arch_3_15, [27] variant:cath_arch_3_20, [28] variant:cath_arch_3_30, [29] variant:cath_arch_3_40
+    streaming -> after_step_029.parquet ...
+     checkpoint written: 11,382,998 rows -> after_step_029.parquet
+  == batch: steps 30..39 -> after_step_039.parquet ==
+    joins: [30] variant:cath_arch_3_50, [31] variant:cath_arch_3_55, [32] variant:cath_arch_3_60, [33] variant:cath_arch_3_65, [34] variant:cath_arch_3_70, [35] variant:cath_arch_3_75, [36] variant:cath_arch_3_80, [37] variant:cath_arch_3_90, [38] variant:cath_arch_4_10, [39] variant:cath_arch_6_10
+    streaming -> after_step_039.parquet ...
+     checkpoint written: 11,382,998 rows -> after_step_039.parquet
+  == batch: steps 40..49 -> after_step_049.parquet ==
+    joins: [40] variant:cath_arch_6_20, [41] variant:cath_class_1, [42] variant:cath_class_2, [43] variant:cath_class_3, [44] variant:cath_class_4, [45] variant:cath_class_6, [46] variant:charged_aa, [47] variant:destabilizing, [48] variant:disordered, [49] variant:mu_decile_0
+    streaming -> after_step_049.parquet ...
+     checkpoint written: 11,382,998 rows -> after_step_049.parquet
+  == batch: steps 50..59 -> after_step_059.parquet ==
+    joins: [50] variant:mu_decile_1, [51] variant:mu_decile_2, [52] variant:mu_decile_3, [53] variant:mu_decile_4, [54] variant:mu_decile_5, [55] variant:mu_decile_6, [56] variant:mu_decile_7, [57] variant:mu_decile_8, [58] variant:mu_decile_9, [59] variant:non_destabilizing
+    streaming -> after_step_059.parquet ...
+     checkpoint written: 11,382,998 rows -> after_step_059.parquet
+  == batch: steps 60..65 -> OUTPUT ==
+    joins: [60] variant:nonpolar_neutral_aa, [61] variant:ordered, [62] variant:polar_neutral_aa, [63] variant:predicted_pocket, [64] variant:surface, [65] gene
+    streaming -> variant_scores_all_inner_ensg_stats_eval_filtered.parquet ...
+     checkpoint written: 11,382,998 rows -> variant_scores_all_inner_ensg_stats_eval_filtered.parquet
+
+Done. Wrote 11,382,998 rows x 387 columns to /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_inner_ensg_stats_eval_filtered.parquet
+>>> [2.5] verify new score col + a filter col actually populated
+    verify: non-null MutScore=11,382,998  buried=TRUE rows=3,350,864
+>>> [3/4] upload _filtered -> gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_inner_ensg_stats_eval_filtered.parquet
+WARNING: Parallel composite upload was turned ON to get the best performance on
+uploading large objects. If you would like to opt-out and instead
+perform a normal upload, run:
+`gcloud config set storage/parallel_composite_upload_enabled False`
+If you would like to disable this warning, run:
+`gcloud config set storage/parallel_composite_upload_enabled True`
+Note that with parallel composite uploads, your object might be
+uploaded as a composite object
+(https://cloud.google.com/storage/docs/composite-objects), which means
+that any user who downloads your object will need to use crc32c
+checksums to verify data integrity. gcloud storage is capable of
+computing crc32c checksums, but this might pose a problem for other
+clients.
+
+Copying file:///Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_inner_ensg_stats_eval_filtered.parquet to gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_inner_ensg_stats_eval_filtered.parquet
+  
+...........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+Average throughput: 22.4MiB/s
+>>> [4/4] delete local _eval + _filtered
+### free after: 61Gi
+
+############################################################
+### TABLE: variant_scores_all_inner_ensg_stats_eval_deduped
+### free before: 61Gi
+############################################################
+>>> [1/4] upload _eval -> gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_inner_ensg_stats_eval_deduped.parquet
+WARNING: Parallel composite upload was turned ON to get the best performance on
+uploading large objects. If you would like to opt-out and instead
+perform a normal upload, run:
+`gcloud config set storage/parallel_composite_upload_enabled False`
+If you would like to disable this warning, run:
+`gcloud config set storage/parallel_composite_upload_enabled True`
+Note that with parallel composite uploads, your object might be
+uploaded as a composite object
+(https://cloud.google.com/storage/docs/composite-objects), which means
+that any user who downloads your object will need to use crc32c
+checksums to verify data integrity. gcloud storage is capable of
+computing crc32c checksums, but this might pose a problem for other
+clients.
+
+Copying file:///Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_inner_ensg_stats_eval_deduped.parquet to gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_inner_ensg_stats_eval_deduped.parquet
+  
+..............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+Average throughput: 24.6MiB/s
+>>> [2/4] build _filtered
+Input:  /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_inner_ensg_stats_eval_deduped.parquet
+Output: /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_inner_ensg_stats_eval_deduped_filtered.parquet
+Variant-level filters: 65 (-> 65 boolean membership columns)
+Gene-level filter: ensg_filters.tsv (-> 'ensg_'-prefixed columns)
+Join type: LEFT OUTER on ['chrom', 'pos', 'ref', 'alt'] (variant filters) / [ensg] (gene filter); linker step skipped (ensg already present)
+Total joins: 66  | checkpoint every 10
+Dtype profile: default
+Checkpoints: /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/.ckpt_variant_scores_all_inner_ensg_stats_eval_deduped_filtered
+Spill dir: /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/.duckdb_spill
+
+  == batch: steps 0..9 -> after_step_009.parquet ==
+    joins: [0] variant:aromatic_aa, [1] variant:buried, [2] variant:cath_arch_1_10, [3] variant:cath_arch_1_20, [4] variant:cath_arch_1_25, [5] variant:cath_arch_1_50, [6] variant:cath_arch_2_10, [7] variant:cath_arch_2_100, [8] variant:cath_arch_2_102, [9] variant:cath_arch_2_110
+    streaming -> after_step_009.parquet ...
+     checkpoint written: 11,170,881 rows -> after_step_009.parquet
+  == batch: steps 10..19 -> after_step_019.parquet ==
+    joins: [10] variant:cath_arch_2_120, [11] variant:cath_arch_2_130, [12] variant:cath_arch_2_140, [13] variant:cath_arch_2_150, [14] variant:cath_arch_2_160, [15] variant:cath_arch_2_170, [16] variant:cath_arch_2_180, [17] variant:cath_arch_2_20, [18] variant:cath_arch_2_30, [19] variant:cath_arch_2_40
+    streaming -> after_step_019.parquet ...
+     checkpoint written: 11,170,881 rows -> after_step_019.parquet
+  == batch: steps 20..29 -> after_step_029.parquet ==
+    joins: [20] variant:cath_arch_2_60, [21] variant:cath_arch_2_70, [22] variant:cath_arch_2_80, [23] variant:cath_arch_2_90, [24] variant:cath_arch_3_10, [25] variant:cath_arch_3_100, [26] variant:cath_arch_3_15, [27] variant:cath_arch_3_20, [28] variant:cath_arch_3_30, [29] variant:cath_arch_3_40
+    streaming -> after_step_029.parquet ...
+     checkpoint written: 11,170,881 rows -> after_step_029.parquet
+  == batch: steps 30..39 -> after_step_039.parquet ==
+    joins: [30] variant:cath_arch_3_50, [31] variant:cath_arch_3_55, [32] variant:cath_arch_3_60, [33] variant:cath_arch_3_65, [34] variant:cath_arch_3_70, [35] variant:cath_arch_3_75, [36] variant:cath_arch_3_80, [37] variant:cath_arch_3_90, [38] variant:cath_arch_4_10, [39] variant:cath_arch_6_10
+    streaming -> after_step_039.parquet ...
+     checkpoint written: 11,170,881 rows -> after_step_039.parquet
+  == batch: steps 40..49 -> after_step_049.parquet ==
+    joins: [40] variant:cath_arch_6_20, [41] variant:cath_class_1, [42] variant:cath_class_2, [43] variant:cath_class_3, [44] variant:cath_class_4, [45] variant:cath_class_6, [46] variant:charged_aa, [47] variant:destabilizing, [48] variant:disordered, [49] variant:mu_decile_0
+    streaming -> after_step_049.parquet ...
+     checkpoint written: 11,170,881 rows -> after_step_049.parquet
+  == batch: steps 50..59 -> after_step_059.parquet ==
+    joins: [50] variant:mu_decile_1, [51] variant:mu_decile_2, [52] variant:mu_decile_3, [53] variant:mu_decile_4, [54] variant:mu_decile_5, [55] variant:mu_decile_6, [56] variant:mu_decile_7, [57] variant:mu_decile_8, [58] variant:mu_decile_9, [59] variant:non_destabilizing
+    streaming -> after_step_059.parquet ...
+     checkpoint written: 11,170,881 rows -> after_step_059.parquet
+  == batch: steps 60..65 -> OUTPUT ==
+    joins: [60] variant:nonpolar_neutral_aa, [61] variant:ordered, [62] variant:polar_neutral_aa, [63] variant:predicted_pocket, [64] variant:surface, [65] gene
+    streaming -> variant_scores_all_inner_ensg_stats_eval_deduped_filtered.parquet ...
+     checkpoint written: 11,170,881 rows -> variant_scores_all_inner_ensg_stats_eval_deduped_filtered.parquet
+
+Done. Wrote 11,170,881 rows x 387 columns to /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_inner_ensg_stats_eval_deduped_filtered.parquet
+>>> [2.5] verify new score col + a filter col actually populated
+    verify: non-null MutScore=11,170,881  buried=TRUE rows=3,292,236
+>>> [3/4] upload _filtered -> gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_inner_ensg_stats_eval_deduped_filtered.parquet
+WARNING: Parallel composite upload was turned ON to get the best performance on
+uploading large objects. If you would like to opt-out and instead
+perform a normal upload, run:
+`gcloud config set storage/parallel_composite_upload_enabled False`
+If you would like to disable this warning, run:
+`gcloud config set storage/parallel_composite_upload_enabled True`
+Note that with parallel composite uploads, your object might be
+uploaded as a composite object
+(https://cloud.google.com/storage/docs/composite-objects), which means
+that any user who downloads your object will need to use crc32c
+checksums to verify data integrity. gcloud storage is capable of
+computing crc32c checksums, but this might pose a problem for other
+clients.
+
+Copying file:///Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_inner_ensg_stats_eval_deduped_filtered.parquet to gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_inner_ensg_stats_eval_deduped_filtered.parquet
+  
+..............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+Average throughput: 24.2MiB/s
+>>> [4/4] delete local _eval + _filtered
+### free after: 63Gi
+
+############################################################
+### TABLE: variant_scores_all_outer_ensg_stats_eval_deduped
+### free before: 63Gi
+############################################################
+>>> [1/4] upload _eval -> gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_outer_ensg_stats_eval_deduped.parquet
+WARNING: Parallel composite upload was turned ON to get the best performance on
+uploading large objects. If you would like to opt-out and instead
+perform a normal upload, run:
+`gcloud config set storage/parallel_composite_upload_enabled False`
+If you would like to disable this warning, run:
+`gcloud config set storage/parallel_composite_upload_enabled True`
+Note that with parallel composite uploads, your object might be
+uploaded as a composite object
+(https://cloud.google.com/storage/docs/composite-objects), which means
+that any user who downloads your object will need to use crc32c
+checksums to verify data integrity. gcloud storage is capable of
+computing crc32c checksums, but this might pose a problem for other
+clients.
+
+Copying file:///Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval_deduped.parquet to gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_outer_ensg_stats_eval_deduped.parquet
+  
+........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+Average throughput: 20.8MiB/s
+>>> [2/4] build _filtered
+Input:  /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval_deduped.parquet
+Output: /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval_deduped_filtered.parquet
+Variant-level filters: 65 (-> 65 boolean membership columns)
+Gene-level filter: ensg_filters.tsv (-> 'ensg_'-prefixed columns)
+Join type: LEFT OUTER on ['chrom', 'pos', 'ref', 'alt'] (variant filters) / [ensg] (gene filter); linker step skipped (ensg already present)
+Total joins: 66  | checkpoint every 10
+Dtype profile: default
+Checkpoints: /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/.ckpt_variant_scores_all_outer_ensg_stats_eval_deduped_filtered
+Spill dir: /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/.duckdb_spill
+
+  == batch: steps 0..9 -> after_step_009.parquet ==
+    joins: [0] variant:aromatic_aa, [1] variant:buried, [2] variant:cath_arch_1_10, [3] variant:cath_arch_1_20, [4] variant:cath_arch_1_25, [5] variant:cath_arch_1_50, [6] variant:cath_arch_2_10, [7] variant:cath_arch_2_100, [8] variant:cath_arch_2_102, [9] variant:cath_arch_2_110
+    streaming -> after_step_009.parquet ...
+     checkpoint written: 77,090,579 rows -> after_step_009.parquet
+  == batch: steps 10..19 -> after_step_019.parquet ==
+    joins: [10] variant:cath_arch_2_120, [11] variant:cath_arch_2_130, [12] variant:cath_arch_2_140, [13] variant:cath_arch_2_150, [14] variant:cath_arch_2_160, [15] variant:cath_arch_2_170, [16] variant:cath_arch_2_180, [17] variant:cath_arch_2_20, [18] variant:cath_arch_2_30, [19] variant:cath_arch_2_40
+    streaming -> after_step_019.parquet ...
+     checkpoint written: 77,090,579 rows -> after_step_019.parquet
+  == batch: steps 20..29 -> after_step_029.parquet ==
+    joins: [20] variant:cath_arch_2_60, [21] variant:cath_arch_2_70, [22] variant:cath_arch_2_80, [23] variant:cath_arch_2_90, [24] variant:cath_arch_3_10, [25] variant:cath_arch_3_100, [26] variant:cath_arch_3_15, [27] variant:cath_arch_3_20, [28] variant:cath_arch_3_30, [29] variant:cath_arch_3_40
+    streaming -> after_step_029.parquet ...
+     checkpoint written: 77,090,579 rows -> after_step_029.parquet
+  == batch: steps 30..39 -> after_step_039.parquet ==
+    joins: [30] variant:cath_arch_3_50, [31] variant:cath_arch_3_55, [32] variant:cath_arch_3_60, [33] variant:cath_arch_3_65, [34] variant:cath_arch_3_70, [35] variant:cath_arch_3_75, [36] variant:cath_arch_3_80, [37] variant:cath_arch_3_90, [38] variant:cath_arch_4_10, [39] variant:cath_arch_6_10
+    streaming -> after_step_039.parquet ...
+     checkpoint written: 77,090,579 rows -> after_step_039.parquet
+  == batch: steps 40..49 -> after_step_049.parquet ==
+    joins: [40] variant:cath_arch_6_20, [41] variant:cath_class_1, [42] variant:cath_class_2, [43] variant:cath_class_3, [44] variant:cath_class_4, [45] variant:cath_class_6, [46] variant:charged_aa, [47] variant:destabilizing, [48] variant:disordered, [49] variant:mu_decile_0
+    streaming -> after_step_049.parquet ...
+     checkpoint written: 77,090,579 rows -> after_step_049.parquet
+  == batch: steps 50..59 -> after_step_059.parquet ==
+    joins: [50] variant:mu_decile_1, [51] variant:mu_decile_2, [52] variant:mu_decile_3, [53] variant:mu_decile_4, [54] variant:mu_decile_5, [55] variant:mu_decile_6, [56] variant:mu_decile_7, [57] variant:mu_decile_8, [58] variant:mu_decile_9, [59] variant:non_destabilizing
+    streaming -> after_step_059.parquet ...
+     checkpoint written: 77,090,579 rows -> after_step_059.parquet
+  == batch: steps 60..65 -> OUTPUT ==
+    joins: [60] variant:nonpolar_neutral_aa, [61] variant:ordered, [62] variant:polar_neutral_aa, [63] variant:predicted_pocket, [64] variant:surface, [65] gene
+    streaming -> variant_scores_all_outer_ensg_stats_eval_deduped_filtered.parquet ...
+     checkpoint written: 77,090,579 rows -> variant_scores_all_outer_ensg_stats_eval_deduped_filtered.parquet
+
+Done. Wrote 77,090,579 rows x 387 columns to /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval_deduped_filtered.parquet
+>>> [2.5] verify new score col + a filter col actually populated
+    verify: non-null MutScore=70,145,249  buried=TRUE rows=19,786,899
+>>> [3/4] upload _filtered -> gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_outer_ensg_stats_eval_deduped_filtered.parquet
+WARNING: Parallel composite upload was turned ON to get the best performance on
+uploading large objects. If you would like to opt-out and instead
+perform a normal upload, run:
+`gcloud config set storage/parallel_composite_upload_enabled False`
+If you would like to disable this warning, run:
+`gcloud config set storage/parallel_composite_upload_enabled True`
+Note that with parallel composite uploads, your object might be
+uploaded as a composite object
+(https://cloud.google.com/storage/docs/composite-objects), which means
+that any user who downloads your object will need to use crc32c
+checksums to verify data integrity. gcloud storage is capable of
+computing crc32c checksums, but this might pose a problem for other
+clients.
+
+Copying file:///Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval_deduped_filtered.parquet to gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_outer_ensg_stats_eval_deduped_filtered.parquet
+  
+........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+Average throughput: 31.6MiB/s
+>>> [4/4] delete local _eval + _filtered
+### free after: 56Gi
+
+############################################################
+### TABLE: variant_scores_all_outer_ensg_stats_eval
+### free before: 56Gi
+############################################################
+>>> [1/4] upload _eval -> gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_outer_ensg_stats_eval.parquet
+WARNING: Parallel composite upload was turned ON to get the best performance on
+uploading large objects. If you would like to opt-out and instead
+perform a normal upload, run:
+`gcloud config set storage/parallel_composite_upload_enabled False`
+If you would like to disable this warning, run:
+`gcloud config set storage/parallel_composite_upload_enabled True`
+Note that with parallel composite uploads, your object might be
+uploaded as a composite object
+(https://cloud.google.com/storage/docs/composite-objects), which means
+that any user who downloads your object will need to use crc32c
+checksums to verify data integrity. gcloud storage is capable of
+computing crc32c checksums, but this might pose a problem for other
+clients.
+
+Copying file:///Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval.parquet to gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_outer_ensg_stats_eval.parquet
+  
+..........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+Average throughput: 31.4MiB/s
+>>> [2/4] build _filtered
+Input:  /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval.parquet
+Output: /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval_filtered.parquet
+Variant-level filters: 65 (-> 65 boolean membership columns)
+Gene-level filter: ensg_filters.tsv (-> 'ensg_'-prefixed columns)
+Join type: LEFT OUTER on ['chrom', 'pos', 'ref', 'alt'] (variant filters) / [ensg] (gene filter); linker step skipped (ensg already present)
+Total joins: 66  | checkpoint every 10
+Dtype profile: default
+Checkpoints: /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/.ckpt_variant_scores_all_outer_ensg_stats_eval_filtered
+Spill dir: /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/.duckdb_spill
+
+  == batch: steps 0..9 -> after_step_009.parquet ==
+    joins: [0] variant:aromatic_aa, [1] variant:buried, [2] variant:cath_arch_1_10, [3] variant:cath_arch_1_20, [4] variant:cath_arch_1_25, [5] variant:cath_arch_1_50, [6] variant:cath_arch_2_10, [7] variant:cath_arch_2_100, [8] variant:cath_arch_2_102, [9] variant:cath_arch_2_110
+    streaming -> after_step_009.parquet ...
+     checkpoint written: 79,862,787 rows -> after_step_009.parquet
+  == batch: steps 10..19 -> after_step_019.parquet ==
+    joins: [10] variant:cath_arch_2_120, [11] variant:cath_arch_2_130, [12] variant:cath_arch_2_140, [13] variant:cath_arch_2_150, [14] variant:cath_arch_2_160, [15] variant:cath_arch_2_170, [16] variant:cath_arch_2_180, [17] variant:cath_arch_2_20, [18] variant:cath_arch_2_30, [19] variant:cath_arch_2_40
+    streaming -> after_step_019.parquet ...
+     checkpoint written: 79,862,787 rows -> after_step_019.parquet
+  == batch: steps 20..29 -> after_step_029.parquet ==
+    joins: [20] variant:cath_arch_2_60, [21] variant:cath_arch_2_70, [22] variant:cath_arch_2_80, [23] variant:cath_arch_2_90, [24] variant:cath_arch_3_10, [25] variant:cath_arch_3_100, [26] variant:cath_arch_3_15, [27] variant:cath_arch_3_20, [28] variant:cath_arch_3_30, [29] variant:cath_arch_3_40
+    streaming -> after_step_029.parquet ...
+     checkpoint written: 79,862,787 rows -> after_step_029.parquet
+  == batch: steps 30..39 -> after_step_039.parquet ==
+    joins: [30] variant:cath_arch_3_50, [31] variant:cath_arch_3_55, [32] variant:cath_arch_3_60, [33] variant:cath_arch_3_65, [34] variant:cath_arch_3_70, [35] variant:cath_arch_3_75, [36] variant:cath_arch_3_80, [37] variant:cath_arch_3_90, [38] variant:cath_arch_4_10, [39] variant:cath_arch_6_10
+    streaming -> after_step_039.parquet ...
+     checkpoint written: 79,862,787 rows -> after_step_039.parquet
+  == batch: steps 40..49 -> after_step_049.parquet ==
+    joins: [40] variant:cath_arch_6_20, [41] variant:cath_class_1, [42] variant:cath_class_2, [43] variant:cath_class_3, [44] variant:cath_class_4, [45] variant:cath_class_6, [46] variant:charged_aa, [47] variant:destabilizing, [48] variant:disordered, [49] variant:mu_decile_0
+    streaming -> after_step_049.parquet ...
+     checkpoint written: 79,862,787 rows -> after_step_049.parquet
+  == batch: steps 50..59 -> after_step_059.parquet ==
+    joins: [50] variant:mu_decile_1, [51] variant:mu_decile_2, [52] variant:mu_decile_3, [53] variant:mu_decile_4, [54] variant:mu_decile_5, [55] variant:mu_decile_6, [56] variant:mu_decile_7, [57] variant:mu_decile_8, [58] variant:mu_decile_9, [59] variant:non_destabilizing
+    streaming -> after_step_059.parquet ...
+     checkpoint written: 79,862,787 rows -> after_step_059.parquet
+  == batch: steps 60..65 -> OUTPUT ==
+    joins: [60] variant:nonpolar_neutral_aa, [61] variant:ordered, [62] variant:polar_neutral_aa, [63] variant:predicted_pocket, [64] variant:surface, [65] gene
+    streaming -> variant_scores_all_outer_ensg_stats_eval_filtered.parquet ...
+     checkpoint written: 79,862,787 rows -> variant_scores_all_outer_ensg_stats_eval_filtered.parquet
+
+Done. Wrote 79,862,787 rows x 387 columns to /Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval_filtered.parquet
+>>> [2.5] verify new score col + a filter col actually populated
+    verify: non-null MutScore=72,804,678  buried=TRUE rows=20,567,788
+>>> [3/4] upload _filtered -> gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_outer_ensg_stats_eval_filtered.parquet
+WARNING: Parallel composite upload was turned ON to get the best performance on
+uploading large objects. If you would like to opt-out and instead
+perform a normal upload, run:
+`gcloud config set storage/parallel_composite_upload_enabled False`
+If you would like to disable this warning, run:
+`gcloud config set storage/parallel_composite_upload_enabled True`
+Note that with parallel composite uploads, your object might be
+uploaded as a composite object
+(https://cloud.google.com/storage/docs/composite-objects), which means
+that any user who downloads your object will need to use crc32c
+checksums to verify data integrity. gcloud storage is capable of
+computing crc32c checksums, but this might pose a problem for other
+clients.
+
+Copying file:///Users/grohlice/Source/genetics-gym-final/merge_v2/data/processed_data/full_analysis_tables/gene_aggregated/variant_scores_all_outer_ensg_stats_eval_filtered.parquet to gs://grohlicek/genetics_gym_vsm_all_content/full_analysis_tables/2026_07_01_updated_tables/variant_scores_all_outer_ensg_stats_eval_filtered.parquet
+  
+.............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+Average throughput: 15.9MiB/s
+>>> [4/4] delete local _eval + _filtered
+### free after: 102Gi
+
+PHASE2_ALL_DONE

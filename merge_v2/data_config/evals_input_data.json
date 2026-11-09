@@ -1,0 +1,194 @@
+{
+  "variant_level": [
+    {
+      "file_path": "data/raw_data/evals/gnomad_independent_mis.tsv.bgz",
+      "eval_fields": [
+        {"is_pos": "is_pos_gnomad"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/clinvar.tsv.bgz",
+      "eval_fields": [
+        {"is_pos": "is_pos_clinvar"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/dd-with-combined-controls-distinct.tsv.bgz",
+      "eval_fields": [
+        {"is_pos": "is_pos_dd"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/asd-with-combined-controls-distinct.tsv.bgz",
+      "eval_fields": [
+        {"is_pos": "is_pos_asd"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/chd-with-combined-controls-distinct.tsv.bgz",
+      "eval_fields": [
+        {"is_pos": "is_pos_chd"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/schema_no_dup.tsv",
+      "eval_fields": [
+        {"is_pos": "is_pos_schema"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/schema_matched_sets.tsv",
+      "eval_fields": [
+        {"is_pos": "is_pos_schema_gene_matched"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/epi25_evaluation_filtered.tsv",
+      "eval_fields": [
+        {"is_pos": "is_pos_epi25"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/epi25_matched_sets.tsv",
+      "eval_fields": [
+        {"is_pos": "is_pos_epi25_gene_matched"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/asc_evaluation_table_no_dup.tsv",
+      "eval_fields": [
+        {"is_pos": "is_pos_asc"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/fine_mapped_mis_distinct.tsv.bgz",
+      "eval_fields": [
+        {"is_pos_fine_mapped": "is_pos_fine_mapped"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/genebass_mis_distinct.tsv.bgz",
+      "eval_fields": [
+        {"is_pos": "is_pos_genebass"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/genebass_af_matched_controls.tsv",
+      "eval_fields": [
+        {"original_is_pos": "is_pos_genebass_gene_matched"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/asd_obs_exp_mis.parquet/",
+      "eval_fields": [
+        {"observed_asd": "observed_asd"},
+        {"expected_asd": "expected_asd"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/chd_obs_exp_mis.parquet/",
+      "eval_fields": [
+        {"observed_chd": "observed_chd"},
+        {"expected_chd": "expected_chd"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/dd_obs_exp_mis.parquet/",
+      "eval_fields": [
+        {"observed_dd": "observed_dd"},
+        {"expected_dd": "expected_dd"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/gnomad_new_obs_exp_mis.parquet/",
+      "eval_fields": [
+        {"observed_gnomad_new": "observed_gnomad_new"},
+        {"expected_gnomad_new": "expected_gnomad_new"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/gnomad_ukb_obs_exp_mis.parquet/",
+      "eval_fields": [
+        {"observed_gnomad_ukb": "observed_gnomad_ukb"},
+        {"expected_gnomad_ukb": "expected_gnomad_ukb"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/gnomad_v2_obs_exp_mis.parquet/",
+      "eval_fields": [
+        {"observed_gnomad_v2": "observed_gnomad_v2"},
+        {"expected_gnomad_v2": "expected_gnomad_v2"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/gnomad_v2_ukb_obs_exp_mis.parquet/",
+      "eval_fields": [
+        {"observed_gnomad_v2_ukb": "observed_gnomad_v2_ukb"},
+        {"expected_gnomad_v2_ukb": "expected_gnomad_v2_ukb"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/gnomad_v4_obs_exp_mis.parquet",
+      "eval_fields": [
+        {"observed_gnomad_v4": "observed_gnomad_v4"},
+        {"expected_gnomad_v4": "expected_gnomad_v4"}
+      ]
+    }
+  ],
+  "gene_level": [
+    {
+      "file_path": "data/raw_data/evals/clinvar_ensg_is_case.tsv",
+      "eval_fields": [
+        {"is_case": "is_pos_ensg_clinvar"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/genebass_burden_caf_matched.tsv",
+      "eval_fields": [
+        {"is_pos": "is_pos_ensg_genebass"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/dd-lof-vep-case-ctrl-counts-ensg.tsv",
+      "eval_fields": [
+        {"n_case": "n_case_dd"},
+        {"n_ctrl": "n_ctrl_dd"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/asd-lof-vep-case-ctrl-counts-ensg.tsv",
+      "eval_fields": [
+        {"n_case": "n_case_asd"},
+        {"n_ctrl": "n_ctrl_asd"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/chd-lof-vep-case-ctrl-counts-ensg.tsv",
+      "eval_fields": [
+        {"n_case": "n_case_chd"},
+        {"n_ctrl": "n_ctrl_chd"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/schema_ensg_eval.tsv",
+      "eval_fields": [
+        {"n_case": "n_case_schema"},
+        {"n_ctrl": "n_ctrl_schema"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/epi25_ensg_eval.tsv",
+      "eval_fields": [
+        {"n_case": "n_case_epi25"},
+        {"n_ctrl": "n_ctrl_epi25"}
+      ]
+    },
+    {
+      "file_path": "data/raw_data/evals/asc_ensg_eval.tsv",
+      "eval_fields": [
+        {"n_case": "n_case_asc"},
+        {"n_ctrl": "n_ctrl_asc"}
+      ]
+    }
+  ]
+}

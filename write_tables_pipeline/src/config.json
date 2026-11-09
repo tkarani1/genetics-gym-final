@@ -1,0 +1,103 @@
+{
+  "_comment": "All-encompassing configuration for full_data_aggregation_pipeline.py. This file is the single place to control how the pipeline runs. The pipeline reads it by default (override with --config PATH or ignore with --no-config). Any CLI flag overrides the matching value here; booleans support --flag / --no-flag (e.g. --no-skip-download).",
+
+  "_pipeline_docs": {
+    "skip_download": "Skip the download_source_data step (source data already local).",
+    "overwrite": "Forward --overwrite to steps that skip existing outputs by default (gene aggregation, pairwise, filtered, analysis). The score/eval/percentile steps always rewrite regardless.",
+    "memory_limit": "DuckDB memory limit forwarded to every DuckDB step, e.g. '20GB' (null = DuckDB default).",
+    "threads": "DuckDB worker threads forwarded to every DuckDB step (null = DuckDB auto).",
+    "temp_dir": "Spill/build scratch dir forwarded to every DuckDB step (null = each script's default).",
+    "report_dir": "Directory for the aggregation_pipeline_*.json audit (null = write_tables_pipeline/pipeline_runs).",
+    "count_text_inputs": "Also count rows of raw TSV/bgz text sources (full scan; slow). Parquet is always counted from footer metadata.",
+    "no_row_counts": "Disable all row counting (fastest auditing).",
+    "continue_on_error": "Keep running subsequent steps even if one fails (default: stop at first failure).",
+    "only": "Run only these step name(s) (list), mutually exclusive with from_step/to_step.",
+    "from_step": "Start at this step name (inclusive); useful to resume after a failure.",
+    "to_step": "Stop after this step name (inclusive).",
+    "skip": "Skip these step name(s) (list)."
+  },
+
+  "pipeline": {
+    "skip_download": true,
+    "overwrite": true,
+    "memory_limit": null,
+    "threads": null,
+    "temp_dir": null,
+    "report_dir": null,
+    "count_text_inputs": false,
+    "no_row_counts": false,
+    "continue_on_error": false,
+    "only": null,
+    "from_step": null,
+    "to_step": null,
+    "skip": null
+  },
+
+  "_steps_docs": "Ordered list of script invocations. Each step: 'name' (audit label + selection key), 'script' (file in this src/ dir), 'args' (extra CLI args passed to that script), 'passthrough' (which pipeline-level options to forward: any of memory_limit, threads, temp_dir, overwrite), and 'enabled' (set false to skip the step entirely). The obs/exp eval sources are excluded here, in create_variant_eval_all_table's args ('--exclude _obs_exp_mis'); this is the single source of truth for that exclusion and is also reflected in the audit's recorded inputs.",
+
+  "steps": [
+    {
+      "name": "download_source_data",
+      "script": "download_source_data.py",
+      "args": [],
+      "passthrough": [],
+      "enabled": true
+    },
+    {
+      "name": "create_variant_scores_all_table",
+      "script": "create_variant_scores_all_table.py",
+      "args": [],
+      "passthrough": ["memory_limit", "threads", "temp_dir"],
+      "enabled": true
+    },
+    {
+      "name": "create_variant_eval_all_table",
+      "script": "create_variant_eval_all_table.py",
+      "args": ["--exclude", "_obs_exp_mis"],
+      "passthrough": ["memory_limit", "threads", "temp_dir"],
+      "enabled": true
+    },
+    {
+      "name": "create_ensg_eval_all_table",
+      "script": "create_ensg_eval_all_table.py",
+      "args": [],
+      "passthrough": ["memory_limit", "threads", "temp_dir"],
+      "enabled": true
+    },
+    {
+      "name": "create_percentile_score_tables",
+      "script": "create_percentile_score_tables.py",
+      "args": ["--variant"],
+      "passthrough": ["memory_limit", "threads", "temp_dir"],
+      "enabled": true
+    },
+    {
+      "name": "create_variant_scores_gene_aggregation",
+      "script": "create_variant_scores_gene_aggregation.py",
+      "args": ["--gene-agg-stats"],
+      "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite"],
+      "enabled": true
+    },
+    {
+      "name": "create_pairwise_score_tables",
+      "script": "create_pairwise_score_tables.py",
+      "args": ["--variant"],
+      "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite"],
+      "enabled": true
+    },
+    {
+      "name": "created_variant_scores_filtered_tables",
+      "script": "created_variant_scores_filtered_tables.py",
+      "args": [],
+      "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite"],
+      "enabled": true
+    },
+    {
+      "name": "create_analysis_tables",
+      "script": "create_analysis_tables.py",
+      "args": [],
+      "passthrough": ["memory_limit", "threads", "temp_dir", "overwrite"],
+      "enabled": true
+    }
+  ]
+}
